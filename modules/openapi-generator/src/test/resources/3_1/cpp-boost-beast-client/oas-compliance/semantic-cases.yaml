@@ -1,0 +1,253 @@
+# =============================================================================
+# Semantic Case Manifest — OAS Gate A
+# =============================================================================
+# Every acceptance-matrix row mapped to a specific schema or operation,
+# one or more JSON payloads, and the expected outcome class.
+#
+# Outcome classes:
+#   generation_failure — generator must exit non-zero or not produce header
+#   compile_failure   — generated C++ fails warning-as-error build
+#   decode_accept     — payload decodes against the schema without error
+#   decode_reject     — payload produces a decode/validation error
+#   round_trip        — serialize(deserialize(payload)) == original payload
+#
+# Format:
+#   - id: <unique-label>
+#     schema: <component-schema-name>
+#     operationId: <operation-id>
+#     cases:
+#       - payload: <JSON value or response object>
+#         expected: <outcome-class>
+#         branch: <optional branch index for accepted cases>
+#         note: <row description>
+
+- id: oneof-constrained-numbers-reject-zero
+  schema: ConstrainedNumber
+  operationId: postConstrainedNumber
+  cases:
+    - payload: 2
+      expected: decode_reject
+      note: "multipleOf:3 vs multipleOf:5, value 2 — zero matches"
+
+- id: oneof-constrained-numbers-accept-branch0
+  schema: ConstrainedNumber
+  operationId: postConstrainedNumber
+  cases:
+    - payload: 9
+      expected: decode_accept
+      branch: 0
+      note: "multipleOf:3 vs multipleOf:5, value 9 — accept branch 0"
+
+- id: oneof-constrained-numbers-reject-two
+  schema: ConstrainedNumber
+  operationId: postConstrainedNumber
+  cases:
+    - payload: 15
+      expected: decode_reject
+      note: "multipleOf:3 vs multipleOf:5, value 15 — two matches"
+
+- id: integer-mathematical-form-reject
+  schema: IntOrNumber
+  operationId: postIntOrNumber
+  cases:
+    - payload: 1.0
+      expected: decode_reject
+      note: "oneOf [integer, number], value 1.0 — two matches (mathematically integral)"
+
+- id: number-only-accept-int
+  note: "type: number, value 1 — accept (integer is valid number)"
+  cases:
+    - payload: 1
+      expected: decode_accept
+    - payload: 1.5
+      expected: decode_accept
+
+- id: anyof-enum-union-accept-blue
+  schema: AnyOfEnumUnion
+  operationId: postAnyOfEnumUnion
+  cases:
+    - payload: '"blue"'
+      expected: decode_accept
+      note: "enum union [red] U [blue], value blue — accept"
+
+- id: anyof-enum-union-reject-green
+  schema: AnyOfEnumUnion
+  operationId: postAnyOfEnumUnion
+  cases:
+    - payload: '"green"'
+      expected: decode_reject
+      note: "enum union [red] U [blue], value green — reject"
+
+- id: allnull-anyof-accept-null
+  schema: AllNullAnyOf
+  operationId: postAllNullAnyOf
+  cases:
+    - payload: 'null'
+      expected: decode_accept
+      note: "two null branches, value null — accept"
+
+- id: allnull-anyof-reject-object
+  schema: AllNullAnyOf
+  operationId: postAllNullAnyOf
+  cases:
+    - payload: '{}'
+      expected: decode_reject
+      note: "two null branches, value {} — reject"
+
+- id: duplicatenull-oneof-reject-null
+  schema: DuplicateNullOneOf
+  operationId: postDuplicateNullOneOf
+  cases:
+    - payload: 'null'
+      expected: decode_reject
+      note: "two null branches, value null — two matches in oneOf"
+
+- id: discriminator-known-overlap-reject
+  schema: DiscriminatorOneOf
+  operationId: createAnimal
+  cases:
+    - payload: '{"kind":"mammal","furColor":"brown","legCount":4}'
+      expected: decode_accept
+      branch: 0
+      note: "mapping points to Mammal, payload matches only Mammal — accept"
+
+- id: discriminator-unknown-accept-structural
+  schema: DiscriminatorOneOf
+  operationId: createAnimal
+  cases:
+    - payload: '{"kind":"reptile","furColor":"scaly","legCount":4}'
+      expected: decode_accept
+      branch: 0
+      note: "unknown kind, payload structurally matches Mammal — accept if Mammal permits"
+
+- id: discriminator-missing-accept-structural
+  schema: DiscriminatorOneOf
+  operationId: createAnimal
+  cases:
+    - payload: '{"furColor":"brown","legCount":4}'
+      expected: decode_accept
+      note: "no kind property, payload matches exactly one branch — accept"
+
+- id: allof-enum-intersection-accept-b
+  schema: AllOfEnumIntersection
+  operationId: postAllOfEnumIntersection
+  cases:
+    - payload: '"b"'
+      expected: decode_accept
+      note: "[a,b] ^ [b,c], value b — accept"
+
+- id: allof-enum-intersection-reject-a
+  schema: AllOfEnumIntersection
+  operationId: postAllOfEnumIntersection
+  cases:
+    - payload: '"a"'
+      expected: decode_reject
+      note: "[a,b] ^ [b,c], value a — reject (not in intersection)"
+
+- id: optional-impossible-allof-accept-missing
+  schema: OptionalImpossibleAllOf
+  operationId: postOptionalImpossibleAllOf
+  cases:
+    - payload: '{}'
+      expected: decode_accept
+      note: "string ^ int32 optional property, missing — accept object"
+
+- id: optional-impossible-allof-reject-present
+  schema: OptionalImpossibleAllOf
+  operationId: postOptionalImpossibleAllOf
+  cases:
+    - payload: '{"value":"hello"}'
+      expected: decode_reject
+      note: "string ^ int32 optional property, present — reject (cannot satisfy both)"
+
+- id: oas30-nullable-object-accept-null
+  note: "OAS 3.0 nullable object root, value null — accept and round-trip"
+  cases:
+    - payload: 'null'
+      expected: round_trip
+
+- id: optional-nullable-tri-state-missing
+  note: "optional nullable property missing — preserve missing state"
+  cases:
+    - payload: '{"label":"test"}'
+      expected: round_trip
+
+- id: optional-nullable-tri-state-null
+  note: "optional nullable property explicit null — preserve null state"
+  cases:
+    - payload: '{"label":"test","nullableValue":null}'
+      expected: round_trip
+
+- id: optional-nullable-tri-state-value
+  note: "optional nullable property present value — preserve value"
+  cases:
+    - payload: '{"label":"test","nullableValue":"hello"}'
+      expected: round_trip
+
+- id: response-union-200
+  note: "200 FullResource — return FullResource branch"
+  cases:
+    - response: { status: 200, body: '{"id":"x","name":"test","value":1,"createdAt":"2026-01-01T00:00:00Z"}' }
+      expected: decode_accept
+      branch: "200"
+
+- id: response-union-201
+  note: "201 SummaryResource — return SummaryResource branch"
+  cases:
+    - response: { status: 201, body: '{"id":"x","name":"test"}' }
+      expected: decode_accept
+      branch: "201"
+
+- id: response-union-204
+  note: "204 No Content — return void branch"
+  cases:
+    - response: { status: 204 }
+      expected: decode_accept
+      branch: "204"
+
+- id: range-default-exact-precedence
+  note: "exact 200 + 2XX + default — exact takes precedence"
+  cases:
+    - response: { status: 200, body: '"exact"' }
+      expected: decode_accept
+      branch: "200"
+    - response: { status: 202, body: '"accepted"' }
+      expected: decode_accept
+      branch: "2XX"
+    - response: { status: 301, body: '"fallback"' }
+      expected: decode_accept
+      branch: "default"
+
+- id: multipart-encoding-explicit-content-type
+  note: "multipart with explicit image/png encoding"
+  expected: compile_failure
+  # Current generator loses encoding metadata; compiled C++ will not emit
+  # the expected Content-Type header.  Lock until C-08 is implemented.
+
+- id: multipart-default-binary-no-encoding
+  note: "multipart binary without encoding metadata — emit specification default"
+  expected: compile_failure
+  # Same generator gap as explicit-content-type.
+
+- id: sse-strict-mode
+  note: "SSE without event-data extension — expose framed event contract"
+  expected: decode_accept
+  # Already wired: pure-sse-object.yaml exercises this path.
+
+- id: sse-typed-mode
+  note: "SSE with explicit JSON event-data schema — decode each payload"
+  expected: decode_accept
+  # Already wired: MultiContentStreamEvent exercises typed SSE.
+
+- id: allof-scalar-conflict
+  schema: AllOfScalarConflict
+  note: "allOf [string, integer] — true scalar conflict"
+  expected: generation_failure
+
+- id: oneof-string-string-enum-overlap
+  schema: OneOfStringStringEnum
+  operationId: setLabel
+  cases:
+    - payload: '"x"'
+      expected: decode_reject
+      note: "oneOf [string, string-enum[x,y,z]] — value x matches both branches"

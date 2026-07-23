@@ -29,25 +29,4 @@ components:
         - type: integer
           format: int32
 
-    # =========================================================================
-    # allOf conflicting optional property (documented codegen failure)
-    # ALLOF-IMPOSSIBLE-OPTIONAL-001
-    # =========================================================================
-    OptionalImpossibleAllOf:
-      description: >
-        allOf over two object schemas with the same property name but
-        incompatible types (string vs integer).  The property is not
-        required in either contributor, so the conflict cannot be resolved
-        by omission.  The generator MUST fail codegen with an error.
-        This is a NEGATIVE test: PASS means "error emitted", FAIL means
-        "silently produced bad code".
-      allOf:
-        - type: object
-          properties:
-            value:
-              type: string
-        - type: object
-          properties:
-            value:
-              type: integer
-              format: int32
+

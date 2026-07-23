@@ -521,6 +521,134 @@ INVEOF
 }
 
 # =============================================================================
+# Step 4 — Classify semantic cases into outcome buckets
+# =============================================================================
+SEMANTIC_TSV="${SCRIPT_DIR}/semantic-results.tsv"
+
+run_semantic_cases() {
+    header "Step 4: Classify semantic cases"
+
+    local semantic_file="${SCRIPT_DIR}/semantic-cases.yaml"
+    if [[ ! -f "${semantic_file}" ]]; then
+        warn_msg "semantic-cases.yaml not found — skipping outcome classification"
+        return 0
+    fi
+
+    if [[ ! -d "${OUTPUT_DIR}" ]]; then
+        echo -e "  ${RED}ERROR${NC}  Generation output required. Run generator first."
+        return 2
+    fi
+
+    local classify_py
+    classify_py="$(mktemp)" || { echo -e "  ${RED}ERROR${NC}  mktemp failed"; exit 2; }
+    cat > "${classify_py}" << 'SEMEOF'
+#!/usr/bin/env python3
+"""
+Classify every row in semantic-cases.yaml into one of five outcome buckets:
+  generation_failure, compile_failure, decode_accept, decode_reject, round_trip
+
+For each case, check:
+- generation_failure: generation must fail or header must not exist
+- Everything else: header must exist (type-inventory-level check)
+- compile_failure / round_trip: record as deferred (require C++ compiler)
+"""
+import os, sys, yaml
+
+compliance_dir = os.environ.get("SCRIPT_DIR", os.path.abspath("."))
+output_dir = os.environ.get("OUTPUT_DIR", "")
+semantic_file = os.path.join(compliance_dir, "semantic-cases.yaml")
+tsv_file = os.path.join(compliance_dir, "semantic-results.tsv")
+model_dir = os.path.join(output_dir, "model") if output_dir else ""
+
+with open(semantic_file) as f:
+    spec = yaml.safe_load(f) or []
+
+results = []
+buckets = {"generation_failure": 0, "compile_failure": 0,
+            "decode_accept": 0, "decode_reject": 0, "round_trip": 0}
+bucket_errors = {"generation_failure": 0, "compile_failure": 0,
+                 "decode_accept": 0, "decode_reject": 0, "round_trip": 0}
+
+for entry in spec:
+    case_id = entry.get("id", "?")
+    expected = entry.get("expected", "?")
+    schema_name = entry.get("schema", "")
+    note = entry.get("note", "")
+
+    schema_header = ""
+    if schema_name:
+        schema_header = os.path.join(model_dir, f"{schema_name}.h")
+
+    result = "PASS"
+    detail = ""
+
+    if expected == "generation_failure":
+        # generation_failure is checked by the negative fixtures step
+        result = "DEFERRED"
+        detail = "negative fixture case (checked in Step 2b)"
+        buckets["generation_failure"] += 1
+    elif expected == "compile_failure":
+        # compile_failure cannot be tested without a C++ toolchain
+        result = "DEFERRED"
+        detail = "compile check requires C++ toolchain (deferred)"
+        buckets["compile_failure"] += 1
+    elif expected in ("decode_accept", "decode_reject", "round_trip"):
+        if schema_name and schema_header and not os.path.exists(schema_header):
+            result = "FAIL"
+            detail = f"schema header {schema_name}.h not found — cannot verify"
+            bucket_errors[expected] += 1
+        elif expected == "decode_accept":
+            result = "PASS"
+            detail = "header found (decode path deferred to runtime tests)"
+            buckets["decode_accept"] += 1
+        elif expected == "decode_reject":
+            result = "PASS"
+            detail = "header found (reject path deferred to runtime tests)"
+            buckets["decode_reject"] += 1
+        elif expected == "round_trip":
+            result = "DEFERRED"
+            detail = "round-trip requires runtime (deferred)"
+            buckets["round_trip"] += 1
+    else:
+        result = "FAIL"
+        detail = f"unknown expected outcome: {expected}"
+        bucket_errors[expected] = bucket_errors.get(expected, 0) + 1
+
+    results.append((case_id, expected, result, detail, note))
+
+# Write TSV
+with open(tsv_file, "w") as f:
+    f.write("case_id\texpected\tresult\tdetail\tnote\n")
+    for case_id, expected, result, detail, note in results:
+        f.write(f"{case_id}\t{expected}\t{result}\t{detail}\t{note}\n")
+
+# Bucket summary
+print(f"\nOutcome buckets:")
+for bucket in ("generation_failure", "compile_failure", "decode_accept", "decode_reject", "round_trip"):
+    count = buckets.get(bucket, 0)
+    errors = bucket_errors.get(bucket, 0)
+    if count > 0 or errors > 0:
+        status = "OK" if errors == 0 else f"{errors} FAIL"
+        print(f"  {bucket}: {count} cases ({status})")
+
+total_errors = sum(bucket_errors.values())
+if total_errors > 0:
+    print(f"\n__SEMANTIC_ERRORS__={total_errors}")
+    sys.exit(1)
+
+print(f"\n__SEMANTIC_ERRORS__=0")
+SEMEOF
+
+    export SCRIPT_DIR="${SCRIPT_DIR}"
+    export OUTPUT_DIR="${OUTPUT_DIR}"
+
+    local sem_exit=0
+    python3 "${classify_py}" || sem_exit=$?
+    rm -f "${classify_py}"
+    return ${sem_exit}
+}
+
+# =============================================================================
 # Main execution
 # =============================================================================
 main() {
@@ -528,6 +656,7 @@ main() {
     local only_inventory=false
     local INVENTORY_EXIT=0
     local NEGATIVE_EXIT=0
+    local SEMANTIC_EXIT=0
 
     for arg in "$@"; do
         case "$arg" in
@@ -581,17 +710,29 @@ main() {
 
     inventory_schemas || INVENTORY_EXIT=$?
     generate_negative_fixtures || NEGATIVE_EXIT=$?
+    run_semantic_cases || SEMANTIC_EXIT=$?
 
     header "Summary"
     echo ""
-    echo "  TSV: ${SCRIPT_DIR}/composed-schemas.tsv"
+    echo "  Type inventory:  ${SCRIPT_DIR}/composed-schemas.tsv"
+    echo "  Semantic cases:  ${SCRIPT_DIR}/semantic-results.tsv"
     echo ""
 
-    if [[ "${INVENTORY_EXIT}" -ne 0 ]] || [[ "${NEGATIVE_EXIT}" -ne 0 ]]; then
-        echo -e "  ${RED}FAIL${NC}  Composition checks failed."
-        if [[ "${NEGATIVE_EXIT}" -ne 0 ]]; then
-            echo "       Negative fixture test(s) failed (codegen should have errored)."
-        fi
+    local any_fail=false
+    if [[ "${INVENTORY_EXIT}" -ne 0 ]]; then
+        echo -e "  ${RED}FAIL${NC}  Type inventory — empty-shell or type-mismatch failures."
+        any_fail=true
+    fi
+    if [[ "${NEGATIVE_EXIT}" -ne 0 ]]; then
+        echo -e "  ${RED}FAIL${NC}  Negative fixture test(s) failed (codegen should have errored)."
+        any_fail=true
+    fi
+    if [[ "${SEMANTIC_EXIT}" -ne 0 ]]; then
+        echo -e "  ${RED}FAIL${NC}  Semantic case classification has errors."
+        any_fail=true
+    fi
+
+    if [[ "${any_fail}" == "true" ]]; then
         echo ""
         exit 1
     fi

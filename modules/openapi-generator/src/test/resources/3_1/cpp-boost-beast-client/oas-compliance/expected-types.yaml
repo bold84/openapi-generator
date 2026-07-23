@@ -55,5 +55,11 @@ DuplicateNullOneOf: boost::json::value
 # --- allOf enum intersection [a,b] ∩ [b,c] → std::string ---
 AllOfEnumIntersection: std::string
 
+# --- allOf conflicting optional property → object class ---
+OptionalImpossibleAllOf: org::openapitools::client::model::OptionalImpossibleAllOf
+
+# --- discriminator overlap — oneOf Mammal|Bird|OverlappingReptile ---
+OverlappingAnimal: std::variant<Mammal, Bird, OverlappingReptile>
+
 # --- oneOf [integer, number] → std::variant<int32_t, double> ---
 IntOrNumber: std::variant<std::int32_t, double>

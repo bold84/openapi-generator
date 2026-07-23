@@ -278,7 +278,128 @@ paths:
                 $ref: "#/components/schemas/AllOfEnumIntersection"
 
   # ---------------------------------------------------------------------------
-  # 14. Endpoint exercising integer mathematical form (oneOf [integer, number])
+  # 13. Endpoint exercising optional impossible allOf property
+  #     Acceptance matrix: optional impossible allOf
+  # ---------------------------------------------------------------------------
+  /optional-impossible-allof:
+    post:
+      operationId: postOptionalImpossibleAllOf
+      summary: allOf with conflicting optional property types
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OptionalImpossibleAllOf"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OptionalImpossibleAllOf"
+
+  # ---------------------------------------------------------------------------
+  # 14. Endpoint exercising number-only accept (integer-as-number)
+  #     Acceptance matrix: number only
+  # ---------------------------------------------------------------------------
+  /number-only:
+    post:
+      operationId: postNumberOnly
+      summary: "type: number — accepts both 1 and 1.5"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: number
+      responses:
+        "200":
+          description: OK
+
+  # ---------------------------------------------------------------------------
+  # 15. Endpoint exercising response exact + 2XX + default
+  #     Acceptance matrix: range/default response
+  # ---------------------------------------------------------------------------
+  /range-default:
+    get:
+      operationId: getRangeDefault
+      summary: Response with exact 200, 2XX range, and default
+      responses:
+        "200":
+          description: Exact success
+          content:
+            application/json:
+              schema:
+                type: string
+        "2XX":
+          description: Other success
+          content:
+            application/json:
+              schema:
+                type: string
+        default:
+          description: Fallback
+          content:
+            application/json:
+              schema:
+                type: string
+
+  # ---------------------------------------------------------------------------
+  # 16. Endpoint exercising multipart binary without encoding metadata
+  #     Acceptance matrix: multipart default
+  # ---------------------------------------------------------------------------
+  /multipart-no-encoding:
+    post:
+      operationId: uploadMultipartNoEncoding
+      summary: Multipart with binary part, no encoding metadata
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                image:
+                  type: string
+                  format: binary
+                description:
+                  type: string
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+
+  # ---------------------------------------------------------------------------
+  # 17. Endpoint exercising discriminator known-overlap case
+  #     Acceptance matrix: discriminator known overlap
+  # ---------------------------------------------------------------------------
+  /discriminator-overlap:
+    post:
+      operationId: createOverlappingAnimal
+      summary: oneOf with discriminator where mapping branch also matches another branch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/OverlappingAnimal"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OverlappingAnimal"
+
+  # ---------------------------------------------------------------------------
+  # 18. Endpoint exercising integer mathematical form (oneOf [integer, number])
   #     Acceptance matrix: integer mathematical form
   # ---------------------------------------------------------------------------
   /int-or-number:
@@ -471,9 +592,11 @@ components:
     # This is the top-level oneOf + discriminator schema used by the endpoint.
     DiscriminatorOneOf:
       description: >
-        oneOf with discriminator.  The generator must use discriminator
-        propertyName to select the variant on decode, not trial-and-error
-        parsing.
+        oneOf with discriminator.  The discriminator property is only a
+        candidate-order hint; the oneOf/anyOf membership must always be
+        determined by structural validation, not by the discriminator value
+        alone.  A value matching the discriminator mapping but failing
+        structural validation MUST still be rejected.
       oneOf:
         - $ref: "#/components/schemas/Mammal"
         - $ref: "#/components/schemas/Bird"
@@ -686,6 +809,29 @@ components:
             - c
 
     # =========================================================================
+    # optional impossible allOf property (conflicting types, no required)
+    # ALLOF-IMPOSSIBLE-OPTIONAL-001
+    # Acceptance matrix: optional impossible allOf property — string ⊓ int32
+    # =========================================================================
+    OptionalImpossibleAllOf:
+      description: >
+        allOf over two object schemas with the same optional property
+        name but incompatible types (string vs integer).  The allOf merge
+        must produce a valid object model; the value property should be
+        structurally present but cannot satisfy both contributors at
+        runtime (missing → accept, present → reject).
+      allOf:
+        - type: object
+          properties:
+            value:
+              type: string
+        - type: object
+          properties:
+            value:
+              type: integer
+              format: int32
+
+    # =========================================================================
     # oneOf integer | number (mathematical integer form)
     # ONEOF-INTEGER-NUMBER-001
     # Acceptance matrix: integer mathematical form — oneOf [integer, number]
@@ -699,6 +845,46 @@ components:
         - type: integer
           format: int32
         - type: number
+
+    # =========================================================================
+    # discriminator overlap test — mapping points to Mammal but another
+    # branch may also structurally match
+    # OVERLAPPING-DISCRIMINATOR-001
+    # =========================================================================
+    OverlappingAnimal:
+      description: >
+        oneOf with discriminator where the mapping points to Mammal, but a
+        payload matching both Mammal AND another branch (OverlappingReptile)
+        structurally must still be rejected (oneOf exactly-one).
+      oneOf:
+        - $ref: "#/components/schemas/Mammal"
+        - $ref: "#/components/schemas/Bird"
+        - $ref: "#/components/schemas/OverlappingReptile"
+      discriminator:
+        propertyName: kind
+        mapping:
+          mammal: "#/components/schemas/Mammal"
+          bird: "#/components/schemas/Bird"
+          reptile: "#/components/schemas/OverlappingReptile"
+
+    OverlappingReptile:
+      description: >
+        Reptile schema that shares the furColor property with Mammal
+        (structurally overlapping).  Used to test known-overlap rejection.
+      type: object
+      properties:
+        kind:
+          type: string
+        furColor:
+          type: string
+        legCount:
+          type: integer
+          format: int32
+        scalePattern:
+          type: string
+      required:
+        - kind
+        - furColor
 
     # =========================================================================
     # format: unixtime property (non-standard format, but documented mapping)
