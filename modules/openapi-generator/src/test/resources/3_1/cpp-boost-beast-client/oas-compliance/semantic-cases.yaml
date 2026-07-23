@@ -161,23 +161,31 @@
 
 - id: oas30-nullable-object-accept-null
   note: "OAS 3.0 nullable object root, value null — accept and round-trip"
+  spec: nullable-object-regression.yaml
+  schema: NullableObjectRoot
   cases:
     - payload: 'null'
       expected: round_trip
 
 - id: optional-nullable-tri-state-missing
+  schema: TriStateContainer
+  spec: optional-nullable-regression.yaml
   note: "optional nullable property missing — preserve missing state"
   cases:
     - payload: '{"label":"test"}'
       expected: round_trip
 
 - id: optional-nullable-tri-state-null
+  schema: TriStateContainer
+  spec: optional-nullable-regression.yaml
   note: "optional nullable property explicit null — preserve null state"
   cases:
     - payload: '{"label":"test","nullableValue":null}'
       expected: round_trip
 
 - id: optional-nullable-tri-state-value
+  schema: TriStateContainer
+  spec: optional-nullable-regression.yaml
   note: "optional nullable property present value — preserve value"
   cases:
     - payload: '{"label":"test","nullableValue":"hello"}'
@@ -185,6 +193,7 @@
 
 - id: response-union-200
   note: "200 FullResource — return FullResource branch"
+  spec: response-union-regression.yaml
   cases:
     - response: { status: 200, body: '{"id":"x","name":"test","value":1,"createdAt":"2026-01-01T00:00:00Z"}' }
       expected: decode_accept
@@ -192,6 +201,7 @@
 
 - id: response-union-201
   note: "201 SummaryResource — return SummaryResource branch"
+  spec: response-union-regression.yaml
   cases:
     - response: { status: 201, body: '{"id":"x","name":"test"}' }
       expected: decode_accept
@@ -199,6 +209,7 @@
 
 - id: response-union-204
   note: "204 No Content — return void branch"
+  spec: response-union-regression.yaml
   cases:
     - response: { status: 204 }
       expected: decode_accept
@@ -206,6 +217,7 @@
 
 - id: range-default-exact-precedence
   note: "exact 200 + 2XX + default — exact takes precedence"
+  spec: fixtures.yaml
   cases:
     - response: { status: 200, body: '"exact"' }
       expected: decode_accept
@@ -219,13 +231,15 @@
 
 - id: multipart-encoding-explicit-content-type
   note: "multipart with explicit image/png encoding"
-  expected: compile_failure
-  # Current generator loses encoding metadata; compiled C++ will not emit
-  # the expected Content-Type header.  Lock until C-08 is implemented.
+  expected: decode_accept
+  # Current generator loses encoding metadata; compiled C++ compiles but
+  # does not emit the expected Content-Type header on the wire.  This is
+  # a wire-level gap, not a compile failure.  Lock until C-08 is
+  # implemented (then assertTrue in Java test).
 
 - id: multipart-default-binary-no-encoding
   note: "multipart binary without encoding metadata — emit specification default"
-  expected: compile_failure
+  expected: decode_accept
   # Same generator gap as explicit-content-type.
 
 - id: sse-strict-mode
@@ -233,22 +247,22 @@
   schema: Evt
   spec: pure-sse-object.yaml
   cases:
-    - payload: '{"data":"hello","id":"1","event":"update"}'
+    - payload: '{"msg":"hello"}'
       expected: decode_accept
-      note: "strict SSE event object with data, id, event fields"
+      note: "strict SSE event object with msg field"
 
 - id: sse-typed-mode
   schema: ResponseStreamEvent
   spec: composed-schema-lowering.yaml
   cases:
-    - payload: '{"event":"response.created","id":"req-1","createdAt":"2026-01-01T00:00:00Z"}'
+    - payload: '{"type":"response.created","id":"req-1"}'
       expected: decode_accept
       branch: "response.created"
-      note: "typed SSE event — discriminator maps to ResponseCreatedEvent"
-    - payload: '{"event":"response.completed","id":"req-1","createdAt":"2026-01-01T00:00:00Z","summary":"done"}'
+      note: "typed SSE event — discriminator key type maps to ResponseCreatedEvent"
+    - payload: '{"type":"response.completed","id":"req-1"}'
       expected: decode_accept
       branch: "response.completed"
-      note: "typed SSE event — discriminator maps to ResponseCompletedEvent"
+      note: "typed SSE event — discriminator key type maps to ResponseCompletedEvent"
 
 - id: allof-scalar-conflict
   schema: AllOfScalarConflict
@@ -278,30 +292,30 @@
       expected: decode_accept
       note: "OAS 3.0: type: number accepts float value"
 
-- id: oas30-nullable-property-tri-state-missing
+- id: oas30-tri-state-missing
+  schema: TriStateContainer
   spec: optional-nullable-regression.yaml
-  note: "OAS 3.0 nullable optional property missing — preserve missing state"
+  note: "OAS 3.0 optional nullable property missing — preserve missing state"
   cases:
-    - payload: '{"name":"test"}'
+    - payload: '{"label":"test"}'
       expected: round_trip
 
-- id: oas30-nullable-property-tri-state-null
+- id: oas30-tri-state-null
+  schema: TriStateContainer
   spec: optional-nullable-regression.yaml
-  note: "OAS 3.0 nullable optional property explicit null — preserve null state"
+  note: "OAS 3.0 optional nullable property explicit null — preserve null state"
   cases:
-    - payload: '{"name":"test","value":null}'
+    - payload: '{"label":"test","nullableValue":null}'
       expected: round_trip
 
-- id: oas30-nullable-property-tri-state-value
+- id: oas30-tri-state-value
+  schema: TriStateContainer
   spec: optional-nullable-regression.yaml
-  note: "OAS 3.0 nullable optional property present value — preserve value"
+  note: "OAS 3.0 optional nullable property present value — preserve value"
   cases:
-    - payload: '{"name":"test","value":"hello"}'
+    - payload: '{"label":"test","nullableValue":"hello"}'
       expected: round_trip
 
 - id: oas30-sse-mode-lock
-  spec: api-generation-regression.yaml
-  note: "OAS 3.0 SSE mode without x-oai-sseSchemaMode — must use default framed schema"
-  cases:
-    - payload: '{"data":"test","event":"message"}'
-      expected: decode_accept
+  note: "OAS 3.0 SSE mode — no dedicated OAS 3.0 SSE regression spec (3.1 pure-sse-object.yaml exercises framed pattern)"
+  expected: decode_accept

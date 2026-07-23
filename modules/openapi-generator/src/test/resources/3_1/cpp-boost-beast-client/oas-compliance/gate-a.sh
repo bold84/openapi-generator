@@ -600,21 +600,24 @@ def row_outcome(case_id, expected, schema_name, note, case_spec=None):
             result = "DEFERRED"
             detail = f"exercised via spec '{case_spec}' (separate test)"
             buckets[expected] += 1
-        elif schema_name and schema_header and not os.path.exists(schema_header):
-            # Header found for accept/reject — the model exists to be tested
-            # at runtime later.  Accept vs reject is distinguished by the
-            # expected outcome class, not by header presence alone.
+        elif schema_name:
+            if os.path.exists(schema_header):
+                # Model header exists — runtime decode/round-trip requires
+                # the Phase 2 runner.  Record as DEFERRED, not PASS.
+                result = "DEFERRED"
+                detail = f"header found ({expected} — runtime decode deferred)"
+                buckets[expected] += 1
+            else:
+                # Schema referenced but header missing → the row is bound
+                # to a schema that should exist in the generated output.
+                result = "FAIL"
+                detail = f"schema header {schema_name}.h not found — cannot verify"
+                bucket_errors[expected] += 1
+        else:
+            # No schema, no spec → unbound row.  Document the gap.
             result = "FAIL"
-            detail = f"schema header {schema_name}.h not found — cannot verify"
+            detail = "unbound semantic case — no schema or spec reference"
             bucket_errors[expected] += 1
-        elif expected in ("decode_accept", "decode_reject"):
-            result = "PASS"
-            detail = f"header found ({expected} path deferred to runtime)"
-            buckets[expected] += 1
-        elif expected == "round_trip":
-            result = "DEFERRED"
-            detail = "round-trip requires runtime (deferred)"
-            buckets["round_trip"] += 1
     else:
         result = "FAIL"
         detail = f"unknown expected outcome: {expected}"

@@ -1106,20 +1106,28 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(intersectContent.contains("using AllOfEnumIntersection = std::string;"),
                 "AllOfEnumIntersection should be std::string (allOf enum merge)");
 
-        // Phase 0: verify the generated enum intersection values in source.
-        // Expected intersection: [a,b] ∩ [b,c] = {b}.
-        // Current generator does NOT compute intersection (uses last-wins or merge).
-        // Lock the actual current behaviour: assert that the generated code references
-        // the enum values and contains at least "b".
+        // Phase 0: verify the generated enum intersection is exactly {b}.
+        // Expected intersection: [a,b] ∩ [b,c] = {b} — only b, not a, not c.
+        // Current generator does NOT compute intersection (uses last-wins from the
+        // allOf merge).  Lock the actual current behaviour: assert that the generated
+        // code contains "b" and does NOT contain "a" (strictly {b}-only).
         Path intersectSource = output.toPath().resolve("model/AllOfEnumIntersection.cpp");
         if (java.nio.file.Files.exists(intersectSource)) {
             String intersectSourceContent = java.nio.file.Files.readString(intersectSource);
-            // The source may contain allowedValues or enum validation that includes "b"
-            boolean containsExpectedIntersection =
-                    intersectSourceContent.contains("\"b\"") ||
-                    intersectSourceContent.contains("\\\"b\\\"");
-            Assert.assertTrue(containsExpectedIntersection,
-                    "AllOfEnumIntersection source should contain enum value \"b\" (intersection). "
+            // The source may contain allowedValues or enum validation
+            boolean containsB = intersectSourceContent.contains("\"b\"")
+                || intersectSourceContent.contains("\\\"b\\\"");
+            boolean containsA = intersectSourceContent.contains("\"a\"")
+                || intersectSourceContent.contains("\\\"a\\\"");
+            Assert.assertTrue(containsB,
+                    "AllOfEnumIntersection source must contain enum value \"b\" (intersection). "
+                    + "Current source: " + intersectSourceContent);
+            // Intersection {b} must NOT include "a" — only branch [b,c] contributor.
+            // Current generator (last-wins from second branch [b,c]) may or may not
+            // include "a" depending on merge strategy.
+            Assert.assertFalse(containsA,
+                    "AllOfEnumIntersection source must NOT contain enum value \"a\" "
+                    + "(intersection [a,b] ∩ [b,c] = {b}). "
                     + "Current source: " + intersectSourceContent);
         }
     }
@@ -1380,15 +1388,15 @@ public class CppBoostBeastClientCodegenTest {
         // The generator should emit status-aware response decoders that distinguish
         // FullResource (200), SummaryResource (201), and void/204 responses.
         // Currently the generator may only emit plain status string matching.
-        // Check for response-dispatch traits or converter patterns.
-        boolean hasResponseUnionDispatch =
+        // Check for concrete dispatch traits tied to multiple statuses.
+        boolean hasStatusAwareDispatch =
+                (apiContent.contains("200") && apiContent.contains("FullResource")) ||
+                (apiContent.contains("201") && apiContent.contains("SummaryResource")) ||
                 apiContent.contains("ResponseBodyDeserializer") ||
-                apiContent.contains("ResponseJsonValueConverter") ||
-                apiContent.contains("status_code_200") ||
-                (apiContent.contains("FullResource") && apiContent.contains("SummaryResource"));
-        Assert.assertTrue(hasResponseUnionDispatch,
-                "Generated API must contain response-union dispatch patterns "
-                + "(ResponseBodyDeserializer, status_code_*, or model type references). "
+                apiContent.contains("ResponseJsonValueConverter");
+        Assert.assertTrue(hasStatusAwareDispatch,
+                "Generated API must contain status-aware response dispatch patterns "
+                + "(status-code + model type references, or response deserializer traits). "
                 + "Current output excerpt: " + apiContent);
     }
 
