@@ -65,11 +65,21 @@ public class CppBoostBeastClientApiCodegenTest {
 
         String explicitThenDefaultMethod = extractMethod(generatedApiSource, "RegressionApi::getDefaultAfterExplicit(");
         int explicitResponsePosition = explicitThenDefaultMethod.indexOf("boost::beast::http::status(200)");
-        int defaultResponsePosition = explicitThenDefaultMethod.indexOf("Incompatible fallback");
         assertTrue(explicitResponsePosition >= 0);
-        assertTrue(defaultResponsePosition > explicitResponsePosition);
-        assertTrue(explicitThenDefaultMethod.contains(
-                "throw RegressionApiException(statusCode, \"Incompatible fallback\");"));
+        // Phase 0-9: response-union path returns GetDefaultAfterExplicitResponse
+        // instead of throwing for the fallback. The explicit 200 branch is
+        // handled first, then the default branch deserializes std::string.
+        assertTrue(explicitThenDefaultMethod.contains("executeWithMetadata"),
+                "Response-union method must use executeWithMetadata");
+        // 200 branch must deserialize int32_t before the default fallthrough
+        assertTrue(explicitThenDefaultMethod.contains("int32_t{"),
+                "200 branch must deserialize int32_t");
+        // Default branch deserializes std::string (no throw) at the end
+        assertTrue(explicitThenDefaultMethod.indexOf("std::string{") > explicitResponsePosition,
+                "Default branch must deserialize std::string after the 200 branch");
+        // No throw in the default branch (response union handles fallback)
+        assertFalse(explicitThenDefaultMethod.contains("throw RegressionApiException"),
+                "Default branch must not throw (response union handles fallback)");
 
         String voidDefaultMethod = extractMethod(generatedApiSource, "RegressionApi::getVoidDefault(");
         assertFalse(voidDefaultMethod.contains("Bodyless fallback"));
@@ -142,7 +152,8 @@ public class CppBoostBeastClientApiCodegenTest {
                 "headers[\"Content-Type\"] = requestContentType + \"; boundary=\" + multipartBoundary;"));
         assertTrue(multipartMethod.contains("serializeMultipartFormData(formParameters, multipartBoundary)"));
         assertTrue(multipartMethod.contains("\"file\","));
-        assertTrue(multipartMethod.contains("true);"));
+        assertTrue(multipartMethod.contains("true,\n        \"application/octet-stream\""),
+                "Binary file must pass true and application/octet-stream as 4th arg");
 
         String urlEncodedMethod = extractMethod(generatedApiSource, "RegressionApi::postUrlEncodedForm(");
         assertTrue(urlEncodedMethod.contains("serializeUrlEncodedFormData(formParameters)"));
