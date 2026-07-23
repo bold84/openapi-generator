@@ -103,13 +103,12 @@
       note: "two null branches, value null — two matches in oneOf"
 
 - id: discriminator-known-overlap-reject
-  schema: DiscriminatorOneOf
-  operationId: createAnimal
+  schema: OverlappingAnimal
+  operationId: createOverlappingAnimal
   cases:
     - payload: '{"kind":"mammal","furColor":"brown","legCount":4}'
-      expected: decode_accept
-      branch: 0
-      note: "mapping points to Mammal, payload matches only Mammal — accept"
+      expected: decode_reject
+      note: "mapping points to Mammal, but OverlappingReptile also matches — two matches for oneOf → reject"
 
 - id: discriminator-unknown-accept-structural
   schema: DiscriminatorOneOf
@@ -118,7 +117,7 @@
     - payload: '{"kind":"reptile","furColor":"scaly","legCount":4}'
       expected: decode_accept
       branch: 0
-      note: "unknown kind, payload structurally matches Mammal — accept if Mammal permits"
+      note: "unknown kind, payload structurally matches exactly one branch (Mammal) — accept"
 
 - id: discriminator-missing-accept-structural
   schema: DiscriminatorOneOf
@@ -126,7 +125,7 @@
   cases:
     - payload: '{"furColor":"brown","legCount":4}'
       expected: decode_accept
-      note: "no kind property, payload matches exactly one branch — accept"
+      note: "no kind property, payload structurally matches exactly one branch (Mammal) — accept"
 
 - id: allof-enum-intersection-accept-b
   schema: AllOfEnumIntersection
@@ -231,13 +230,25 @@
 
 - id: sse-strict-mode
   note: "SSE without event-data extension — expose framed event contract"
-  expected: decode_accept
-  # Already wired: pure-sse-object.yaml exercises this path.
+  schema: Evt
+  spec: pure-sse-object.yaml
+  cases:
+    - payload: '{"data":"hello","id":"1","event":"update"}'
+      expected: decode_accept
+      note: "strict SSE event object with data, id, event fields"
 
 - id: sse-typed-mode
-  note: "SSE with explicit JSON event-data schema — decode each payload"
-  expected: decode_accept
-  # Already wired: MultiContentStreamEvent exercises typed SSE.
+  schema: ResponseStreamEvent
+  spec: composed-schema-lowering.yaml
+  cases:
+    - payload: '{"event":"response.created","id":"req-1","createdAt":"2026-01-01T00:00:00Z"}'
+      expected: decode_accept
+      branch: "response.created"
+      note: "typed SSE event — discriminator maps to ResponseCreatedEvent"
+    - payload: '{"event":"response.completed","id":"req-1","createdAt":"2026-01-01T00:00:00Z","summary":"done"}'
+      expected: decode_accept
+      branch: "response.completed"
+      note: "typed SSE event — discriminator maps to ResponseCompletedEvent"
 
 - id: allof-scalar-conflict
   schema: AllOfScalarConflict
@@ -251,3 +262,46 @@
     - payload: '"x"'
       expected: decode_reject
       note: "oneOf [string, string-enum[x,y,z]] — value x matches both branches"
+
+# =============================================================================
+# OAS 3.0 regression cases (specified in separate spec files)
+# =============================================================================
+
+- id: oas30-number-only-accept-int
+  note: "OAS 3.0 type: number, value 1 — accept (integer is valid number)"
+  spec: nullable-object-regression.yaml
+  cases:
+    - payload: 1
+      expected: decode_accept
+      note: "OAS 3.0: type: number accepts integer value"
+    - payload: 1.5
+      expected: decode_accept
+      note: "OAS 3.0: type: number accepts float value"
+
+- id: oas30-nullable-property-tri-state-missing
+  spec: optional-nullable-regression.yaml
+  note: "OAS 3.0 nullable optional property missing — preserve missing state"
+  cases:
+    - payload: '{"name":"test"}'
+      expected: round_trip
+
+- id: oas30-nullable-property-tri-state-null
+  spec: optional-nullable-regression.yaml
+  note: "OAS 3.0 nullable optional property explicit null — preserve null state"
+  cases:
+    - payload: '{"name":"test","value":null}'
+      expected: round_trip
+
+- id: oas30-nullable-property-tri-state-value
+  spec: optional-nullable-regression.yaml
+  note: "OAS 3.0 nullable optional property present value — preserve value"
+  cases:
+    - payload: '{"name":"test","value":"hello"}'
+      expected: round_trip
+
+- id: oas30-sse-mode-lock
+  spec: api-generation-regression.yaml
+  note: "OAS 3.0 SSE mode without x-oai-sseSchemaMode — must use default framed schema"
+  cases:
+    - payload: '{"data":"test","event":"message"}'
+      expected: decode_accept

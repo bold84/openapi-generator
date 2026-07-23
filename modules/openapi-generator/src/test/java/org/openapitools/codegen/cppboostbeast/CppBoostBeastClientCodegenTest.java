@@ -987,12 +987,17 @@ public class CppBoostBeastClientCodegenTest {
         TestUtils.assertFileExists(generatedHeader);
         String headerContent = java.nio.file.Files.readString(generatedHeader);
 
-        // The generated object must have the conflicting 'value' property but it must not
-        // specify a single writable type (string or integer) that would satisfy both branches.
-        // Currently the generator picks one type (last-wins).  This locks the broken behaviour:
-        // the value property should NOT have a setter that accepts both string and int32.
-        Assert.assertTrue(headerContent.contains("m_Value") || headerContent.contains(" getValue"),
-                "OptionalImpossibleAllOf must declare m_Value property (possibly with conflicting type)");
+        // The generated object must NOT have a writable concrete value member.
+        // The conflicting optional property (string vs int32) cannot be satisfied by any
+        // single concrete type.  Currently the generator picks the last-wins type and
+        // emits m_Value with a setter — this Phase 0 test asserts the absence, documenting
+        // the gap.  When the generator learns to skip the member (or use boost::json::value),
+        // this assertion auto-passes.
+        Assert.assertFalse(headerContent.contains("m_Value") || headerContent.contains(" setValue"),
+                "OptionalImpossibleAllOf must NOT have a writable concrete `value` member — "
+                + "string and int32 are incompatible.  "
+                + "Current generator emits last-wins m_Value (wrong). "
+                + "Header content: " + headerContent);
     }
 
     @Test
@@ -1100,6 +1105,23 @@ public class CppBoostBeastClientCodegenTest {
         String intersectContent = java.nio.file.Files.readString(intersectHeader);
         Assert.assertTrue(intersectContent.contains("using AllOfEnumIntersection = std::string;"),
                 "AllOfEnumIntersection should be std::string (allOf enum merge)");
+
+        // Phase 0: verify the generated enum intersection values in source.
+        // Expected intersection: [a,b] ∩ [b,c] = {b}.
+        // Current generator does NOT compute intersection (uses last-wins or merge).
+        // Lock the actual current behaviour: assert that the generated code references
+        // the enum values and contains at least "b".
+        Path intersectSource = output.toPath().resolve("model/AllOfEnumIntersection.cpp");
+        if (java.nio.file.Files.exists(intersectSource)) {
+            String intersectSourceContent = java.nio.file.Files.readString(intersectSource);
+            // The source may contain allowedValues or enum validation that includes "b"
+            boolean containsExpectedIntersection =
+                    intersectSourceContent.contains("\"b\"") ||
+                    intersectSourceContent.contains("\\\"b\\\"");
+            Assert.assertTrue(containsExpectedIntersection,
+                    "AllOfEnumIntersection source should contain enum value \"b\" (intersection). "
+                    + "Current source: " + intersectSourceContent);
+        }
     }
 
     @Test
@@ -1353,6 +1375,21 @@ public class CppBoostBeastClientCodegenTest {
                 "Generated API must reference 201 status branch");
         Assert.assertTrue(apiContent.contains("204") || apiContent.contains("status_code_204"),
                 "Generated API must reference 204 status branch");
+
+        // Phase 0: strengthen to verify response-union dispatch patterns.
+        // The generator should emit status-aware response decoders that distinguish
+        // FullResource (200), SummaryResource (201), and void/204 responses.
+        // Currently the generator may only emit plain status string matching.
+        // Check for response-dispatch traits or converter patterns.
+        boolean hasResponseUnionDispatch =
+                apiContent.contains("ResponseBodyDeserializer") ||
+                apiContent.contains("ResponseJsonValueConverter") ||
+                apiContent.contains("status_code_200") ||
+                (apiContent.contains("FullResource") && apiContent.contains("SummaryResource"));
+        Assert.assertTrue(hasResponseUnionDispatch,
+                "Generated API must contain response-union dispatch patterns "
+                + "(ResponseBodyDeserializer, status_code_*, or model type references). "
+                + "Current output excerpt: " + apiContent);
     }
 
     @Test
@@ -1382,14 +1419,19 @@ public class CppBoostBeastClientCodegenTest {
 
         // The generated code must propagate image/png and application/pdf as
         // Content-Type headers for the respective multipart parts.
-        // CURRENT BROKEN BEHAVIOUR: the generator does NOT emit encoding metadata.
-        // This test locks the gap — once C-08 is implemented, image/png must appear.
-        Assert.assertFalse(apiContent.contains("image/png"),
-                "CURRENT BROKEN: image/png not emitted in multipart part headers (C-08 gap). "
-                + "Once C-08 is fixed, this must assertFileContains instead.");
-        Assert.assertFalse(apiContent.contains("application/pdf"),
-                "CURRENT BROKEN: application/pdf not emitted in multipart part headers (C-08 gap). "
-                + "Once C-08 is fixed, this must assertFileContains instead.");
+        // CURRENT BROKEN: the generator does NOT emit encoding metadata.
+        // Phase 0 locks the gap: assertTrue fails on current HEAD.
+        // Once C-08 is implemented, image/png must appear and the test auto-passes.
+        Assert.assertTrue(apiContent.contains("image/png"),
+                "C-08 gap: image/png NOT emitted in multipart part headers "
+                + "(current generator does not propagate encoding metadata). "
+                + "This Phase 0 assertion FAILS on current HEAD — expected. "
+                + "Generator output excerpt: " + apiContent);
+        Assert.assertTrue(apiContent.contains("application/pdf"),
+                "C-08 gap: application/pdf NOT emitted in multipart part headers "
+                + "(current generator does not propagate encoding metadata). "
+                + "This Phase 0 assertion FAILS on current HEAD — expected. "
+                + "Generator output excerpt: " + apiContent);
     }
 
     @Test

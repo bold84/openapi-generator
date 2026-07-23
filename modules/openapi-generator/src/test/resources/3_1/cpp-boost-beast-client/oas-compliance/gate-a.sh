@@ -544,13 +544,15 @@ run_semantic_cases() {
     cat > "${classify_py}" << 'SEMEOF'
 #!/usr/bin/env python3
 """
-Classify every row in semantic-cases.yaml into one of five outcome buckets:
-  generation_failure, compile_failure, decode_accept, decode_reject, round_trip
+Classify every semantic case row into outcome buckets.
 
-For each case, check:
-- generation_failure: generation must fail or header must not exist
-- Everything else: header must exist (type-inventory-level check)
-- compile_failure / round_trip: record as deferred (require C++ compiler)
+For entries with `cases[]`, each case is its own row with its own `expected`.
+Top-level `expected` is used only when there is no `cases[]` list.
+
+accept vs reject distinction: both require the model header to exist.
+If the header is missing, any decode_accept or decode_reject FAILS rather
+than PASS.  Accept and reject are not yet distinguished at runtime — that
+requires the Phase 2 runner — but they are reported in distinct buckets.
 """
 import os, sys, yaml
 
@@ -565,16 +567,12 @@ with open(semantic_file) as f:
 
 results = []
 buckets = {"generation_failure": 0, "compile_failure": 0,
-            "decode_accept": 0, "decode_reject": 0, "round_trip": 0}
+           "decode_accept": 0, "decode_reject": 0, "round_trip": 0}
 bucket_errors = {"generation_failure": 0, "compile_failure": 0,
                  "decode_accept": 0, "decode_reject": 0, "round_trip": 0}
 
-for entry in spec:
-    case_id = entry.get("id", "?")
-    expected = entry.get("expected", "?")
-    schema_name = entry.get("schema", "")
-    note = entry.get("note", "")
-
+def row_outcome(case_id, expected, schema_name, note, case_spec=None):
+    """Classify a single (expanded) row."""
     schema_header = ""
     if schema_name:
         schema_header = os.path.join(model_dir, f"{schema_name}.h")
@@ -583,28 +581,36 @@ for entry in spec:
     detail = ""
 
     if expected == "generation_failure":
-        # generation_failure is checked by the negative fixtures step
         result = "DEFERRED"
         detail = "negative fixture case (checked in Step 2b)"
         buckets["generation_failure"] += 1
-    elif expected == "compile_failure":
-        # compile_failure cannot be tested without a C++ toolchain
+        return (case_id, expected, result, detail, note)
+
+    if expected == "compile_failure":
         result = "DEFERRED"
         detail = "compile check requires C++ toolchain (deferred)"
         buckets["compile_failure"] += 1
-    elif expected in ("decode_accept", "decode_reject", "round_trip"):
-        if schema_name and schema_header and not os.path.exists(schema_header):
+        return (case_id, expected, result, detail, note)
+
+    if expected in ("decode_accept", "decode_reject", "round_trip"):
+        if case_spec:
+            # Case references a spec file generated separately from Gate A's
+            # primary spec.  Defer to the per-spec test; this entry documents
+            # the expected wiring.
+            result = "DEFERRED"
+            detail = f"exercised via spec '{case_spec}' (separate test)"
+            buckets[expected] += 1
+        elif schema_name and schema_header and not os.path.exists(schema_header):
+            # Header found for accept/reject — the model exists to be tested
+            # at runtime later.  Accept vs reject is distinguished by the
+            # expected outcome class, not by header presence alone.
             result = "FAIL"
             detail = f"schema header {schema_name}.h not found — cannot verify"
             bucket_errors[expected] += 1
-        elif expected == "decode_accept":
+        elif expected in ("decode_accept", "decode_reject"):
             result = "PASS"
-            detail = "header found (decode path deferred to runtime tests)"
-            buckets["decode_accept"] += 1
-        elif expected == "decode_reject":
-            result = "PASS"
-            detail = "header found (reject path deferred to runtime tests)"
-            buckets["decode_reject"] += 1
+            detail = f"header found ({expected} path deferred to runtime)"
+            buckets[expected] += 1
         elif expected == "round_trip":
             result = "DEFERRED"
             detail = "round-trip requires runtime (deferred)"
@@ -614,13 +620,36 @@ for entry in spec:
         detail = f"unknown expected outcome: {expected}"
         bucket_errors[expected] = bucket_errors.get(expected, 0) + 1
 
-    results.append((case_id, expected, result, detail, note))
+    return (case_id, expected, result, detail, note)
+
+for entry in spec:
+    case_id = entry.get("id", "?")
+    schema_name = entry.get("schema", "")
+    entry_spec = entry.get("spec", "")
+    cases_list = entry.get("cases", [])
+
+    if cases_list:
+        # Expand each nested case as its own row
+        for idx, c in enumerate(cases_list):
+            payload_desc = str(c.get("payload", c.get("response", "")))
+            sub_id = f"{case_id}[{idx}]"
+            exp = c.get("expected", entry.get("expected", "?"))
+            note = c.get("note", entry.get("note", f"payload {idx}"))
+            # Use per-case spec override, then entry-level spec, then default
+            case_spec = c.get("spec", entry_spec if entry_spec else None)
+            results.append(row_outcome(sub_id, exp, schema_name, note, case_spec))
+    else:
+        # Top-level expected only (no cases list)
+        exp = entry.get("expected", "?")
+        note = entry.get("note", "")
+        case_spec = entry_spec if entry_spec else None
+        results.append(row_outcome(case_id, exp, schema_name, note, case_spec))
 
 # Write TSV
 with open(tsv_file, "w") as f:
     f.write("case_id\texpected\tresult\tdetail\tnote\n")
-    for case_id, expected, result, detail, note in results:
-        f.write(f"{case_id}\t{expected}\t{result}\t{detail}\t{note}\n")
+    for r in results:
+        f.write("\t".join(str(v) for v in r) + "\n")
 
 # Bucket summary
 print(f"\nOutcome buckets:")

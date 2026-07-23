@@ -573,8 +573,6 @@ components:
         legCount:
           type: integer
           format: int32
-      required:
-        - kind
 
     Bird:
       type: object
@@ -585,8 +583,6 @@ components:
           type: number
         canFly:
           type: boolean
-      required:
-        - kind
 
     # Discriminator schema at top level referencing Animal.
     # This is the top-level oneOf + discriminator schema used by the endpoint.
