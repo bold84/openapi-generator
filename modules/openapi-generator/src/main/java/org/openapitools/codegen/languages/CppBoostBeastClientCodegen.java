@@ -2,6 +2,7 @@ package org.openapitools.codegen.languages;
 
 
 import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import org.apache.commons.lang3.StringUtils;
@@ -789,6 +790,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         supportingFiles.add(new SupportingFile("http-client-impl-header.mustache", "api", "HttpClientImpl.h"));
         supportingFiles.add(new SupportingFile("http-client-impl-source.mustache", "api", "HttpClientImpl.cpp"));
         supportingFiles.add(new SupportingFile("anytype-header.mustache", "model", "AnyType.h"));
+        supportingFiles.add(new SupportingFile("MultipartWireTest.cpp.mustache", "test", "MultipartWireTest.cpp"));
 
         languageSpecificPrimitives = new HashSet<String>(
                 Arrays.asList("int", "char", "bool", "long", "float", "double", "int32_t", "int64_t"));
@@ -4516,6 +4518,29 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
         return super.toDefaultValue(codegenProperty, schema);
+    }
+
+    @Override
+    public void setParameterEncodingValues(CodegenParameter codegenParameter, MediaType mediaType) {
+        super.setParameterEncodingValues(codegenParameter, mediaType);
+        // Detect Encoding Object headers that cannot be propagated to
+        // multipart parts. When an Encoding Object specifies headers,
+        // emit a diagnostic instead of silently dropping them.
+        if (codegenParameter.isFormParam && mediaType != null
+                && mediaType.getEncoding() != null) {
+            io.swagger.v3.oas.models.media.Encoding encoding =
+                    mediaType.getEncoding().get(codegenParameter.baseName);
+            if (encoding != null && encoding.getHeaders() != null
+                    && !encoding.getHeaders().isEmpty()) {
+                LOGGER.warn("Encoding Object on form parameter '{}' specifies {} header(s) "
+                        + "that are not propagated to the multipart part. "
+                        + "Generated code uses only the contentType field. "
+                        + "Header keys: {}",
+                        codegenParameter.baseName,
+                        encoding.getHeaders().size(),
+                        encoding.getHeaders().keySet());
+            }
+        }
     }
 
     @Override

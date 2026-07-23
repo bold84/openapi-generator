@@ -171,8 +171,21 @@ std::string toFormParameterValue(const std::optional<T>& value) {
     return "";
 }
 
+// Arrays of model types (HasFormToJsonValue): serialize as JSON array.
 template<typename T>
-std::string toFormParameterValue(const std::vector<T>& values) {
+typename std::enable_if<HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const std::vector<T>& values) {
+    boost::json::array jsonArray;
+    for (const auto& value : values) {
+        jsonArray.push_back(value.toJsonValue());
+    }
+    return boost::json::serialize(jsonArray);
+}
+
+// Arrays of types without toJsonValue: comma-delimited (OAS form-style).
+template<typename T>
+typename std::enable_if<!HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const std::vector<T>& values) {
     std::stringstream serializedValues;
     const char* separator = "";
     for (const auto& value : values) {
@@ -1079,12 +1092,6 @@ void testMultipartWireLevel() {
 }
 
 } // namespace
-
-struct RunMultipartSelfTest {
-    RunMultipartSelfTest() {
-        testMultipartWireLevel();
-    }
-} runMultipartSelfTest;
 
 #endif // MULTIPART_ENCODING_SELF_TEST
 

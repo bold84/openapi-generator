@@ -42,8 +42,11 @@
         toFormParameterValue({{{paramName}}}),
         {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}}{{#contentType}},
         "{{{contentType}}}"{{/contentType}}{{^contentType}}{{#isFile}},
-        "application/octet-stream"{{/isFile}}{{#isBinary}},
-        "application/octet-stream"{{/isBinary}}{{/contentType}});
+        "application/octet-stream"{{/isFile}}{{^isFile}}{{#isBinary}},
+        "application/octet-stream"{{/isBinary}}{{/isFile}}{{^isFile}}{{#isString}},
+        "text/plain"{{/isString}}{{/isFile}}{{^isFile}}{{#isMap}},
+        "application/json"{{/isMap}}{{/isFile}}{{^isFile}}{{#isArray}},
+        "application/json"{{/isArray}}{{/isFile}}{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
@@ -433,8 +436,11 @@
         toFormParameterValue({{{paramName}}}),
         {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}}{{#contentType}},
         "{{{contentType}}}"{{/contentType}}{{^contentType}}{{#isFile}},
-        "application/octet-stream"{{/isFile}}{{#isBinary}},
-        "application/octet-stream"{{/isBinary}}{{/contentType}});
+        "application/octet-stream"{{/isFile}}{{^isFile}}{{#isBinary}},
+        "application/octet-stream"{{/isBinary}}{{/isFile}}{{^isFile}}{{#isString}},
+        "text/plain"{{/isString}}{{/isFile}}{{^isFile}}{{#isMap}},
+        "application/json"{{/isMap}}{{/isFile}}{{^isFile}}{{#isArray}},
+        "application/json"{{/isArray}}{{/isFile}}{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
