@@ -224,6 +224,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     private final Logger LOGGER = LoggerFactory.getLogger(CppBoostBeastClientCodegen.class);
     /** Tracks model names resolved as oneOf/anyOf variant types for shared_ptr exclusion. */
     private final Set<String> variantModels = new HashSet<>();
+    private final Set<String> hasDuplicateTypesModels = new HashSet<>();
     /** Caches resolved C++ types for composed models, keyed by model name.
      *  Populated during Phase 1 of postProcessModels and used by Phase 1b to
      *  transitively resolve $ref chains through model aliases (e.g., ModelIds
@@ -1539,6 +1540,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             cm.vendorExtensions.put("x-cpp-composition-branches", templateMap);
             if (hasDuplicateTypes) {
                 cm.vendorExtensions.put("x-cpp-has-duplicate-types", true);
+                hasDuplicateTypesModels.add(cm.classname);
             }
         } else {
             // Fallback: build branch maps from the composed branches when no
@@ -1572,6 +1574,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             cm.vendorExtensions.put("x-cpp-composition-branches", fallbackMap);
             if (hasDuplicateTypes) {
                 cm.vendorExtensions.put("x-cpp-has-duplicate-types", true);
+                hasDuplicateTypesModels.add(cm.classname);
             }
         }
 
@@ -2864,6 +2867,17 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 hasDefaultResponse = true;
                 response.vendorExtensions.put(X_CODEGEN_DEFAULT_RESPONSE_IS_RETURN_COMPATIBLE,
                         operation.returnType != null && Objects.equals(operation.returnType, response.dataType));
+            }
+
+            // When the response type is a CompositionBranchValue model (has
+            // duplicate C++ branch types), the API must use the model's free
+            // function fromJsonValue_{classname} for descriptor-guided branch
+            // selection instead of the generic variant converter.
+            if (response.dataType != null) {
+                String unwrapped = stripSharedPtr(response.dataType);
+                if (hasDuplicateTypesModels.contains(unwrapped)) {
+                    response.vendorExtensions.put("x-cpp-use-model-from-json-value", true);
+                }
             }
         }
         operation.vendorExtensions.put(X_CODEGEN_HAS_DEFAULT_RESPONSE, hasDefaultResponse);

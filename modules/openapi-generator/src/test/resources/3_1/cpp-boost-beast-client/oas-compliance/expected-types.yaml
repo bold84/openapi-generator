@@ -14,8 +14,8 @@
 # std::string / double / bool for anyOf primitive aliases,
 # and fully qualified class names for object schemas.
 
-# --- anyOf string + string-enum → std::string collapse ---
-AnyOfStringStringEnum: std::string
+# --- anyOf string + string-enum → CompositionBranchValue alias (validators preserved) ---
+AnyOfStringStringEnum: std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>>
 
 # --- oneOf string + string-enum — do NOT blind-collapse; exclusivity unrepresentable as typed union ---
 OneOfStringStringEnum: boost::json::value
@@ -43,14 +43,14 @@ MultipartMetaField: std::variant<std::vector<std::uint8_t>, MetaRecord>
 # --- oneOf constrained numbers (multipleOf) — both branches type:number → CompositionBranchValue variant ---
 ConstrainedNumber: std::variant<CompositionBranchValue<0, double>, CompositionBranchValue<1, double>>
 
-# --- anyOf enum union [red] ∪ [blue] → std::string ---
-AnyOfEnumUnion: std::string
+# --- anyOf enum union [red] ∪ [blue] → CompositionBranchValue alias (validators preserved) ---
+AnyOfEnumUnion: std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>>
 
-# --- all-null anyOf → boost::json::value ---
-AllNullAnyOf: boost::json::value
+# --- all-null anyOf → CompositionBranchValue alias (null cardinality preserved) ---
+AllNullAnyOf: std::variant<CompositionBranchValue<0, std::nullptr_t>, CompositionBranchValue<1, std::nullptr_t>>
 
-# --- duplicate-null oneOf → boost::json::value ---
-DuplicateNullOneOf: boost::json::value
+# --- duplicate-null oneOf → CompositionBranchValue alias (null cardinality preserved) ---
+DuplicateNullOneOf: std::variant<CompositionBranchValue<0, std::nullptr_t>, CompositionBranchValue<1, std::nullptr_t>>
 
 # --- allOf enum intersection [a,b] ∩ [b,c] → std::string ---
 AllOfEnumIntersection: std::string

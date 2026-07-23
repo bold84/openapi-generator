@@ -1115,6 +1115,58 @@ public class CppBoostBeastClientCodegenTest {
                 "ConstrainedNumber fromJsonValue must construct CompositionBranchValue<0, "
                         + "double> from the converted branch value; content: "
                         + constraintSourceContent.substring(0, Math.min(500, constraintSourceContent.length())));
+
+        // Verify enum-only anyOf preserves validators (not collapsed to std::string)
+        Path enumUnionHeader = output.toPath().resolve("model/AnyOfEnumUnion.h");
+        TestUtils.assertFileExists(enumUnionHeader);
+        String enumUnionHeaderContent = java.nio.file.Files.readString(enumUnionHeader);
+        Assert.assertTrue(
+                enumUnionHeaderContent.contains("CompositionBranchValue"),
+                "AnyOfEnumUnion (anyOf enum+enum) must use CompositionBranchValue "
+                        + "to preserve validators (not collapsed to std::string); content: "
+                        + enumUnionHeaderContent.substring(0, Math.min(500, enumUnionHeaderContent.length())));
+        Path enumUnionSource = output.toPath().resolve("model/AnyOfEnumUnion.cpp");
+        TestUtils.assertFileExists(enumUnionSource);
+        String enumUnionSourceContent = java.nio.file.Files.readString(enumUnionSource);
+        Assert.assertTrue(
+                enumUnionSourceContent.contains("validate_AnyOfEnumUnion_branch_0")
+                        && enumUnionSourceContent.contains("validate_AnyOfEnumUnion_branch_1"),
+                "AnyOfEnumUnion source must contain per-branch validators for "
+                        + "enum rejection; content: "
+                        + enumUnionSourceContent.substring(0, Math.min(500, enumUnionSourceContent.length())));
+
+        // Verify all-null anyOf preserves null cardinality with tagged type
+        Path allNullHeader = output.toPath().resolve("model/AllNullAnyOf.h");
+        TestUtils.assertFileExists(allNullHeader);
+        String allNullContent = java.nio.file.Files.readString(allNullHeader);
+        Assert.assertTrue(
+                allNullContent.contains("CompositionBranchValue<0, std::nullptr_t>"),
+                "AllNullAnyOf must use CompositionBranchValue<0, std::nullptr_t> "
+                        + "to preserve null branch identity; content: "
+                        + allNullContent.substring(0, Math.min(500, allNullContent.length())));
+
+        // Verify duplicate-null oneOf preserves null cardinality
+        Path dupNullHeader = output.toPath().resolve("model/DuplicateNullOneOf.h");
+        TestUtils.assertFileExists(dupNullHeader);
+        String dupNullContent = java.nio.file.Files.readString(dupNullHeader);
+        Assert.assertTrue(
+                dupNullContent.contains("CompositionBranchValue<0, std::nullptr_t>"),
+                "DuplicateNullOneOf must use CompositionBranchValue<0, std::nullptr_t> "
+                        + "to preserve null branch identity; content: "
+                        + dupNullContent.substring(0, Math.min(500, dupNullContent.length())));
+
+        // Verify API response deserialization uses model free function
+        // for CompositionBranchValue variants (not generic tryFirstVariantAlternative)
+        Path apiSource = output.toPath().resolve("api/DefaultApi.cpp");
+        if (java.nio.file.Files.exists(apiSource)) {
+            String apiSourceContent = java.nio.file.Files.readString(apiSource);
+            Assert.assertTrue(
+                    apiSourceContent.contains("fromJsonValue_ConstrainedNumber(...)"),
+                    "API response for ConstrainedNumber must use "
+                            + "fromJsonValue_ConstrainedNumber (descriptor-guided) "
+                            + "instead of generic ResponseBodyDeserializer; content: "
+                            + apiSourceContent.substring(0, Math.min(500, apiSourceContent.length())));
+        }
     }
 
     @Test

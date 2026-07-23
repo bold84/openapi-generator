@@ -212,11 +212,30 @@
 {{^vendorExtensions.x-codegen-streaming-response}}
 {{#returnType}}
 {{#dataType}}
-        {{#vendorExtensions.x-codegen-response-is-oneof}}OneOf{{/vendorExtensions.x-codegen-response-is-oneof}}ResponseBodyDeserializer<{{{dataType}}}>::deserialize(
+        {{#vendorExtensions.x-codegen-response-is-oneof}}
+        {{#vendorExtensions.x-cpp-use-model-from-json-value}}
+        deserializedResponse = fromJsonValue_{{dataType}}(boost::json::parse(responseBody));
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{^vendorExtensions.x-cpp-use-model-from-json-value}}
+        OneOfResponseBodyDeserializer<{{{dataType}}}>::deserialize(
             deserializedResponse,
             responseBody,
             responseContentType,
             {{#vendorExtensions.x-codegen-empty-body-tolerant}}true{{/vendorExtensions.x-codegen-empty-body-tolerant}}{{^vendorExtensions.x-codegen-empty-body-tolerant}}false{{/vendorExtensions.x-codegen-empty-body-tolerant}});
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{/vendorExtensions.x-codegen-response-is-oneof}}
+        {{^vendorExtensions.x-codegen-response-is-oneof}}
+        {{#vendorExtensions.x-cpp-use-model-from-json-value}}
+        deserializedResponse = fromJsonValue_{{dataType}}(boost::json::parse(responseBody));
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{^vendorExtensions.x-cpp-use-model-from-json-value}}
+        ResponseBodyDeserializer<{{{dataType}}}>::deserialize(
+            deserializedResponse,
+            responseBody,
+            responseContentType,
+            {{#vendorExtensions.x-codegen-empty-body-tolerant}}true{{/vendorExtensions.x-codegen-empty-body-tolerant}}{{^vendorExtensions.x-codegen-empty-body-tolerant}}false{{/vendorExtensions.x-codegen-empty-body-tolerant}});
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{/vendorExtensions.x-codegen-response-is-oneof}}
 {{/dataType}}
         return deserializedResponse;
 {{/returnType}}

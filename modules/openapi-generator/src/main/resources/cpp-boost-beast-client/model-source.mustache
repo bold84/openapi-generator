@@ -764,6 +764,7 @@ ValidationResult validate_{{validator-id}}(
     // generic branch converter.
     auto convertMatchedBranch = [&]() -> void {
         {{#vendorExtensions.x-cpp-has-duplicate-types}}
+        {{#vendorExtensions.x-cpp-composition-branches}}
         {{#branches}}
         if (matchedBranchIndex == {{branch-index}}) {
             {{{inner-cpp-type}}} converted;
@@ -774,6 +775,7 @@ ValidationResult validate_{{validator-id}}(
             result = {{classname}}({{{storage-cpp-type}}}{std::move(converted)});
         }
         {{/branches}}
+        {{/vendorExtensions.x-cpp-composition-branches}}
         {{/vendorExtensions.x-cpp-has-duplicate-types}}
         {{^vendorExtensions.x-cpp-has-duplicate-types}}
         if (!tryVariantBranches(value, result,
