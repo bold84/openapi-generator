@@ -292,6 +292,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     private static final String FORMAT_ASSERTION_POLICY_ANNOTATION = "annotation";
     private static final String FORMAT_ASSERTION_POLICY_STRICT = "strict";
 
+    /** SSE schema interpretation mode. */
+    private String sseSchemaMode = "representation";
+    private static final String SSE_SCHEMA_MODE_REPRESENTATION = "representation";
+    private static final String SSE_SCHEMA_MODE_JSON_EVENT_DATA = "jsonEventData";
+    /** Per-operation vendor extension to opt-in to typed event-data decoding. */
+    private static final String X_SSE_EVENT_DATA_SCHEMA = "x-sse-event-data-schema";
+
     private static final String X_CODEGEN_DEFAULT_RESPONSE_IS_RETURN_COMPATIBLE =
             "x-codegen-default-response-is-return-compatible";
     private static final String X_CODEGEN_EMPTY_BODY_TOLERANT = "x-codegen-empty-body-tolerant";
@@ -781,6 +788,21 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         formatAssertionOption.defaultValue(FORMAT_ASSERTION_POLICY_ANNOTATION);
         cliOptions.add(formatAssertionOption);
 
+        CliOption sseSchemaModeOption = new CliOption("sseSchemaMode",
+                "SSE schema interpretation mode for text/event-stream responses."
+                + " 'representation' (default): the response schema describes the"
+                + " text/event-stream media representation; generate framed events"
+                + " with raw data strings, event type, id, and retry fields."
+                + " 'jsonEventData': the response schema describes each JSON data"
+                + " field; decode each event's data payload against the schema."
+                + " Use the x-sse-event-data-schema vendor extension for per-operation"
+                + " opt-in to typed event-data decoding.");
+        sseSchemaModeOption.defaultValue(SSE_SCHEMA_MODE_REPRESENTATION);
+        sseSchemaModeOption.addEnum(SSE_SCHEMA_MODE_REPRESENTATION,
+                "Strict mode — schema describes media representation");
+        sseSchemaModeOption.addEnum(SSE_SCHEMA_MODE_JSON_EVENT_DATA,
+                "Schema describes each JSON event data payload");
+        cliOptions.add(sseSchemaModeOption);
 
         supportingFiles.add(new SupportingFile("validation-types.mustache", "model", "ValidationTypes.h"));
         supportingFiles.add(new SupportingFile("NullableField.h.mustache", "model", "NullableField.h"));
@@ -3541,6 +3563,17 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
         additionalProperties.put("formatAssertionPolicy", formatAssertionPolicy);
+
+        // Phase 9: SSE schema interpretation mode.
+        if (additionalProperties.containsKey("sseSchemaMode")) {
+            String mode = additionalProperties.get("sseSchemaMode").toString().trim().toLowerCase(Locale.ROOT);
+            if (SSE_SCHEMA_MODE_JSON_EVENT_DATA.equals(mode)) {
+                sseSchemaMode = SSE_SCHEMA_MODE_JSON_EVENT_DATA;
+            } else {
+                sseSchemaMode = SSE_SCHEMA_MODE_REPRESENTATION;
+            }
+        }
+        additionalProperties.put("sseSchemaMode", sseSchemaMode);
     }
 
     /**
@@ -3962,6 +3995,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         operation.vendorExtensions.put(X_CODEGEN_HAS_DEFAULT_RESPONSE, hasDefaultResponse);
 
         // Detect text/event-stream produces for SSE streaming responses.
+        // Phase 9: sseSchemaMode controls whether the response schema
+        // describes the media representation (strict/default) or each JSON
+        // event data payload (jsonEventData). The x-sse-event-data-schema
+        // vendor extension on an operation can override the global mode.
+        //
         // When an operation produces ONLY text/event-stream, it is a pure
         // SSE endpoint and the operation-level flag is set, causing the
         // return type to be wrapped in std::vector<...>.
@@ -3972,6 +4010,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // Note: Dual-content detection is driven by produces media types, not
         // by the presence of a "stream" query parameter (the parameter is
         // a client-side convention for choosing between JSON and SSE).
+        //
+        // The WHATWG framer (SseEventFramer) is always independent from JSON
+        // conversion — it operates on raw bytes and fires string data payloads.
+        // JSON conversion is applied only in jsonEventData mode.
         if (operation.produces != null && !operation.produces.isEmpty()) {
             boolean hasEventStream = false;
             boolean hasJsonStream = false;
@@ -3986,9 +4028,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             boolean isPureSse = hasEventStream && !hasJsonStream;
             boolean isDualContent = hasEventStream && hasJsonStream;
             operation.vendorExtensions.put("x-codegen-streaming-response", isPureSse);
-                // For pure SSE ops, flag all 2xx responses as streaming and
-                // set the stripped element type (without shared_ptr) for use in
-                // the event vector element and converter name.
+            // Determine whether to apply typed event-data decoding.
+            // jsonEventData mode or per-operation x-sse-event-data-schema
+            // opt-in triggers typed JSON-per-data conversion.
+            boolean useJsonEventData = SSE_SCHEMA_MODE_JSON_EVENT_DATA.equals(sseSchemaMode)
+                    || Boolean.TRUE.equals(
+                        operation.vendorExtensions.get(X_SSE_EVENT_DATA_SCHEMA));
+            // For pure SSE ops, flag all 2xx responses as streaming and
+            // set the stripped element type (without shared_ptr) for use in
+            // the event vector element and converter name.
             // For dual-content ops, mark SSE responses (different datatype from returnType)
             // as streaming so the stream method template can identify them.
             // Also mark each response with x-codegen-return-compatible so the normal
@@ -3997,23 +4045,33 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             for (CodegenResponse response : operation.responses) {
                     if (isPureSse) {
                     response.vendorExtensions.put("x-codegen-streaming-response", true);
-                    if (isOneOfResponse(response)
-                            || isOneOfMediaType(response, "text/event-stream")) {
-                        operation.vendorExtensions.put(X_CODEGEN_STREAM_IS_ONE_OF, true);
-                    }
-                    if (response.dataType != null) {
-                        String streamElementType = stripSharedPtr(response.dataType);
-                        // Only set element type for model types (uppercase first char).
-                        // Primitives like std::string don't have fromJsonValue_ free
-                        // functions and would produce invalid identifiers like
-                        // fromJsonValue_std::string.
-                        if (!streamElementType.startsWith("std::") && !streamElementType.startsWith("boost::")
-                                && Character.isUpperCase(streamElementType.charAt(0))) {
-                            response.vendorExtensions.put("x-codegen-stream-element-type",
-                                    streamElementType);
-                            // Propagate to operation level for use outside {{#responses}} scope
-                            operation.vendorExtensions.put("x-codegen-stream-element-type",
-                                    streamElementType);
+                    if (useJsonEventData) {
+                        // Typed event-data mode: emit oneOf metadata for JSON conversion.
+                        if (isOneOfResponse(response)
+                                || isOneOfMediaType(response, "text/event-stream")) {
+                            operation.vendorExtensions.put(X_CODEGEN_STREAM_IS_ONE_OF, true);
+                            // Also emit with renamed SSE-specific extension.
+                            operation.vendorExtensions.put("x-codegen-sse-event-data-is-oneof", true);
+                        }
+                        if (response.dataType != null) {
+                            String eventDataType = stripSharedPtr(response.dataType);
+                            // Only set element type for model types (uppercase first char).
+                            // Primitives like std::string don't have fromJsonValue_ free
+                            // functions and would produce invalid identifiers like
+                            // fromJsonValue_std::string.
+                            if (!eventDataType.startsWith("std::") && !eventDataType.startsWith("boost::")
+                                    && Character.isUpperCase(eventDataType.charAt(0))) {
+                                response.vendorExtensions.put("x-codegen-stream-element-type",
+                                        eventDataType);
+                                // Propagate to operation level for use outside {{#responses}} scope
+                                operation.vendorExtensions.put("x-codegen-stream-element-type",
+                                        eventDataType);
+                                // Also emit with renamed SSE-specific extension.
+                                response.vendorExtensions.put("x-codegen-sse-event-data-type",
+                                        eventDataType);
+                                operation.vendorExtensions.put("x-codegen-sse-event-data-type",
+                                        eventDataType);
+                            }
                         }
                     }
                 } else if (isDualContent && response.is2xx && response.dataType != null
@@ -4023,6 +4081,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         String streamElementType = stripSharedPtr(response.dataType);
                         response.vendorExtensions.put("x-codegen-stream-element-type",
                                 streamElementType);
+                        if (useJsonEventData) {
+                            response.vendorExtensions.put("x-codegen-sse-event-data-type",
+                                    streamElementType);
+                        }
                     }
                 }
             }
@@ -4058,8 +4120,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             // Derive a valid C++ identifier for the fromJsonValue_ converter.
                             // Strip std::shared_ptr<X> wrapper down to just X.
                             sseBaseModelName = stripSharedPtr(rawType);
-                            if (isOneOfSchema(sseSchema)) {
+                            if (useJsonEventData && isOneOfSchema(sseSchema)) {
                                 operation.vendorExtensions.put(X_CODEGEN_DUAL_STREAM_IS_ONE_OF, true);
+                                operation.vendorExtensions.put("x-codegen-dual-sse-event-data-is-oneof", true);
                             }
                             break;
                         }
@@ -4087,8 +4150,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     }
                 }
                 if (sseReturnType != null && sseBaseModelName != null) {
-                    if (isOneOfType(sseReturnType)) {
+                    if (useJsonEventData && isOneOfType(sseReturnType)) {
                         operation.vendorExtensions.put(X_CODEGEN_DUAL_STREAM_IS_ONE_OF, true);
+                        operation.vendorExtensions.put("x-codegen-dual-sse-event-data-is-oneof", true);
                     }
                     operation.vendorExtensions.put("x-codegen-dual-content", true);
                     // Full C++ type for the vector element (may contain std::shared_ptr<...>)
@@ -4099,12 +4163,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     // (same as base name since both strip shared_ptr, but semantically distinct)
                     String dualStreamElementType = stripSharedPtr(sseReturnType);
                     operation.vendorExtensions.put("x-codegen-dual-stream-element-type", dualStreamElementType);
+                    if (useJsonEventData) {
+                        operation.vendorExtensions.put("x-codegen-dual-sse-event-data-type", dualStreamElementType);
+                    }
                     // Also propagate to each response so the template can access it
                     // from within the {{#responses}} context scope.
                     for (CodegenResponse response : operation.responses) {
                         response.vendorExtensions.put("x-codegen-dual-stream-return-type", sseReturnType);
                         response.vendorExtensions.put("x-codegen-dual-stream-base-name", sseBaseModelName);
                         response.vendorExtensions.put("x-codegen-dual-stream-element-type", dualStreamElementType);
+                        if (useJsonEventData) {
+                            response.vendorExtensions.put("x-codegen-dual-sse-event-data-type", dualStreamElementType);
+                        }
                     }
                 }
             }
