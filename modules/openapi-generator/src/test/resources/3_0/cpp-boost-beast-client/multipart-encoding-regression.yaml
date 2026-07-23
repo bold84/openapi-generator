@@ -1,0 +1,46 @@
+openapi: 3.0.3
+info:
+  title: Cpp Boost Beast multipart encoding regression
+  version: 1.0.0
+  description: >
+    OAS 3.0 multipart form-data with explicit Encoding Object metadata.
+    The image part has an explicit contentType of image/png.  The document
+    part uses the default encoding.  The generator must propagate the
+    encoding metadata to each multipart part.
+paths:
+  /upload-with-encoding:
+    post:
+      operationId: uploadWithEncoding
+      summary: Upload with explicit multipart encoding metadata
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                image:
+                  type: string
+                  format: binary
+                document:
+                  type: string
+                  format: binary
+                description:
+                  type: string
+            encoding:
+              image:
+                contentType: image/png
+              document:
+                contentType: application/pdf
+      responses:
+        '200':
+          description: Upload complete
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  imageId:
+                    type: string
+                  documentId:
+                    type: string

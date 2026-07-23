@@ -39,3 +39,21 @@ MultiContentStreamEvent: std::variant<StreamProgress, StreamComplete, StreamErro
 
 # --- multipart oneOf binary|object ---
 MultipartMetaField: std::variant<std::vector<std::uint8_t>, MetaRecord>
+
+# --- oneOf constrained numbers (multipleOf) — both branches type:number → boost::json::value ---
+ConstrainedNumber: boost::json::value
+
+# --- anyOf enum union [red] ∪ [blue] → std::string ---
+AnyOfEnumUnion: std::string
+
+# --- all-null anyOf → boost::json::value ---
+AllNullAnyOf: boost::json::value
+
+# --- duplicate-null oneOf → boost::json::value ---
+DuplicateNullOneOf: boost::json::value
+
+# --- allOf enum intersection [a,b] ∩ [b,c] → std::string ---
+AllOfEnumIntersection: std::string
+
+# --- oneOf [integer, number] → std::variant<int32_t, double> ---
+IntOrNumber: std::variant<std::int32_t, double>

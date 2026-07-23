@@ -243,24 +243,49 @@ NEGEOF
     python3 "${parse_py}" || neg_exit=$?
     rm -f "${parse_py}"
 
-    # Upsert negative test result in the TSV
-    local negative_result_line=""
-    if [[ "${gen_exit}" -ne 0 ]]; then
-        negative_result_line="AllOfScalarConflict\tPASS\tcodegen_error\tallOf conflict (negative test, codegen errored)"
-    elif [[ -d "${negative_output_dir}/model" ]] && [[ "$(ls "${negative_output_dir}/model"/*.h 2>/dev/null | wc -l)" -eq 0 ]]; then
-        negative_result_line="AllOfScalarConflict\tPASS\tcodegen_error\tallOf conflict (negative test, header not produced)"
-    else
-        negative_result_line="AllOfScalarConflict\tFAIL\tstd::string\tallOf conflict silently produced code (negative test)"
-        neg_exit=1
-    fi
-
-    if grep -q "^AllOfScalarConflict" "${negative_tsv}" 2>/dev/null; then
-        local tmp_tsv
-        tmp_tsv="$(mktemp)"
-        sed "s/^AllOfScalarConflict.*/${negative_result_line}/" "${negative_tsv}" > "${tmp_tsv}"
-        mv "${tmp_tsv}" "${negative_tsv}"
-    else
-        echo -e "${negative_result_line}" >> "${negative_tsv}"
+    # Upsert negative test result per schema in the TSV
+    if [[ -f "${NEGATIVE_FIXTURES}" ]]; then
+        local schemas_py
+        schemas_py="$(mktemp)" || { echo -e "  ${RED}ERROR${NC}  mktemp failed"; exit 2; }
+        cat > "${schemas_py}" << 'SCHEOF'
+#!/usr/bin/env python3
+"""Emit all root-composed schema names from negative fixtures."""
+import os, sys, yaml
+negative_fixtures = os.environ["NEGATIVE_FIXTURES_PATH"]
+with open(negative_fixtures) as f:
+    spec = yaml.safe_load(f)
+schemas = spec.get("components", {}).get("schemas", {})
+for name, schema in schemas.items():
+    if not isinstance(schema, dict):
+        continue
+    root = dict(schema)
+    for skip_key in ("description", "title", "deprecated", "example", "default", "nullable"):
+        root.pop(skip_key, None)
+    if any(k in root for k in ("oneOf", "anyOf", "allOf")):
+        print(name)
+SCHEOF
+        export GEN_EXIT="${gen_exit}"
+        local schema_name
+        while IFS= read -r schema_name; do
+            local negative_result_line=""
+            if [[ "${gen_exit}" -ne 0 ]]; then
+                negative_result_line="${schema_name}\tPASS\tcodegen_error\tnegative test (codegen errored)"
+            elif [[ -d "${negative_output_dir}/model" ]] && [[ "$(ls "${negative_output_dir}/model"/*.h 2>/dev/null | wc -l)" -eq 0 ]]; then
+                negative_result_line="${schema_name}\tPASS\tcodegen_error\tnegative test (header not produced)"
+            else
+                negative_result_line="${schema_name}\tFAIL\tstd::string\tnegative test silently produced code"
+                neg_exit=1
+            fi
+            if grep -q "^${schema_name}" "${negative_tsv}" 2>/dev/null; then
+                local tmp_tsv
+                tmp_tsv="$(mktemp)"
+                sed "s/^${schema_name}.*/${negative_result_line}/" "${negative_tsv}" > "${tmp_tsv}"
+                mv "${tmp_tsv}" "${negative_tsv}"
+            else
+                echo -e "${negative_result_line}" >> "${negative_tsv}"
+            fi
+        done < <(python3 "${schemas_py}")
+        rm -f "${schemas_py}"
     fi
 
     rm -rf "${negative_output_dir}"
@@ -269,7 +294,7 @@ NEGEOF
         return ${neg_exit}
     fi
 
-    info_msg "Negative fixture checks: AllOfScalarConflict"
+    info_msg "Negative fixture checks complete"
 }
 
 # =============================================================================

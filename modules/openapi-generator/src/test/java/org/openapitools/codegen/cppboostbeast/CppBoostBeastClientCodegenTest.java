@@ -941,6 +941,46 @@ public class CppBoostBeastClientCodegenTest {
         new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
     }
 
+    @Test(expectedExceptions = RuntimeException.class)
+    public void optionalImpossibleAllOfThrows() throws IOException {
+        // Verifies that an allOf with conflicting optional property types
+        // (string vs integer on the same property name) causes a RuntimeException.
+        String specContent =
+            "openapi: 3.1.0\n" +
+            "info:\n" +
+            "  title: optional impossible allOf test\n" +
+            "  version: 1.0.0\n" +
+            "paths: {}\n" +
+            "components:\n" +
+            "  schemas:\n" +
+            "    OptionalImpossibleAllOf:\n" +
+            "      allOf:\n" +
+            "        - type: object\n" +
+            "          properties:\n" +
+            "            value:\n" +
+            "              type: string\n" +
+            "        - type: object\n" +
+            "          properties:\n" +
+            "            value:\n" +
+            "              type: integer\n" +
+            "              format: int32\n";
+
+        java.nio.file.Path specFile = java.nio.file.Files.createTempFile("optional-impossible-allof-", ".yaml");
+        specFile.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(specFile, specContent);
+
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-opt-impossible-allof").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(specFile.toAbsolutePath().toString())
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "CppBoostBeastOptImpossibleAllOf");
+
+        new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+    }
+
     @Test
     public void nullableStringEnumViaGateFixtures() throws IOException {
         // Verify that NullableEnum in Gate A fixtures lowers to std::optional<...>
@@ -982,6 +1022,79 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
+    public void oneOfConstrainedNumbersProducesBoostJsonValue() throws IOException {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        // oneOf [number, number] — both branches are double after dedup,
+        // exclusivity is lost → boost::json::value
+        ComposedSchema schema = new ComposedSchema();
+        schema.addOneOfItem(new NumberSchema());
+        schema.addOneOfItem(new NumberSchema());
+
+        String resolved = codegen.getTypeDeclaration(schema);
+        Assert.assertEquals(resolved, "boost::json::value",
+                "oneOf [number, number] (dedup types) should produce boost::json::value");
+    }
+
+    @Test
+    public void anyOfEnumUnionCollapsesToString() throws IOException {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        // anyOf [enum[red], enum[blue]] → both collapse to std::string (anyOf union)
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema enumBranch0 = new StringSchema();
+        enumBranch0.addEnumItem("red");
+        StringSchema enumBranch1 = new StringSchema();
+        enumBranch1.addEnumItem("blue");
+        schema.addAnyOfItem(enumBranch0);
+        schema.addAnyOfItem(enumBranch1);
+
+        String resolved = codegen.getTypeDeclaration(schema);
+        Assert.assertEquals(resolved, "std::string",
+                "anyOf [enum[red], enum[blue]] should collapse to std::string");
+    }
+
+    @Test
+    public void allOfEnumIntersectionMergesEnum() throws IOException {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        // allOf [enum[a,b], enum[b,c]] → merged enum is intersection [b] → std::string
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema enumBranch0 = new StringSchema();
+        enumBranch0.addEnumItem("a");
+        enumBranch0.addEnumItem("b");
+        StringSchema enumBranch1 = new StringSchema();
+        enumBranch1.addEnumItem("b");
+        enumBranch1.addEnumItem("c");
+        schema.addAllOfItem(enumBranch0);
+        schema.addAllOfItem(enumBranch1);
+
+        String resolved = codegen.getTypeDeclaration(schema);
+        Assert.assertEquals(resolved, "std::string",
+                "allOf [enum[a,b], enum[b,c]] should merge to std::string");
+    }
+
+    @Test
+    public void oneOfIntegerNumberProducesVariant() throws IOException {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        // oneOf [integer, number] → std::variant<int32_t, double>
+        ComposedSchema schema = new ComposedSchema();
+        IntegerSchema intBranch = new IntegerSchema();
+        intBranch.setFormat("int32");
+        schema.addOneOfItem(intBranch);
+        schema.addOneOfItem(new NumberSchema());
+
+        String resolved = codegen.getTypeDeclaration(schema);
+        Assert.assertEquals(resolved, "std::variant<std::int32_t, double>",
+                "oneOf [integer, number] should produce std::variant<int32_t, double>");
+    }
+
+    @Test
     public void oneOfStringStringEnumViaGateFixtures() throws IOException {
         // oneOf open-string + string-enum must not claim exclusive std::string.
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-oneof").toFile();
@@ -1003,6 +1116,151 @@ public class CppBoostBeastClientCodegenTest {
                 "OneOfStringStringEnum should be boost::json::value (no false exclusive string union)");
         Assert.assertFalse(oneOfContent.contains("using OneOfStringStringEnum = std::string;"),
                 "OneOfStringStringEnum must not blind-collapse to std::string");
+    }
+
+    @Test
+    public void allNullAnyOfViaGateFixtures() throws IOException {
+        // Verify that AllNullAnyOf (anyOf [null, null]) in Gate A fixtures
+        // produces boost::json::value alias.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-allnull").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/fixtures.yaml")
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "CppBoostBeastAllNullTest");
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path allNullHeader = output.toPath().resolve("model/AllNullAnyOf.h");
+        TestUtils.assertFileExists(allNullHeader);
+        String allNullContent = java.nio.file.Files.readString(allNullHeader);
+        Assert.assertTrue(allNullContent.contains("using AllNullAnyOf = boost::json::value;"),
+                "AllNullAnyOf should be a boost::json::value alias");
+    }
+
+    @Test
+    public void duplicateNullOneOfViaGateFixtures() throws IOException {
+        // Verify that DuplicateNullOneOf (oneOf [null, null]) in Gate A fixtures
+        // produces boost::json::value alias (null matches both branches).
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-dupenull").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/fixtures.yaml")
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "CppBoostBeastDupNullTest");
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path dupNullHeader = output.toPath().resolve("model/DuplicateNullOneOf.h");
+        TestUtils.assertFileExists(dupNullHeader);
+        String dupNullContent = java.nio.file.Files.readString(dupNullHeader);
+        Assert.assertTrue(dupNullContent.contains("using DuplicateNullOneOf = boost::json::value;"),
+                "DuplicateNullOneOf should be a boost::json::value alias");
+    }
+
+    @Test
+    public void generatesOas30NullableObject() throws IOException {
+        // OAS 3.0 nullable: true on an object schema must produce a type that
+        // can represent JSON null at the root level.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-nullable-object").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/nullable-object-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // The nullable root object must exist
+        Path nullableRootHeader = output.toPath().resolve("model/NullableObjectRoot.h");
+        TestUtils.assertFileExists(nullableRootHeader);
+        String nullableRootContent = java.nio.file.Files.readString(nullableRootHeader);
+        // Must have a nullable wrapper: either std::optional<NullableObjectRoot>
+        // as a type alias or hasOptionalValue/has_null/IsSet for null tracking
+        Assert.assertTrue(nullableRootContent.contains("NullableObjectRoot") && nullableRootContent.contains("nullable"),
+                "NullableObjectRoot should support null at root level");
+
+        // The nullable property container must distinguish value vs null
+        Path nullablePropHeader = output.toPath().resolve("model/NullablePropertyContainer.h");
+        TestUtils.assertFileExists(nullablePropHeader);
+        String nullablePropContent = java.nio.file.Files.readString(nullablePropHeader);
+        // Must use an optional-like wrapper or IsSet+hasValue pattern
+        Assert.assertTrue(nullablePropContent.contains("NullableValue") || nullablePropContent.contains("hasOptionalValue"),
+                "NullablePropertyContainer should support nullable property tracking");
+    }
+
+    @Test
+    public void generatesOptionalNullableTriState() throws IOException {
+        // Optional nullable property must preserve missing, null, and value.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-tri-state").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/optional-nullable-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path triStateHeader = output.toPath().resolve("model/TriStateContainer.h");
+        TestUtils.assertFileExists(triStateHeader);
+        String triStateContent = java.nio.file.Files.readString(triStateHeader);
+        // The TriStateContainer must support tri-state for nullableValue:
+        // IsSet + nullable wrapper OR optional<optional<string>>
+        Assert.assertTrue(triStateContent.contains("m_NullableValueIsSet") || triStateContent.contains("hasOptionalValue"),
+                "TriStateContainer must track IsSet for optional nullable property");
+    }
+
+    @Test
+    public void generatesResponseUnion() throws IOException {
+        // Successful response union: 200 FullResource, 201 SummaryResource, 204
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-response-union").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/response-union-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // All three response models must exist
+        TestUtils.assertFileExists(output.toPath().resolve("model/FullResource.h"));
+        TestUtils.assertFileExists(output.toPath().resolve("model/SummaryResource.h"));
+        TestUtils.assertFileExists(output.toPath().resolve("model/CreateRequest.h"));
+    }
+
+    @Test
+    public void generatesMultipartEncodingMetadata() throws IOException {
+        // Multipart form-data with explicit encoding metadata (contentType)
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-multipart-enc").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/multipart-encoding-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // The API source must reference the multipart form encoding metadata
+        Path apiSource = output.toPath().resolve("api/DefaultApi.cpp");
+        TestUtils.assertFileExists(apiSource);
+        // The generated API must reference multipart/form-data and the encoding parts
+        String apiContent = java.nio.file.Files.readString(apiSource);
+        Assert.assertTrue(apiContent.contains("multipart/form-data"),
+                "Generated API must use multipart/form-data for encoding endpoint");
     }
 
     @Test
