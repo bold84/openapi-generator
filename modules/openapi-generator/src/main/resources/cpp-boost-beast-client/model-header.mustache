@@ -219,7 +219,6 @@ public:
     /////////////////////////////////////////////
     /// {{classname}} members
     {{#vars}}
-    {{^vendorExtensions.x-cpp-reject-if-present}}
 
     /// <summary>
     /// {{description}}
@@ -236,7 +235,6 @@ public:
     {{{dataType}}} {{getter}}() const;
     void {{setter}}({{{dataType}}} value);
     {{/vendorExtensions.x-cpp-const}}
-    {{/vendorExtensions.x-cpp-reject-if-present}}
     {{/vars}}
 
 {{#vendorExtensions.x-cpp-is-optional}}
@@ -290,7 +288,6 @@ protected:
 protected:
     {{#vars}}
     {{^vendorExtensions.x-cpp-const}}
-    {{^vendorExtensions.x-cpp-reject-if-present}}
     {{#parent}}
     {{^isContainer}}
     {{^isModel}}
@@ -333,7 +330,6 @@ protected:
     bool m_{{name}}IsSet = false;
     {{/vendorExtensions.x-cpp-no-is-set}}
     {{/required}}
-    {{/vendorExtensions.x-cpp-reject-if-present}}
     {{/vendorExtensions.x-cpp-const}}
     {{/vars}}
 {{#vendorExtensions.x-cpp-is-optional}}

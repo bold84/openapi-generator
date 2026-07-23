@@ -1305,10 +1305,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // so a cross-model lookup of variant aliases is not possible here.
 
         // Phase 5b: Tag optional-impossible properties from allOf intersection.
-        // These properties have an empty intersection (e.g., string ∩ integer)
-        // and should not generate a writable member. The generated decode
-        // validation rejects the property when present in JSON but accepts
-        // the object when the property is absent.
+        // These properties have an empty intersection (e.g., string ∩ integer).
+        // The generated decode validation rejects the property when present
+        // in JSON but accepts the object when the property is absent. The
+        // getter/setter and member are still emitted (non-empty shell).
         for (ModelMap mo : result.getModels()) {
             CodegenModel cm = mo.getModel();
             @SuppressWarnings("unchecked")
@@ -3805,35 +3805,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     synthetic.setFormat(model.getFormat());
                 }
                 // Propagate optional-impossible property tags.
-                // Properties whose schemas have a real type in the synthetic
-                // schema (assigned by buildSyntheticAllOfSchema) are handled
-                // with normal members — skip them so Phase 5b does not add
-                // x-cpp-reject-if-present (which suppresses the member).
+                // All optional-impossible properties get x-cpp-reject-if-present
+                // via Phase 5b, which generates a reject-when-present decode
+                // block. The template still emits the getter/setter and member
+                // (non-empty shell) alongside the reject diagnostic.
                 if (!intersection.getOptionalImpossibleProperties().isEmpty()) {
-                    Set<String> handledInSchema = new LinkedHashSet<>();
-                    @SuppressWarnings("unchecked")
-                    Map<String, Schema> synProps = synthetic.getProperties();
-                    if (synProps != null) {
-                        for (Map.Entry<String, Schema> propEntry
-                                : synProps.entrySet()) {
-                            if (intersection.getOptionalImpossibleProperties()
-                                    .contains(propEntry.getKey())
-                                    && propEntry.getValue().getType() != null) {
-                                handledInSchema.add(propEntry.getKey());
-                            }
-                        }
+                    Map<String, Object> ext = synthetic.getExtensions();
+                    if (ext == null) {
+                        ext = new LinkedHashMap<>();
+                        synthetic.setExtensions(ext);
                     }
-                    List<String> remaining = new ArrayList<>(
-                            intersection.getOptionalImpossibleProperties());
-                    remaining.removeAll(handledInSchema);
-                    if (!remaining.isEmpty()) {
-                        Map<String, Object> ext = synthetic.getExtensions();
-                        if (ext == null) {
-                            ext = new LinkedHashMap<>();
-                            synthetic.setExtensions(ext);
-                        }
-                        ext.put("x-cpp-optional-impossible-properties", remaining);
-                    }
+                    ext.put("x-cpp-optional-impossible-properties",
+                            new ArrayList<>(intersection.getOptionalImpossibleProperties()));
                 }
                 // Flat: allOf = null so super.fromModel sees no parent
                 synthetic.setAllOf(null);

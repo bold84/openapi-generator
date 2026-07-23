@@ -1008,24 +1008,22 @@ public class CppBoostBeastClientCodegenTest {
                 + "Header content: " + headerContent);
 
         // Verify the generated source contains the reject-if-present diagnostic
+        // with the exact "optional-impossible" or "cannot satisfy all allOf" string.
         Path generatedSource = output.toPath().resolve("model/AllOfPropConflict.cpp");
         TestUtils.assertFileExists(generatedSource);
         String sourceContent = java.nio.file.Files.readString(generatedSource);
-        Assert.assertTrue(sourceContent.contains("'value' in AllOfPropConflict"),
+        Assert.assertTrue(sourceContent.contains("cannot satisfy all allOf constraints (optional-impossible)"),
                 "AllOfPropConflict source must contain the reject-if-present diagnostic "
                 + "for the optional-impossible 'value' property. "
                 + "Source: " + sourceContent);
 
-        // Verify the accept path (property absent → no throw):
-        // m_ValueIsSet is reset to false before checking, and the
-        // object.find guard skips decode when the property is absent.
-        Assert.assertTrue(sourceContent.contains("m_ValueIsSet = false"),
-                "AllOfPropConflict source must reset m_ValueIsSet at start of decode "
-                + "(accept path when value is absent). "
+        // Verify the reject-if-present structure: find + end guard
+        Assert.assertTrue(sourceContent.contains("object.find(\"value\")"),
+                "AllOfPropConflict source must locate 'value' in the JSON object. "
                 + "Source: " + sourceContent);
-        Assert.assertTrue(sourceContent.contains("ValueIt != object.end()"),
-                "AllOfPropConflict source must check ValueIt != object.end() "
-                + "(accept path — no throw when value absent). "
+        Assert.assertTrue(sourceContent.contains("it != object.end()"),
+                "AllOfPropConflict source must guard on presence (accept when absent, "
+                + "reject when present). "
                 + "Source: " + sourceContent);
     }
 
@@ -1087,22 +1085,22 @@ public class CppBoostBeastClientCodegenTest {
                 + "Header content: " + headerContent);
 
         // Verify the source has the reject diagnostic
+        // with the exact "optional-impossible" or "cannot satisfy all allOf" string.
         Path generatedSource = output.toPath().resolve("model/OptionalImpossibleAllOf.cpp");
         TestUtils.assertFileExists(generatedSource);
         String sourceContent = java.nio.file.Files.readString(generatedSource);
-        Assert.assertTrue(sourceContent.contains("'value' in OptionalImpossibleAllOf"),
+        Assert.assertTrue(sourceContent.contains("cannot satisfy all allOf constraints (optional-impossible)"),
                 "OptionalImpossibleAllOf source must contain the reject-if-present diagnostic "
                 + "for the optional-impossible 'value' property. "
                 + "Source: " + sourceContent);
 
-        // Verify the accept path (property absent → no throw)
-        Assert.assertTrue(sourceContent.contains("m_ValueIsSet = false"),
-                "OptionalImpossibleAllOf source must reset m_ValueIsSet at start of decode "
-                + "(accept path when value is absent). "
+        // Verify the reject-if-present structure: find + end guard
+        Assert.assertTrue(sourceContent.contains("object.find(\"value\")"),
+                "OptionalImpossibleAllOf source must locate 'value' in the JSON object. "
                 + "Source: " + sourceContent);
-        Assert.assertTrue(sourceContent.contains("ValueIt != object.end()"),
-                "OptionalImpossibleAllOf source must check ValueIt != object.end() "
-                + "(accept path — no throw when value absent). "
+        Assert.assertTrue(sourceContent.contains("it != object.end()"),
+                "OptionalImpossibleAllOf source must guard on presence (accept when absent, "
+                + "reject when present). "
                 + "Source: " + sourceContent);
     }
 

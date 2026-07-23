@@ -1791,7 +1791,6 @@ void {{classname}}::fromJsonObject_internal(boost::json::object const& object)
 }
 
 {{#vars}}
-{{^vendorExtensions.x-cpp-reject-if-present}}
 {{^vendorExtensions.x-cpp-const}}
 {{{dataType}}} {{classname}}::{{getter}}() const
 {
@@ -1831,7 +1830,6 @@ void {{classname}}::{{setter}}({{{dataType}}} value)
     {{/required}}
 }
 {{/vendorExtensions.x-cpp-const}}
-{{/vendorExtensions.x-cpp-reject-if-present}}
 {{/vars}}
 
 std::string createJsonStringFromModelVector(const std::vector<std::shared_ptr<{{classname}}>>& data)
