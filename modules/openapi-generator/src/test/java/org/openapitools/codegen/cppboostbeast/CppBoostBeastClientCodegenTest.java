@@ -230,8 +230,11 @@ public class CppBoostBeastClientCodegenTest {
                 "m_NullableValue.isNull()",
                 "m_NullableValue.resetMissing()",
                 "getNullableValue().value()",
-                "nullptr");
+                "nullptr",
+                "setNullableValue(NullableField<double>::makeNull())",
+                "setNullableValue(NullableField<double>");
         TestUtils.assertFileNotContains(derivedSource,
+                "m_NullableValue.value =",
                 "m_NullableValue.value.has_value()",
                 "m_NullableValue.value.reset()");
     }
