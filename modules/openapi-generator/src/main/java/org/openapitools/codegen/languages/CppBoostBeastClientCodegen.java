@@ -1605,8 +1605,20 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             cm.vendorExtensions.put("x-discriminator-resolved-type", resolvedType);
 
             // Build discriminator-value → branch-index lookup for template reorder.
-            if (descriptor != null && descriptor.hasDiscriminator()) {
-                Map<String, Integer> discBranchIndex = buildDiscriminatorBranchIndex(
+            // Uses the full MappedModel set (explicit URI + implicit component-name)
+            // so the template can reorder candidate validation for diagnostics.
+            if (cm.discriminator != null && cm.discriminator.getMappedModels() != null
+                    && !cm.discriminator.getMappedModels().isEmpty()) {
+                List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
+                        cm.discriminator.getMappedModels(),
+                        descriptor.getBranches());
+                if (!discBranchIndex.isEmpty()) {
+                    cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                    cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
+                }
+            } else if (descriptor != null && descriptor.hasDiscriminator()) {
+                // Fallback: use explicit descriptor mapping when MappedModel unavailable
+                List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
                         descriptor.getDiscriminator().getMapping(),
                         descriptor.getBranches());
                 if (!discBranchIndex.isEmpty()) {
@@ -1730,8 +1742,20 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             cm.vendorExtensions.put("x-discriminator-resolved-type", resolvedType);
 
             // Build discriminator-value → branch-index lookup for template reorder.
-            if (desc.hasDiscriminator()) {
-                Map<String, Integer> discBranchIndex = buildDiscriminatorBranchIndex(
+            // Uses the full MappedModel set (explicit URI + implicit component-name)
+            // when available, falling back to the descriptor's explicit mapping.
+            if (cm.discriminator != null && cm.discriminator.getMappedModels() != null
+                    && !cm.discriminator.getMappedModels().isEmpty()) {
+                List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
+                        cm.discriminator.getMappedModels(),
+                        descBranches);
+                if (!discBranchIndex.isEmpty()) {
+                    cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                    cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
+                }
+            } else if (desc.hasDiscriminator()) {
+                // Fallback: use explicit descriptor mapping when MappedModel unavailable
+                List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
                         desc.getDiscriminator().getMapping(),
                         descBranches);
                 if (!discBranchIndex.isEmpty()) {
@@ -1763,32 +1787,100 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     }
 
     /**
-     * Builds a map from C++-escaped discriminator mapping value → composition
-     * branch index by matching the mapping target name against branch resolved
-     * schema names.  Mapping keys are C++-escaped for use in generated string
-     * literal comparisons.  Used by the template to reorder candidate validation
-     * for diagnostics.
+     * Builds a list of {key, value} maps from the full set of discriminator
+     * mapped models (explicit URI mappings + implicit component-name mappings)
+     * for template-iteration.  Each entry maps a C++-escaped discriminator value
+     * to a composition branch index so the template can reorder candidate
+     * validation for diagnostics.
+     * <p>
+     * Unresolvable mappings (where the model name does not match any branch
+     * resolved schema name) fail generation with a clear diagnostic per §8.
      *
-     * @param discMapping the discriminator.value → target mapping
-     * @param branches    the composition branch descriptors
-     * @return map from C++-escaped discriminator value to branch descriptor index
+     * @param mappedModels the full set of discriminator mapped models
+     * @param branches     the composition branch descriptors
+     * @return list of {key, value} maps; non-empty when at least one mapping
+     *         resolves to a valid branch
+     * @throws RuntimeException when a mapping does not resolve to any branch
      */
-    public static Map<String, Integer> buildDiscriminatorBranchIndex(
-            Map<String, String> discMapping,
+    public static List<Map<String, Object>> buildDiscriminatorBranchIndex(
+            Set<CodegenDiscriminator.MappedModel> mappedModels,
             List<CompositionBranchDescriptor> branches) {
-        Map<String, Integer> indexMap = new LinkedHashMap<>();
-        if (discMapping == null || discMapping.isEmpty()) return indexMap;
-        for (Map.Entry<String, String> entry : discMapping.entrySet()) {
-            String targetName = extractSimpleRef(entry.getValue());
-            if (targetName == null) continue;
+        List<Map<String, Object>> indexList = new ArrayList<>();
+        if (mappedModels == null || mappedModels.isEmpty()) return indexList;
+        for (CodegenDiscriminator.MappedModel mm : mappedModels) {
+            String modelName = mm.getModelName();
+            if (modelName == null) continue;
+            int branchIndex = -1;
             for (int bi = 0; bi < branches.size(); bi++) {
-                if (targetName.equals(branches.get(bi).getResolvedSchemaName())) {
-                    indexMap.put(escapeCppStringContent(entry.getKey()), bi);
+                if (modelName.equals(branches.get(bi).getResolvedSchemaName())) {
+                    branchIndex = bi;
                     break;
                 }
             }
+            if (branchIndex >= 0) {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("key", escapeCppStringContent(mm.getMappingName()));
+                entry.put("value", branchIndex);
+                indexList.add(entry);
+            } else {
+                // §8: unresolvable → hard diagnostic
+                throw new RuntimeException(
+                    "Discriminator mapping value '"
+                    + escapeCppStringContent(mm.getMappingName())
+                    + "' (model: " + modelName
+                    + ") does not match any composition branch for schema '"
+                    + (modelName != null ? modelName : "(unknown)")
+                    + "'. Valid branches: "
+                    + branches.stream()
+                        .map(CompositionBranchDescriptor::getResolvedSchemaName)
+                        .filter(n -> n != null)
+                        .collect(Collectors.joining(", ")));
+            }
         }
-        return indexMap;
+        return indexList;
+    }
+
+    /**
+     * Fallback variant: builds a list of {key, value} maps from explicit
+     * discriminator mapping entries only (used when the codegen model's
+     * full MappedModel set is unavailable).
+     *
+     * @param discMapping the discriminator.value → target mapping
+     * @param branches    the composition branch descriptors
+     * @return list of {key, value} maps
+     */
+    public static List<Map<String, Object>> buildDiscriminatorBranchIndex(
+            Map<String, String> discMapping,
+            List<CompositionBranchDescriptor> branches) {
+        List<Map<String, Object>> indexList = new ArrayList<>();
+        if (discMapping == null || discMapping.isEmpty()) return indexList;
+        for (Map.Entry<String, String> entry : discMapping.entrySet()) {
+            String targetName = extractSimpleRef(entry.getValue());
+            if (targetName == null) continue;
+            int branchIndex = -1;
+            for (int bi = 0; bi < branches.size(); bi++) {
+                if (targetName.equals(branches.get(bi).getResolvedSchemaName())) {
+                    branchIndex = bi;
+                    break;
+                }
+            }
+            if (branchIndex >= 0) {
+                Map<String, Object> entryMap = new LinkedHashMap<>();
+                entryMap.put("key", escapeCppStringContent(entry.getKey()));
+                entryMap.put("value", branchIndex);
+                indexList.add(entryMap);
+            } else {
+                throw new RuntimeException(
+                    "Discriminator mapping target '" + entry.getValue()
+                    + "' (resolved: " + targetName
+                    + ") does not match any composition branch. Valid branches: "
+                    + branches.stream()
+                        .map(CompositionBranchDescriptor::getResolvedSchemaName)
+                        .filter(n -> n != null)
+                        .collect(Collectors.joining(", ")));
+            }
+        }
+        return indexList;
     }
 
     /**

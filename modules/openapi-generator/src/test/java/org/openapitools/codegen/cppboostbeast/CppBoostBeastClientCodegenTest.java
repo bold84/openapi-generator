@@ -2710,8 +2710,9 @@ public class CppBoostBeastClientCodegenTest {
     public void discriminatorBranchIndexMappingBuilt() {
         // Contract test: x-discriminator-branch-index must be built from
         // discriminator mapping values matched against branch resolved schema
-        // names.  URI-style and plain-name mappings both work; unresolvable
-        // mappings do not crash and produce empty index map.
+        // names as a List<{key, value}> for Mustache iteration.
+        // URI-style and plain-name mappings both work; unresolvable mappings
+        // cause a generation diagnostic (RuntimeException).
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -2751,28 +2752,46 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertEquals(desc.getDiscriminator().getMapping().size(), 2,
                 "Discriminator must have 2 mapping entries");
 
-        // Build the branch index mapping (matches buildDiscriminatorBranchIndex logic)
-        Map<String, Integer> indexMap = CppBoostBeastClientCodegen.buildDiscriminatorBranchIndex(
-                desc.getDiscriminator().getMapping(), desc.getBranches());
-        Assert.assertNotNull(indexMap, "buildDiscriminatorBranchIndex must return non-null map");
-        Assert.assertEquals(indexMap.size(), 2,
+        // Build from explicit mapping (Map-based overload)
+        List<Map<String, Object>> indexList =
+                CppBoostBeastClientCodegen.buildDiscriminatorBranchIndex(
+                        desc.getDiscriminator().getMapping(), desc.getBranches());
+        Assert.assertNotNull(indexList,
+                "buildDiscriminatorBranchIndex(Map) must return non-null list");
+        Assert.assertEquals(indexList.size(), 2,
                 "Both mammal and bird mappings must resolve to branches");
-        Assert.assertEquals((int) indexMap.get("mammal"), 0,
+        // Each entry must have key and value; order matches the mapping insertion
+        Assert.assertEquals(indexList.get(0).get("key"), "mammal",
+                "First entry key must be 'mammal'");
+        Assert.assertEquals(indexList.get(0).get("value"), 0,
                 "mammal mapping must resolve to branch 0 (Mammal)");
-        Assert.assertEquals((int) indexMap.get("bird"), 1,
+        Assert.assertEquals(indexList.get(1).get("key"), "bird",
+                "Second entry key must be 'bird'");
+        Assert.assertEquals(indexList.get(1).get("value"), 1,
                 "bird mapping must resolve to branch 1 (Bird)");
 
         // Test unresolvable mapping: extra mapping pointing to a non-existent schema
+        // must throw RuntimeException (hard diagnostic per §8).
         Map<String, String> mappingWithExtra = new java.util.LinkedHashMap<>();
         mappingWithExtra.put("mammal", "#/components/schemas/Mammal");
         mappingWithExtra.put("bird", "Bird");
         mappingWithExtra.put("reptile", "Reptile"); // not in branches
-        Map<String, Integer> extraIndexMap = CppBoostBeastClientCodegen.buildDiscriminatorBranchIndex(
-                mappingWithExtra, desc.getBranches());
-        Assert.assertEquals(extraIndexMap.size(), 2,
-                "Unresolvable mappings must be excluded from index map");
-        Assert.assertFalse(extraIndexMap.containsKey("reptile"),
-                "Unresolvable mapping 'reptile' must not appear in index map");
+        boolean threwExpected = false;
+        try {
+            CppBoostBeastClientCodegen.buildDiscriminatorBranchIndex(
+                    mappingWithExtra, desc.getBranches());
+        } catch (RuntimeException re) {
+            threwExpected = true;
+            String message = re.getMessage();
+            Assert.assertTrue(
+                    message.contains("reptile")
+                    || message.contains("Reptile")
+                    || message.contains("does not match"),
+                    "Unresolvable mapping diagnostic must reference unresolvable entry; got: "
+                    + message);
+        }
+        Assert.assertTrue(threwExpected,
+                "buildDiscriminatorBranchIndex must throw for unresolvable mappings");
     }
 
     @Test
