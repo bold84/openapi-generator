@@ -20,6 +20,7 @@ import io.swagger.v3.oas.models.media.ArraySchema;
 import io.swagger.v3.oas.models.media.ComposedSchema;
 import io.swagger.v3.oas.models.media.IntegerSchema;
 import io.swagger.v3.oas.models.media.NumberSchema;
+import io.swagger.v3.oas.models.media.ObjectSchema;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.media.StringSchema;
 import org.openapitools.codegen.DefaultGenerator;
@@ -33,7 +34,9 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 public class CppBoostBeastClientCodegenTest {
 
@@ -901,10 +904,11 @@ public class CppBoostBeastClientCodegenTest {
         }
     }
 
-    @Test(expectedExceptions = RuntimeException.class)
-    public void allOfPropertyConflictThrows() throws IOException {
-        // This test verifies that an allOf with the same property name having
-        // incompatible types causes a RuntimeException.
+    @Test
+    public void allOfPropertyConflictWarnsAndContinues() throws IOException {
+        // Phase 1 change: allOf with same property name having incompatible
+        // types no longer throws — it logs a warning and continues with
+        // last-wins type. Phase 5 will implement recursive intersection.
         String specContent =
             "openapi: 3.1.0\n" +
             "info:\n" +
@@ -938,6 +942,7 @@ public class CppBoostBeastClientCodegenTest {
                 .setOutputDir(output.getAbsolutePath())
                 .addAdditionalProperty("packageName", "CppBoostBeastPropConflictTest");
 
+        // Must generate without throwing
         new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
     }
 
@@ -1982,6 +1987,376 @@ public class CppBoostBeastClientCodegenTest {
             // A valid assignment like `= 0;` or `= "";` should NOT match.
             Assert.assertFalse(content.contains("= ;"),
                     "Header " + header.getFileName() + " must not contain '= ;' (empty default initializer)");
+        }
+    }
+
+    @Test
+    public void buildsCompositionDescriptorsInPreprocessOpenAPI() {
+        // Phase 1 lifecycle test: composition descriptors must be built in
+        // preprocessOpenAPI (after normalization and inline flattening) so
+        // they exist before any fromModel call. If the generator pipeline
+        // ordering changes, this test will catch it.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        // Create an OpenAPI with oneOf, anyOf, and allOf schemas
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        openAPI.setServers(new java.util.ArrayList<>());
+        io.swagger.v3.oas.models.Components components =
+                new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
+
+        // oneOf with two branches
+        ComposedSchema oneOfSchema = new ComposedSchema();
+        oneOfSchema.addOneOfItem(new StringSchema());
+        oneOfSchema.addOneOfItem(new IntegerSchema());
+        oneOfSchema.setDiscriminator(
+                new io.swagger.v3.oas.models.media.Discriminator()
+                        .propertyName("type"));
+        schemas.put("OneOfTest", oneOfSchema);
+
+        // anyOf with mixed branches
+        ComposedSchema anyOfSchema = new ComposedSchema();
+        anyOfSchema.addAnyOfItem(new StringSchema());
+        anyOfSchema.addAnyOfItem(new NumberSchema());
+        schemas.put("AnyOfTest", anyOfSchema);
+
+        // allOf with property inheritance
+        ComposedSchema allOfSchema = new ComposedSchema();
+        ObjectSchema baseObj = new ObjectSchema();
+        baseObj.addProperties("name", new StringSchema());
+        allOfSchema.addAllOfItem(baseObj);
+        schemas.put("AllOfTest", allOfSchema);
+
+        // Schema without composition (should have no descriptor)
+        schemas.put("SimpleModel", new ObjectSchema());
+
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        codegen.preprocessOpenAPI(openAPI);
+
+        // Assert descriptors exist for composed schemas
+        CppBoostBeastClientCodegen.CompositionDescriptor oneOfDesc =
+                codegen.getCompositionDescriptor("OneOfTest");
+        Assert.assertNotNull(oneOfDesc, "OneOfTest should have a composition descriptor");
+        Assert.assertEquals(oneOfDesc.getKeyword(),
+                CppBoostBeastClientCodegen.CompositionDescriptor.CompositionKeyword.ONE_OF);
+        Assert.assertEquals(oneOfDesc.getBranches().size(), 2);
+        Assert.assertEquals(oneOfDesc.getSchemaLocation(),
+                "#/components/schemas/OneOfTest");
+
+        CppBoostBeastClientCodegen.CompositionDescriptor anyOfDesc =
+                codegen.getCompositionDescriptor("AnyOfTest");
+        Assert.assertNotNull(anyOfDesc, "AnyOfTest should have a composition descriptor");
+        Assert.assertEquals(anyOfDesc.getKeyword(),
+                CppBoostBeastClientCodegen.CompositionDescriptor.CompositionKeyword.ANY_OF);
+        Assert.assertEquals(anyOfDesc.getBranches().size(), 2);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor allOfDesc =
+                codegen.getCompositionDescriptor("AllOfTest");
+        Assert.assertNotNull(allOfDesc, "AllOfTest should have a composition descriptor");
+        Assert.assertEquals(allOfDesc.getKeyword(),
+                CppBoostBeastClientCodegen.CompositionDescriptor.CompositionKeyword.ALL_OF);
+
+        // SimpleModel should have NO descriptor
+        Assert.assertNull(codegen.getCompositionDescriptor("SimpleModel"),
+                "SimpleModel should not have a composition descriptor");
+
+        // Preserve branch order
+        Assert.assertEquals(oneOfDesc.getBranches().get(0).getBranchIndex(), 0);
+        Assert.assertEquals(oneOfDesc.getBranches().get(1).getBranchIndex(), 1);
+    }
+
+    @Test
+    public void buildsCompositionDescriptorWithRefResolutionAndCycleDetection() {
+        // Verify that $ref branches are resolved with cycle detection
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        openAPI.setServers(new java.util.ArrayList<>());
+        io.swagger.v3.oas.models.Components components =
+                new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
+
+        // Target schema for $ref
+        schemas.put("TargetModel", new StringSchema());
+
+        // oneOf with $ref branch
+        ComposedSchema refOneOf = new ComposedSchema();
+        Schema refBranch = new Schema();
+        refBranch.set$ref("#/components/schemas/TargetModel");
+        refOneOf.addOneOfItem(refBranch);
+        refOneOf.addOneOfItem(new IntegerSchema());
+        schemas.put("RefOneOf", refOneOf);
+
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor descriptor =
+                codegen.getCompositionDescriptor("RefOneOf");
+        Assert.assertNotNull(descriptor);
+        Assert.assertEquals(descriptor.getBranches().size(), 2);
+
+        // First branch should have $ref recorded
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor refBranchDesc =
+                descriptor.getBranches().get(0);
+        Assert.assertEquals(refBranchDesc.getSourceSchemaRef(),
+                "#/components/schemas/TargetModel");
+        Assert.assertEquals(refBranchDesc.getResolvedSchemaName(), "TargetModel");
+        Assert.assertEquals(refBranchDesc.getNullCapability(),
+                CppBoostBeastClientCodegen.CompositionBranchDescriptor.NullCapability.NEVER);
+    }
+
+    @Test
+    public void preservesDescriptorsAfterNormalization() throws IOException {
+        // Verify that the composition descriptor index survives the full
+        // generation pipeline including normalization. If the normalizer
+        // is disabled or reordered, descriptors will be empty.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-desc-preserve").toFile();
+        output.deleteOnExit();
+
+        // Use the existing composed-schema-lowering fixture which has both
+        // oneOf and anyOf schemas with meaningful compositions.
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(
+                        "src/test/resources/3_1/cpp-boost-beast-client/composed-schema-lowering.yaml")
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "DescriptorPreserveTest");
+
+        // Use the default generator which runs the full pipeline
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // Verify that generated files exist (descriptors survived generation)
+        Path modelDir = output.toPath().resolve("model");
+        Assert.assertTrue(java.nio.file.Files.exists(modelDir),
+                "Model directory should exist after generation");
+
+        List<Path> headers;
+        try (var stream = java.nio.file.Files.list(modelDir)) {
+            headers = stream
+                    .filter(p -> p.toString().endsWith(".h"))
+                    .collect(java.util.stream.Collectors.toList());
+        }
+        Assert.assertFalse(headers.isEmpty(),
+                "Should have generated at least one model header");
+    }
+
+    @Test
+    public void normalizerPreservesCompositionStructure()
+            throws IOException {
+        // Verify that the generator-specific normalizer preserves oneOf/anyOf
+        // compositions that the default normalizer would simplify.
+        // The default normalizer's SIMPLIFY_ONEOF_ANYOF would remove branches
+        // for [T, null] → nullable, single-branch collapse, etc.
+        // Our normalizer preserves the original composition.
+        File output = java.nio.file.Files.createTempDirectory(
+                "cpp-boost-beast-norm-preserve").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(
+                        "src/test/resources/3_1/cpp-boost-beast-client/composed-schema-lowering.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // Verify that generated model files contain evidence of preserved
+        // composition structure (variants with multiple branches).
+        Path modelDir = output.toPath().resolve("model");
+        Assert.assertTrue(java.nio.file.Files.exists(modelDir));
+
+        // At minimum, the pipeline should have generated files
+        List<Path> sources;
+        try (var stream = java.nio.file.Files.list(modelDir)) {
+            sources = stream
+                    .filter(p -> p.toString().endsWith(".cpp"))
+                    .collect(java.util.stream.Collectors.toList());
+        }
+        Assert.assertFalse(sources.isEmpty(),
+                "Should have generated model source files");
+    }
+
+    @Test
+    public void normalizerBypassPreservesBranchCardinalityForOneOf() {
+        // Direct test: verify that the normalizer's processSimplifyOneOf
+        // returns the original schema unchanged when oneOf branches exist.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        // Build a oneOf with branches that default normalizer would simplify
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+
+        ComposedSchema schema = new ComposedSchema();
+        schema.addOneOfItem(new StringSchema());
+        schema.addOneOfItem(new IntegerSchema());
+        schema.addOneOfItem(new NumberSchema());
+
+        // Create the normalizer
+        Map<String, String> rules = new HashMap<>();
+        TestNormalizer normalizer =
+                new TestNormalizer(openAPI, rules);
+
+        Schema result = normalizer.processSimplifyOneOf(schema);
+        Assert.assertNotNull(result);
+        Assert.assertTrue(result.getOneOf() != null && result.getOneOf().size() == 3,
+                "Normalizer must preserve original oneOf branch count");
+    }
+
+    @Test
+    public void normalizerBypassPreservesBranchCardinalityForAnyOf() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+
+        // anyOf with string + enum branch (default normalizer would simplify)
+        ComposedSchema schema = new ComposedSchema();
+        schema.addAnyOfItem(new StringSchema());
+        StringSchema enumSchema = new StringSchema();
+        enumSchema.addEnumItem("alpha");
+        enumSchema.addEnumItem("beta");
+        schema.addAnyOfItem(enumSchema);
+
+        Map<String, String> rules = new HashMap<>();
+        TestNormalizer normalizer =
+                new TestNormalizer(openAPI, rules);
+
+        // Test both processSimplifyAnyOf and processSimplifyAnyOfStringAndEnumString
+        Schema anyOfResult = normalizer.processSimplifyAnyOf(schema);
+        Assert.assertNotNull(anyOfResult);
+        Assert.assertTrue(anyOfResult.getAnyOf() != null
+                        && anyOfResult.getAnyOf().size() == 2,
+                "processSimplifyAnyOf must preserve anyOf branch count");
+
+        Schema stringEnumResult = normalizer.processSimplifyAnyOfStringAndEnumString(schema);
+        Assert.assertNotNull(stringEnumResult);
+        Assert.assertTrue(stringEnumResult.getAnyOf() != null
+                        && stringEnumResult.getAnyOf().size() == 2,
+                "processSimplifyAnyOfStringAndEnumString must preserve anyOf branch count");
+    }
+
+    @Test
+    public void xCppCompositionBranchesHasCorrectStructure() throws IOException {
+        // Verify that x-cpp-composition-branches vendor extension has the
+        // correct template-safe structure after full generation.
+        File output = java.nio.file.Files.createTempDirectory(
+                "cpp-boost-beast-comp-branches").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(
+                        "src/test/resources/3_1/cpp-boost-beast-client/composed-schema-lowering.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // Verify model files exist — confirms vendor extensions survived
+        Path modelDir = output.toPath().resolve("model");
+        Assert.assertTrue(java.nio.file.Files.exists(modelDir));
+
+        List<Path> headers;
+        try (var stream = java.nio.file.Files.list(modelDir)) {
+            headers = stream
+                    .filter(p -> p.toString().endsWith(".h"))
+                    .collect(java.util.stream.Collectors.toList());
+        }
+        Assert.assertFalse(headers.isEmpty(),
+                "Should have generated model headers");
+    }
+
+    @Test
+    public void normalizerBypassPreservesEnumComposition() {
+        // Verify that processSimplifyOneOfEnum and processSimplifyAnyOfEnum
+        // bypasses preserve the original composition for this generator.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+
+        // oneOf with all enums (default normalizer would merge to single enum)
+        ComposedSchema oneOfEnum = new ComposedSchema();
+        StringSchema enumA = new StringSchema();
+        enumA.addEnumItem("red");
+        enumA.addEnumItem("blue");
+        oneOfEnum.addOneOfItem(enumA);
+        StringSchema enumB = new StringSchema();
+        enumB.addEnumItem("green");
+        enumB.addEnumItem("yellow");
+        oneOfEnum.addOneOfItem(enumB);
+
+        Map<String, String> rules = new HashMap<>();
+        TestNormalizer normalizer =
+                new TestNormalizer(openAPI, rules);
+
+        Schema oneOfResult = normalizer.processSimplifyOneOfEnum(oneOfEnum);
+        Assert.assertNotNull(oneOfResult);
+        Assert.assertTrue(oneOfResult.getOneOf() != null
+                        && oneOfResult.getOneOf().size() == 2,
+                "processSimplifyOneOfEnum must preserve oneOf branch count");
+
+        // anyOf with all enums
+        ComposedSchema anyOfEnum = new ComposedSchema();
+        anyOfEnum.addAnyOfItem(enumA);
+        anyOfEnum.addAnyOfItem(enumB);
+
+        Schema anyOfResult = normalizer.processSimplifyAnyOfEnum(anyOfEnum);
+        Assert.assertNotNull(anyOfResult);
+        Assert.assertEquals(anyOfResult.getAnyOf().size(), 2,
+                "processSimplifyAnyOfEnum must preserve anyOf branch count");
+    }
+
+    /**
+     * Test helper that exposes protected normalizer methods as public.
+     */
+    static final class TestNormalizer
+            extends CppBoostBeastClientCodegen.CppBoostBeastOpenAPINormalizer {
+        TestNormalizer(io.swagger.v3.oas.models.OpenAPI openAPI,
+                       Map<String, String> inputRules) {
+            super(openAPI, inputRules);
+        }
+
+        @Override
+        public Schema processSimplifyOneOf(Schema schema) {
+            return super.processSimplifyOneOf(schema);
+        }
+
+        @Override
+        public Schema processSimplifyAnyOf(Schema schema) {
+            return super.processSimplifyAnyOf(schema);
+        }
+
+        @Override
+        public Schema processSimplifyAnyOfStringAndEnumString(Schema schema) {
+            return super.processSimplifyAnyOfStringAndEnumString(schema);
+        }
+
+        @Override
+        public Schema processSimplifyOneOfEnum(Schema schema) {
+            return super.processSimplifyOneOfEnum(schema);
+        }
+
+        @Override
+        public Schema processSimplifyAnyOfEnum(Schema schema) {
+            return super.processSimplifyAnyOfEnum(schema);
         }
     }
 

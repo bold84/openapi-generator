@@ -25,6 +25,95 @@ import static org.openapitools.codegen.utils.StringUtils.camelize;
 
 public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
+    /**
+     * Describes a composed schema (oneOf, anyOf, allOf) with its branches,
+     * preserving the original keyword and branch order after normalization.
+     */
+    public static final class CompositionDescriptor {
+        private final String schemaName;
+        private final String schemaLocation;
+        private final CompositionKeyword keyword;
+        private final List<CompositionBranchDescriptor> branches;
+
+        public enum CompositionKeyword { ONE_OF, ANY_OF, ALL_OF }
+
+        public CompositionDescriptor(String schemaName, String schemaLocation,
+                                     CompositionKeyword keyword,
+                                     List<CompositionBranchDescriptor> branches) {
+            this.schemaName = schemaName;
+            this.schemaLocation = schemaLocation;
+            this.keyword = keyword;
+            this.branches = Collections.unmodifiableList(
+                    new ArrayList<>(branches));
+        }
+
+        public String getSchemaName() { return schemaName; }
+        public String getSchemaLocation() { return schemaLocation; }
+        public CompositionKeyword getKeyword() { return keyword; }
+        public List<CompositionBranchDescriptor> getBranches() { return branches; }
+
+        /** Converts this descriptor to a template-safe map for Mustache. */
+        public Map<String, Object> toTemplateMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("schema-name", schemaName);
+            map.put("schema-location", schemaLocation);
+            map.put("keyword", keyword.name().toLowerCase(Locale.ROOT));
+            List<Map<String, Object>> branchMaps = new ArrayList<>();
+            for (CompositionBranchDescriptor branch : branches) {
+                branchMaps.add(branch.toTemplateMap());
+            }
+            map.put("branches", branchMaps);
+            return map;
+        }
+    }
+
+    /**
+     * Describes a single branch within a composed schema.
+     * Captures branch index, resolved schema reference, C++ storage type,
+     * validator identity, null capability, and assertion metadata.
+     */
+    public static final class CompositionBranchDescriptor {
+        private final int branchIndex;
+        private final String sourceSchemaRef;
+        private final String resolvedSchemaName;
+        private final String storageCppType;
+        private final String validatorId;
+        private final NullCapability nullCapability;
+
+        public enum NullCapability { NEVER, ALWAYS, CONDITIONAL }
+
+        public CompositionBranchDescriptor(int branchIndex, String sourceSchemaRef,
+                                           String resolvedSchemaName, String storageCppType,
+                                           String validatorId, NullCapability nullCapability) {
+            this.branchIndex = branchIndex;
+            this.sourceSchemaRef = sourceSchemaRef;
+            this.resolvedSchemaName = resolvedSchemaName;
+            this.storageCppType = storageCppType;
+            this.validatorId = validatorId;
+            this.nullCapability = nullCapability;
+        }
+
+        public int getBranchIndex() { return branchIndex; }
+        public String getSourceSchemaRef() { return sourceSchemaRef; }
+        public String getResolvedSchemaName() { return resolvedSchemaName; }
+        public String getStorageCppType() { return storageCppType; }
+        public String getValidatorId() { return validatorId; }
+        public NullCapability getNullCapability() { return nullCapability; }
+
+        /** Converts this branch descriptor to a template-safe map for Mustache. */
+        public Map<String, Object> toTemplateMap() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("branch-index", branchIndex);
+            map.put("source-schema-ref", sourceSchemaRef);
+            map.put("resolved-schema-name", resolvedSchemaName);
+            map.put("storage-cpp-type", storageCppType);
+            map.put("validator-id", validatorId);
+            map.put("null-capability", nullCapability.name().toLowerCase(Locale.ROOT));
+            return map;
+        }
+    }
+
+
     public static final String DEFAULT_PACKAGE_NAME = "CppBoostBeastOpenAPIClient";
     private static final String X_CODEGEN_DEFAULT_RESPONSE_IS_RETURN_COMPATIBLE =
             "x-codegen-default-response-is-return-compatible";
@@ -55,6 +144,25 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     private final Map<String, String> resolvedAliasTypes = new HashMap<>();
     /** Retains composition semantics after named schemas are lowered to C++ aliases. */
     private final Map<String, String> composedKeywordsByModel = new HashMap<>();
+    /** Descriptor index mapping schema name to composition descriptor, populated
+     *  in preprocessOpenAPI after inline model flattening. Replaces raw schema
+     *  inspection as the semantic source for branch lowering. */
+    final Map<String, CompositionDescriptor> compositionDescriptors = new LinkedHashMap<>();
+
+    /**
+     * Returns the composition descriptor for the given schema name, or null
+     * if the schema is not composed or was not indexed.
+     */
+    public CompositionDescriptor getCompositionDescriptor(String schemaName) {
+        return compositionDescriptors.get(schemaName);
+    }
+
+    /**
+     * Returns an unmodifiable view of the full composition descriptor index.
+     */
+    public Map<String, CompositionDescriptor> getCompositionDescriptors() {
+        return Collections.unmodifiableMap(compositionDescriptors);
+    }
     protected String packageName = DEFAULT_PACKAGE_NAME;
 
     public CodegenType getTag() {
@@ -72,21 +180,114 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     @Override
     public void preprocessOpenAPI(OpenAPI openAPI) {
         super.preprocessOpenAPI(openAPI);
-        // Populate variantModels before model processing begins so that
-        // getTypeDeclaration can resolve $ref to composed models as value types
-        // (without shared_ptr wrapping) regardless of processing order.
+        // Populate variantModels and build composition descriptors before
+        // model processing begins so that getTypeDeclaration can resolve $ref
+        // to composed models as value types and branch semantics are captured
+        // before fromModel consumes composed schemas.
         Map<String, Schema> schemas = openAPI.getComponents() != null
                 ? openAPI.getComponents().getSchemas() : null;
         if (schemas != null) {
+            // Build descriptor index: must happen after inline model resolver
+            // flattening so all inline schemas have been extracted to component
+            // references with stable $ref targets.
+            compositionDescriptors.clear();
             for (Map.Entry<String, Schema> entry : schemas.entrySet()) {
-                String name = entry.getKey();
+                String schemaName = entry.getKey();
                 Schema schema = entry.getValue();
+                CompositionDescriptor descriptor = buildCompositionDescriptor(
+                        schemaName, schema, openAPI, schemas, new HashSet<>());
+                if (descriptor != null) {
+                    compositionDescriptors.put(schemaName, descriptor);
+                }
                 if ((schema.getOneOf() != null && !schema.getOneOf().isEmpty())
                         || (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty())) {
-                    variantModels.add(name);
+                    variantModels.add(schemaName);
                 }
             }
         }
+    }
+
+    /**
+     * Builds a CompositionDescriptor for a schema if it has oneOf, anyOf, or
+     * allOf branches. Returns null for non-composed schemas.
+     * <p>
+     * Resolves $ref targets recursively with cycle detection via the visited
+     * set. Records JSON Pointer locations for diagnostic use.
+     */
+    private CompositionDescriptor buildCompositionDescriptor(
+            String schemaName, Schema schema, OpenAPI openAPI,
+            Map<String, Schema> schemas, Set<String> visited) {
+        if (schema == null) return null;
+
+        List<Schema> branchSchemas = null;
+        CompositionDescriptor.CompositionKeyword keyword = null;
+
+        if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
+            branchSchemas = schema.getOneOf();
+            keyword = CompositionDescriptor.CompositionKeyword.ONE_OF;
+        } else if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+            branchSchemas = schema.getAnyOf();
+            keyword = CompositionDescriptor.CompositionKeyword.ANY_OF;
+        } else if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) {
+            branchSchemas = schema.getAllOf();
+            keyword = CompositionDescriptor.CompositionKeyword.ALL_OF;
+        }
+
+        if (branchSchemas == null) return null;
+
+        String schemaLocation = "#/components/schemas/" + schemaName;
+        List<CompositionBranchDescriptor> branches = new ArrayList<>();
+
+        for (int index = 0; index < branchSchemas.size(); index++) {
+            Schema branchSchema = branchSchemas.get(index);
+            String sourceRef = null;
+            String resolvedName = null;
+            CompositionBranchDescriptor.NullCapability nullCap =
+                    CompositionBranchDescriptor.NullCapability.NEVER;
+
+            if (branchSchema != null && branchSchema.get$ref() != null) {
+                sourceRef = branchSchema.get$ref();
+                String refName = ModelUtils.getSimpleRef(branchSchema.get$ref());
+                resolvedName = refName;
+                // Detect null type via $ref to null schema
+                if ("null".equals(refName)) {
+                    nullCap = CompositionBranchDescriptor.NullCapability.ALWAYS;
+                } else if (schemas.containsKey(refName) && !visited.contains(refName)) {
+                    visited.add(refName);
+                    Schema refTarget = schemas.get(refName);
+                    if (ModelUtils.isNullTypeSchema(openAPI, refTarget)) {
+                        nullCap = CompositionBranchDescriptor.NullCapability.ALWAYS;
+                    } else {
+                        // Check for nullable: true on the target
+                        if (Boolean.TRUE.equals(refTarget.getNullable())) {
+                            nullCap = CompositionBranchDescriptor.NullCapability.CONDITIONAL;
+                        }
+                    }
+                }
+            } else if (branchSchema != null) {
+                // Inline branch (should be rare after InlineModelResolver)
+                resolvedName = branchSchema.getType();
+                if (resolvedName == null) {
+                    if (branchSchema.getEnum() != null && !branchSchema.getEnum().isEmpty()) {
+                        resolvedName = "enum";
+                    } else {
+                        resolvedName = "object";
+                    }
+                }
+                if (ModelUtils.isNullType(branchSchema)) {
+                    nullCap = CompositionBranchDescriptor.NullCapability.ALWAYS;
+                } else if (Boolean.TRUE.equals(branchSchema.getNullable())) {
+                    nullCap = CompositionBranchDescriptor.NullCapability.CONDITIONAL;
+                }
+            }
+
+            CompositionBranchDescriptor branch = new CompositionBranchDescriptor(
+                    index, sourceRef, resolvedName, null, null, nullCap);
+            branches.add(branch);
+        }
+
+        return new CompositionDescriptor(
+                schemaName, schemaLocation, keyword, branches);
     }
 
     public CppBoostBeastClientCodegen() {
@@ -182,40 +383,56 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         importMapping.put("AnyType", "#include \"AnyType.h\"");
     }
 
-    /** Retains [Model, null] unions while preserving default normalization elsewhere. */
-    public static final class CppBoostBeastOpenAPINormalizer extends OpenAPINormalizer {
+    /**
+     * Generator-specific normalizer that preserves composition structure
+     * (branch cardinality, null multiplicity, original keyword) for all
+     * oneOf/anyOf/anyOf-string-enum schemas. Set-equivalent simplification
+     * happens later in the generator's semantic analyzer (processComposedModel),
+     * never in the pre-descriptor normalizer.
+     */
+    public static class CppBoostBeastOpenAPINormalizer extends OpenAPINormalizer {
         public CppBoostBeastOpenAPINormalizer(OpenAPI openAPI, Map<String, String> inputRules) {
             super(openAPI, inputRules);
         }
 
         @Override
         protected Schema processSimplifyAnyOf(Schema schema) {
-            return nullableModelRef(schema.getAnyOf()) == null
-                    ? super.processSimplifyAnyOf(schema) : schema;
+            if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+                return schema;
+            }
+            return super.processSimplifyAnyOf(schema);
         }
 
         @Override
         protected Schema processSimplifyOneOf(Schema schema) {
-            return nullableModelRef(schema.getOneOf()) == null
-                    ? super.processSimplifyOneOf(schema) : schema;
+            if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
+                return schema;
+            }
+            return super.processSimplifyOneOf(schema);
         }
 
-        private String nullableModelRef(List<Schema> branches) {
-            if (branches == null || branches.size() != 2) {
-                return null;
+        @Override
+        protected Schema processSimplifyAnyOfStringAndEnumString(Schema schema) {
+            if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+                return schema;
             }
-            String referencedModel = null;
-            int nullBranches = 0;
-            for (Schema branch : branches) {
-                if (ModelUtils.isNullTypeSchema(openAPI, branch)) {
-                    nullBranches++;
-                } else if (branch.get$ref() != null) {
-                    referencedModel = ModelUtils.getSimpleRef(branch.get$ref());
-                } else {
-                    return null;
-                }
+            return super.processSimplifyAnyOfStringAndEnumString(schema);
+        }
+
+        @Override
+        protected Schema processSimplifyOneOfEnum(Schema schema) {
+            if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
+                return schema;
             }
-            return nullBranches == 1 ? referencedModel : null;
+            return super.processSimplifyOneOfEnum(schema);
+        }
+
+        @Override
+        protected Schema processSimplifyAnyOfEnum(Schema schema) {
+            if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+                return schema;
+            }
+            return super.processSimplifyAnyOfEnum(schema);
         }
     }
 
@@ -898,6 +1115,38 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         cm.vendorExtensions.put("x-cpp-composed-keyword", composedKeyword);
         composedKeywordsByModel.put(cm.classname, composedKeyword);
 
+        // Phase 1: Populate x-cpp-composition-branches alongside existing
+        // x-cpp-branches. These are template-safe Maps that preserve original
+        // branch order, schema references, null capabilities, and assertion
+        // metadata. Phase 3 switches templates to use this new extension.
+        CompositionDescriptor descriptor = compositionDescriptors.get(cm.classname);
+        if (descriptor != null) {
+            cm.vendorExtensions.put("x-cpp-composition-branches", descriptor.toTemplateMap());
+        } else {
+            // Fallback: build branch maps from the composed branches when no
+            // precomputed descriptor exists (e.g., inline schemas not in the
+            // component schema index).
+            List<Map<String, Object>> fallbackBranches = new ArrayList<>();
+            for (int bi = 0; bi < composedBranches.size(); bi++) {
+                ComposedBranch cb = composedBranches.get(bi);
+                Map<String, Object> branchMap = new LinkedHashMap<>();
+                branchMap.put("branch-index", bi);
+                branchMap.put("source-schema-ref", null);
+                branchMap.put("resolved-schema-name", cb.cppType);
+                branchMap.put("storage-cpp-type", cb.cppType);
+                branchMap.put("validator-id", null);
+                branchMap.put("null-capability",
+                        "std::nullptr_t".equals(cb.cppType) ? "always" : "never");
+                fallbackBranches.add(branchMap);
+            }
+            Map<String, Object> fallbackMap = new LinkedHashMap<>();
+            fallbackMap.put("schema-name", cm.classname);
+            fallbackMap.put("schema-location", null);
+            fallbackMap.put("keyword", composedKeyword);
+            fallbackMap.put("branches", fallbackBranches);
+            cm.vendorExtensions.put("x-cpp-composition-branches", fallbackMap);
+        }
+
         // Store per-branch isEnum metadata for Phase 1b re-lowering.
         // Phase 1b resolves model-name branch types through aliases to
         // C++ type strings but the isEnum flag (used by Rule 6 for oneOf
@@ -1436,11 +1685,16 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                         && !"object".equals(existingType)
                                         && !"unknown".equals(propType)
                                         && !"unknown".equals(existingType)) {
-                                    throw new RuntimeException(
-                                        "allOf property type conflict in schema '" + name
-                                        + "': property '" + propName + "' has incompatible types ["
-                                        + existingType + ", " + propType
-                                        + "]. allOf with conflicting property types is not supported.");
+                                    // Phase 5 will handle this via recursive
+                                    // allOf intersection. For Phase 1, warn and
+                                    // let generation proceed with last-wins type
+                                    // rather than failing closed.
+                                    LOGGER.warn(
+                                        "allOf property type conflict in schema '{}': "
+                                        + "property '{}' has incompatible types [{} , {}]. "
+                                        + "Using last-wins type. Phase 5 will implement "
+                                        + "recursive intersection.",
+                                        name, propName, existingType, propType);
                                 }
                             } else {
                                 allOfPropertyTypes.put(propName, propType);
