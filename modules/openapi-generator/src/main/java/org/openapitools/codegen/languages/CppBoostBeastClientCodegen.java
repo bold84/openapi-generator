@@ -779,6 +779,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
 
         supportingFiles.add(new SupportingFile("validation-types.mustache", "model", "ValidationTypes.h"));
+        supportingFiles.add(new SupportingFile("NullableField.h.mustache", "model", "NullableField.h"));
         supportingFiles.add(new SupportingFile("README.mustache", "", "README.md"));
         supportingFiles.add(new SupportingFile("CMakeLists.txt.mustache", "", "CMakeLists.txt"));
         supportingFiles.add(new SupportingFile("http-client-header.mustache", "api", "HttpClient.h"));
@@ -1164,7 +1165,32 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
-        // Phase 3c: Tag properties is deferred to postProcessAllModels (which runs
+        // Phase 3c (Phase 6): Upgrade optional nullable properties from std::optional<T>
+        // to NullableField<T> for full tri-state (missing | null | value) round-trip.
+        // Required nullable properties remain std::optional<T> because the decode path
+        // already rejects missing keys — only tri-state matters for optional fields.
+        for (ModelMap mo : result.getModels()) {
+            CodegenModel cm = mo.getModel();
+            boolean needsNullableFieldInclude = false;
+            for (CodegenProperty var : allVarsOf(cm)) {
+                if (var.isNullable && !var.required
+                        && var.dataType != null
+                        && var.dataType.startsWith("std::optional<")) {
+                    String innerType = extractOptionalInnerType(var.dataType);
+                    if (innerType != null) {
+                        var.dataType = "NullableField<" + innerType + ">";
+                        var.vendorExtensions.put("x-cpp-nullable-field", true);
+                        var.vendorExtensions.put("x-cpp-nullable-field-inner-type", innerType);
+                        needsNullableFieldInclude = true;
+                    }
+                }
+            }
+            if (needsNullableFieldInclude) {
+                cm.imports.add("#include \"NullableField.h\"");
+            }
+        }
+
+        // Phase 3d: Tag properties is deferred to postProcessAllModels (which runs
         // once with the full model map) because postProcessModels is called per-model,
         // so a cross-model lookup of variant aliases is not possible here.
 
@@ -3412,6 +3438,39 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
         result.add(args.substring(start));
         return result;
+    }
+
+    /**
+     * Extracts the inner type from a std::optional<T> type declaration, correctly
+     * handling nested angle brackets.
+     * <ul>
+     *   <li>{@code std::optional<std::string>} → {@code std::string}</li>
+     *   <li>{@code std::optional<std::vector<int>>} → {@code std::vector<int>}</li>
+     *   <li>{@code std::optional<MyModel>} → {@code MyModel}</li>
+     *   <li>{@code std::string} → {@code null}</li>
+     * </ul>
+     *
+     * @return the inner type, or null if the input does not start with "std::optional<"
+     */
+    private static String extractOptionalInnerType(String type) {
+        if (type == null || !type.startsWith("std::optional<")) {
+            return null;
+        }
+        // Strip prefix "std::optional<" (14 chars) and find matching '>'
+        int depth = 0;
+        int start = 14; // length of "std::optional<"
+        for (int i = start; i < type.length(); i++) {
+            char c = type.charAt(i);
+            if (c == '<') {
+                depth++;
+            } else if (c == '>') {
+                if (depth == 0) {
+                    return type.substring(start, i);
+                }
+                depth--;
+            }
+        }
+        return null;
     }
 
     /**
