@@ -199,6 +199,11 @@ static void testWireFormatStructure() {
     assert(wire.find("\r\n\r\nvalue\r\n") != std::string::npos);
 }
 
+} // namespace org
+} // namespace openapitools
+} // namespace client
+} // namespace api
+
 int main() {
     testExplicitEncoding();
     testTextPlainDefault();
@@ -211,8 +216,3 @@ int main() {
     testWireFormatStructure();
     return 0;
 }
-
-} // namespace org
-} // namespace openapitools
-} // namespace client
-} // namespace api

@@ -621,7 +621,7 @@ boost::json::object User::toJsonObject_internal() const
 {
     boost::json::object object;
         if (m_IdIsSet) {
-            object["id"] = JsonValueConverter<int64_t>::toJsonValue(getId());
+            object["id"] = JsonValueConverter<std::int64_t>::toJsonValue(getId());
         }
         if (m_UsernameIsSet) {
             object["username"] = JsonValueConverter<std::string>::toJsonValue(getUsername());
@@ -642,7 +642,7 @@ boost::json::object User::toJsonObject_internal() const
             object["phone"] = JsonValueConverter<std::string>::toJsonValue(getPhone());
         }
         if (m_UserStatusIsSet) {
-            object["userStatus"] = JsonValueConverter<int32_t>::toJsonValue(getUserStatus());
+            object["userStatus"] = JsonValueConverter<std::int32_t>::toJsonValue(getUserStatus());
         }
     return object;
 }
@@ -661,7 +661,7 @@ void User::fromJsonObject_internal(boost::json::object const& object)
         const auto IdIt = object.find("id");
         if (IdIt != object.end()) {
             try {
-                setId(JsonValueConverter<int64_t>::fromJsonValue(IdIt->value()));
+                setId(JsonValueConverter<std::int64_t>::fromJsonValue(IdIt->value()));
             } catch (std::exception const& ex) {
                 throw std::invalid_argument(
                     "Decode failed for 'id' in User: " + std::string(ex.what()));
@@ -738,7 +738,7 @@ void User::fromJsonObject_internal(boost::json::object const& object)
         const auto UserStatusIt = object.find("userStatus");
         if (UserStatusIt != object.end()) {
             try {
-                setUserStatus(JsonValueConverter<int32_t>::fromJsonValue(UserStatusIt->value()));
+                setUserStatus(JsonValueConverter<std::int32_t>::fromJsonValue(UserStatusIt->value()));
             } catch (std::exception const& ex) {
                 throw std::invalid_argument(
                     "Decode failed for 'userStatus' in User: " + std::string(ex.what()));
@@ -747,12 +747,12 @@ void User::fromJsonObject_internal(boost::json::object const& object)
     }
 }
 
-int64_t User::getId() const
+std::int64_t User::getId() const
 {
     return m_Id;
 }
 
-void User::setId(int64_t value)
+void User::setId(std::int64_t value)
 {
     
     m_Id = std::move(value);
@@ -824,12 +824,12 @@ void User::setPhone(std::string value)
     m_Phone = std::move(value);
     m_PhoneIsSet = true;
 }
-int32_t User::getUserStatus() const
+std::int32_t User::getUserStatus() const
 {
     return m_UserStatus;
 }
 
-void User::setUserStatus(int32_t value)
+void User::setUserStatus(std::int32_t value)
 {
     
     m_UserStatus = std::move(value);

@@ -621,7 +621,7 @@ boost::json::object Tag::toJsonObject_internal() const
 {
     boost::json::object object;
         if (m_IdIsSet) {
-            object["id"] = JsonValueConverter<int64_t>::toJsonValue(getId());
+            object["id"] = JsonValueConverter<std::int64_t>::toJsonValue(getId());
         }
         if (m_NameIsSet) {
             object["name"] = JsonValueConverter<std::string>::toJsonValue(getName());
@@ -637,7 +637,7 @@ void Tag::fromJsonObject_internal(boost::json::object const& object)
         const auto IdIt = object.find("id");
         if (IdIt != object.end()) {
             try {
-                setId(JsonValueConverter<int64_t>::fromJsonValue(IdIt->value()));
+                setId(JsonValueConverter<std::int64_t>::fromJsonValue(IdIt->value()));
             } catch (std::exception const& ex) {
                 throw std::invalid_argument(
                     "Decode failed for 'id' in Tag: " + std::string(ex.what()));
@@ -657,12 +657,12 @@ void Tag::fromJsonObject_internal(boost::json::object const& object)
     }
 }
 
-int64_t Tag::getId() const
+std::int64_t Tag::getId() const
 {
     return m_Id;
 }
 
-void Tag::setId(int64_t value)
+void Tag::setId(std::int64_t value)
 {
     
     m_Id = std::move(value);

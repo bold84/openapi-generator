@@ -621,7 +621,7 @@ boost::json::object ApiResponse::toJsonObject_internal() const
 {
     boost::json::object object;
         if (m_CodeIsSet) {
-            object["code"] = JsonValueConverter<int32_t>::toJsonValue(getCode());
+            object["code"] = JsonValueConverter<std::int32_t>::toJsonValue(getCode());
         }
         if (m_TypeIsSet) {
             object["type"] = JsonValueConverter<std::string>::toJsonValue(getType());
@@ -641,7 +641,7 @@ void ApiResponse::fromJsonObject_internal(boost::json::object const& object)
         const auto CodeIt = object.find("code");
         if (CodeIt != object.end()) {
             try {
-                setCode(JsonValueConverter<int32_t>::fromJsonValue(CodeIt->value()));
+                setCode(JsonValueConverter<std::int32_t>::fromJsonValue(CodeIt->value()));
             } catch (std::exception const& ex) {
                 throw std::invalid_argument(
                     "Decode failed for 'code' in ApiResponse: " + std::string(ex.what()));
@@ -672,12 +672,12 @@ void ApiResponse::fromJsonObject_internal(boost::json::object const& object)
     }
 }
 
-int32_t ApiResponse::getCode() const
+std::int32_t ApiResponse::getCode() const
 {
     return m_Code;
 }
 
-void ApiResponse::setCode(int32_t value)
+void ApiResponse::setCode(std::int32_t value)
 {
     
     m_Code = std::move(value);

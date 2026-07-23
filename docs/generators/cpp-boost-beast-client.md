@@ -57,9 +57,9 @@ These options may be applied as additional-properties (cli) or configOptions (pl
 <li>double</li>
 <li>float</li>
 <li>int</li>
-<li>int32_t</li>
-<li>int64_t</li>
 <li>long</li>
+<li>std::int32_t</li>
+<li>std::int64_t</li>
 </ul>
 
 ## RESERVED WORDS

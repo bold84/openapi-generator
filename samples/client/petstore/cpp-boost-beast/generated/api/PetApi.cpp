@@ -540,7 +540,7 @@ boost::json::value toRequestJsonValue(const CompositionBranchValue<Idx, Val>& v)
 
 template<typename T>
 boost::json::value toRequestJsonValue(const std::shared_ptr<T>& requestValue) {
-    return requestValue == nullptr ? boost::json::value(nullptr) : requestValue->toJsonValue();
+    return requestValue == nullptr ? boost::json::value(nullptr) : toRequestJsonValueImpl(*requestValue, HasRequestToJsonValue<T>{});
 }
 
 template<typename... Ts>
@@ -673,7 +673,7 @@ struct ResponseJsonValueConverter<boost::json::value> {
 template<typename T>
 struct ResponseJsonValueConverter<std::shared_ptr<T>> {
     static std::shared_ptr<T> convert(const boost::json::value& responseValue) {
-        return responseValue.is_null() ? nullptr : std::make_shared<T>(responseValue);
+        return responseValue.is_null() ? nullptr : std::make_shared<T>(ResponseJsonValueConverter<T>::convert(responseValue));
     }
 };
 
@@ -1076,7 +1076,7 @@ PetApi::updatePet(
 
 void
 PetApi::deletePet(
-    const int64_t& petId, const std::string& apiKey) {
+    const std::int64_t& petId, const std::string& apiKey) {
     std::string serializedRequestBody;
     std::string path = m_context + "/pet/{petId}";
     std::map<std::string, std::string> headers;
@@ -1110,7 +1110,7 @@ PetApi::deletePet(
 
 std::shared_ptr<Pet>
 PetApi::getPetById(
-    const int64_t& petId) {
+    const std::int64_t& petId) {
     std::string serializedRequestBody;
     std::string path = m_context + "/pet/{petId}";
     std::map<std::string, std::string> headers;
@@ -1158,7 +1158,7 @@ PetApi::getPetById(
 
 void
 PetApi::updatePetWithForm(
-    const int64_t& petId, const std::string& name, const std::string& status) {
+    const std::int64_t& petId, const std::string& name, const std::string& status) {
     std::string serializedRequestBody;
     std::string path = m_context + "/pet/{petId}";
     std::map<std::string, std::string> headers;
@@ -1320,7 +1320,7 @@ PetApi::findPetsByTags(
 
 std::shared_ptr<ApiResponse>
 PetApi::uploadFile(
-    const int64_t& petId, const std::string& additionalMetadata, const std::string& file) {
+    const std::int64_t& petId, const std::string& additionalMetadata, const std::string& file) {
     std::string serializedRequestBody;
     std::string path = m_context + "/pet/{petId}/uploadImage";
     std::map<std::string, std::string> headers;

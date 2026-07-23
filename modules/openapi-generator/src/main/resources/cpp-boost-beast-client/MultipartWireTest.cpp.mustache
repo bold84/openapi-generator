@@ -198,6 +198,10 @@ static void testWireFormatStructure() {
     assert(wire.find("\r\n\r\nvalue\r\n") != std::string::npos);
 }
 
+{{#apiNamespaceDeclarations}}
+} // namespace {{this}}
+{{/apiNamespaceDeclarations}}
+
 int main() {
     testExplicitEncoding();
     testTextPlainDefault();
@@ -210,7 +214,3 @@ int main() {
     testWireFormatStructure();
     return 0;
 }
-
-{{#apiNamespaceDeclarations}}
-} // namespace {{this}}
-{{/apiNamespaceDeclarations}}

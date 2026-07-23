@@ -53,8 +53,8 @@ public:
     /// <summary>
     /// 
     /// </summary>
-    int32_t getCode() const;
-    void setCode(int32_t value);
+    std::int32_t getCode() const;
+    void setCode(std::int32_t value);
 
     /// <summary>
     /// 
@@ -78,7 +78,7 @@ protected:
 
 
 protected:
-    int32_t m_Code = 0;
+    std::int32_t m_Code = 0;
     bool m_CodeIsSet = false;
     std::string m_Type = "";
     bool m_TypeIsSet = false;

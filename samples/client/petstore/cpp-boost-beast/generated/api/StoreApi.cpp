@@ -540,7 +540,7 @@ boost::json::value toRequestJsonValue(const CompositionBranchValue<Idx, Val>& v)
 
 template<typename T>
 boost::json::value toRequestJsonValue(const std::shared_ptr<T>& requestValue) {
-    return requestValue == nullptr ? boost::json::value(nullptr) : requestValue->toJsonValue();
+    return requestValue == nullptr ? boost::json::value(nullptr) : toRequestJsonValueImpl(*requestValue, HasRequestToJsonValue<T>{});
 }
 
 template<typename... Ts>
@@ -673,7 +673,7 @@ struct ResponseJsonValueConverter<boost::json::value> {
 template<typename T>
 struct ResponseJsonValueConverter<std::shared_ptr<T>> {
     static std::shared_ptr<T> convert(const boost::json::value& responseValue) {
-        return responseValue.is_null() ? nullptr : std::make_shared<T>(responseValue);
+        return responseValue.is_null() ? nullptr : std::make_shared<T>(ResponseJsonValueConverter<T>::convert(responseValue));
     }
 };
 
@@ -1001,7 +1001,7 @@ StoreApi::deleteOrder(
 
 std::shared_ptr<Order>
 StoreApi::getOrderById(
-    const int64_t& orderId) {
+    const std::int64_t& orderId) {
     std::string serializedRequestBody;
     std::string path = m_context + "/store/order/{orderId}";
     std::map<std::string, std::string> headers;
@@ -1047,7 +1047,7 @@ StoreApi::getOrderById(
     throw StoreApiException(statusCode, "Unexpected HTTP status code");
 }
 
-std::map<std::string, int32_t>
+std::map<std::string, std::int32_t>
 StoreApi::getInventory(
     ) {
     std::string serializedRequestBody;
@@ -1075,9 +1075,9 @@ StoreApi::getInventory(
         handleUncaughtException();
     }
 
-    std::map<std::string, int32_t> deserializedResponse = std::map<std::string, int32_t>();
+    std::map<std::string, std::int32_t> deserializedResponse = std::map<std::string, std::int32_t>();
     if (statusCode == boost::beast::http::status(200)) {
-        ResponseBodyDeserializer<std::map<std::string, int32_t>>::deserialize(
+        ResponseBodyDeserializer<std::map<std::string, std::int32_t>>::deserialize(
             deserializedResponse,
             responseBody,
             responseContentType,

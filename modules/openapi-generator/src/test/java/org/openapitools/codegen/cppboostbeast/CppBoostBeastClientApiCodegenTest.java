@@ -60,7 +60,7 @@ public class CppBoostBeastClientApiCodegenTest {
         assertTrue(generatedApiHeader.contains("m_client(std::move(client))"));
 
         String defaultOnlyMethod = extractMethod(generatedApiSource, "RegressionApi::getDefaultOnly(");
-        assertTrue(defaultOnlyMethod.contains("ResponseBodyDeserializer<int32_t>::deserialize("));
+        assertTrue(defaultOnlyMethod.contains("ResponseBodyDeserializer<std::int32_t>::deserialize("));
         assertFalse(defaultOnlyMethod.contains("throw RegressionApiException"));
 
         String explicitThenDefaultMethod = extractMethod(generatedApiSource, "RegressionApi::getDefaultAfterExplicit(");
@@ -71,9 +71,9 @@ public class CppBoostBeastClientApiCodegenTest {
         // handled first, then the default branch deserializes std::string.
         assertTrue(explicitThenDefaultMethod.contains("executeWithMetadata"),
                 "Response-union method must use executeWithMetadata");
-        // 200 branch must deserialize int32_t before the default fallthrough
-        assertTrue(explicitThenDefaultMethod.contains("int32_t{"),
-                "200 branch must deserialize int32_t");
+        // 200 branch must deserialize std::int32_t before the default fallthrough
+        assertTrue(explicitThenDefaultMethod.contains("std::int32_t{"),
+                "200 branch must deserialize std::int32_t");
         // Default branch deserializes std::string (no throw) at the end
         assertTrue(explicitThenDefaultMethod.indexOf("std::string{") > explicitResponsePosition,
                 "Default branch must deserialize std::string after the 200 branch");

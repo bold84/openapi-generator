@@ -686,13 +686,13 @@ boost::json::object Order::toJsonObject_internal() const
 {
     boost::json::object object;
         if (m_IdIsSet) {
-            object["id"] = JsonValueConverter<int64_t>::toJsonValue(getId());
+            object["id"] = JsonValueConverter<std::int64_t>::toJsonValue(getId());
         }
         if (m_PetIdIsSet) {
-            object["petId"] = JsonValueConverter<int64_t>::toJsonValue(getPetId());
+            object["petId"] = JsonValueConverter<std::int64_t>::toJsonValue(getPetId());
         }
         if (m_QuantityIsSet) {
-            object["quantity"] = JsonValueConverter<int32_t>::toJsonValue(getQuantity());
+            object["quantity"] = JsonValueConverter<std::int32_t>::toJsonValue(getQuantity());
         }
         if (m_ShipDateIsSet) {
             object["shipDate"] = JsonValueConverter<std::string>::toJsonValue(getShipDate());
@@ -718,7 +718,7 @@ void Order::fromJsonObject_internal(boost::json::object const& object)
         const auto IdIt = object.find("id");
         if (IdIt != object.end()) {
             try {
-                setId(JsonValueConverter<int64_t>::fromJsonValue(IdIt->value()));
+                setId(JsonValueConverter<std::int64_t>::fromJsonValue(IdIt->value()));
             } catch (std::exception const& ex) {
                 throw std::invalid_argument(
                     "Decode failed for 'id' in Order: " + std::string(ex.what()));
@@ -729,7 +729,7 @@ void Order::fromJsonObject_internal(boost::json::object const& object)
         const auto PetIdIt = object.find("petId");
         if (PetIdIt != object.end()) {
             try {
-                setPetId(JsonValueConverter<int64_t>::fromJsonValue(PetIdIt->value()));
+                setPetId(JsonValueConverter<std::int64_t>::fromJsonValue(PetIdIt->value()));
             } catch (std::exception const& ex) {
                 throw std::invalid_argument(
                     "Decode failed for 'petId' in Order: " + std::string(ex.what()));
@@ -740,7 +740,7 @@ void Order::fromJsonObject_internal(boost::json::object const& object)
         const auto QuantityIt = object.find("quantity");
         if (QuantityIt != object.end()) {
             try {
-                setQuantity(JsonValueConverter<int32_t>::fromJsonValue(QuantityIt->value()));
+                setQuantity(JsonValueConverter<std::int32_t>::fromJsonValue(QuantityIt->value()));
             } catch (std::exception const& ex) {
                 throw std::invalid_argument(
                     "Decode failed for 'quantity' in Order: " + std::string(ex.what()));
@@ -782,34 +782,34 @@ void Order::fromJsonObject_internal(boost::json::object const& object)
     }
 }
 
-int64_t Order::getId() const
+std::int64_t Order::getId() const
 {
     return m_Id;
 }
 
-void Order::setId(int64_t value)
+void Order::setId(std::int64_t value)
 {
     
     m_Id = std::move(value);
     m_IdIsSet = true;
 }
-int64_t Order::getPetId() const
+std::int64_t Order::getPetId() const
 {
     return m_PetId;
 }
 
-void Order::setPetId(int64_t value)
+void Order::setPetId(std::int64_t value)
 {
     
     m_PetId = std::move(value);
     m_PetIdIsSet = true;
 }
-int32_t Order::getQuantity() const
+std::int32_t Order::getQuantity() const
 {
     return m_Quantity;
 }
 
-void Order::setQuantity(int32_t value)
+void Order::setQuantity(std::int32_t value)
 {
     
     m_Quantity = std::move(value);

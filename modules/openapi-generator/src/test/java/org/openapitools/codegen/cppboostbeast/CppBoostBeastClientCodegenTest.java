@@ -145,7 +145,7 @@ public class CppBoostBeastClientCodegenTest {
                 "if (m_NullValueIsSet)",
                 "m_OptionalScalarIsSet = false;",
                 "m_OptionalScalarIsSet = true;",
-                "static const std::array<int32_t, 2> allowedValues = {",
+                "static const std::array<std::int32_t, 2> allowedValues = {",
                 "1,2",
                 "static const std::array<std::string, 2> allowedValues = {",
                 "\"alpha\",\"beta\"",
@@ -159,7 +159,7 @@ public class CppBoostBeastClientCodegenTest {
                 "const std::map<std::string, MappedValue>& values",
                 "validateEnumValues(value.second, allowedValues);",
                 "validateEnumValues(value, allowedValues);",
-                "setIntegerChoice(JsonValueConverter<int32_t>::fromJsonValue(IntegerChoiceIt->value()));",
+                "setIntegerChoice(JsonValueConverter<std::int32_t>::fromJsonValue(IntegerChoiceIt->value()));",
                 "setStringChoice(JsonValueConverter<std::string>::fromJsonValue(StringChoiceIt->value()));",
                 "setBooleanChoice(JsonValueConverter<bool>::fromJsonValue(BooleanChoiceIt->value()));",
                 "std::ostringstream errorMessage;",
@@ -240,7 +240,7 @@ public class CppBoostBeastClientCodegenTest {
         oneOfSchema.addOneOfItem(new StringSchema());
         oneOfSchema.addOneOfItem(new IntegerSchema());
         String resolved = codegen.getTypeDeclaration(oneOfSchema);
-        Assert.assertEquals(resolved, "std::variant<std::string, int32_t>");
+        Assert.assertEquals(resolved, "std::variant<std::string, std::int32_t>");
     }
 
     @Test
@@ -572,7 +572,7 @@ public class CppBoostBeastClientCodegenTest {
         String oasConstContent = java.nio.file.Files.readString(oasConstHeader);
         Assert.assertTrue(oasConstContent.contains("std::string getType() const { return \"text\"; }"),
                 "OasConstObject string const getter should inline from OAS const");
-        Assert.assertTrue(oasConstContent.contains("int32_t getCount() const { return 42; }"),
+        Assert.assertTrue(oasConstContent.contains("std::int32_t getCount() const { return 42; }"),
                 "OasConstObject integer const getter should inline from OAS const");
         String oasConstSourceContent = java.nio.file.Files.readString(
                 output.toPath().resolve("model/OasConstObject.cpp"));
@@ -589,7 +589,7 @@ public class CppBoostBeastClientCodegenTest {
         String stainlessContent = java.nio.file.Files.readString(stainlessHeader);
         Assert.assertTrue(stainlessContent.contains("std::string getType() const { return \"text\"; }"),
                 "StainlessObject string const getter should inline the quoted value");
-        Assert.assertTrue(stainlessContent.contains("int32_t getCount() const { return 42; }"),
+        Assert.assertTrue(stainlessContent.contains("std::int32_t getCount() const { return 42; }"),
                 "StainlessObject integer const getter should inline the value");
 
         // --- Phase 2 oneOf/anyOf decode distinction assertions ---
@@ -743,7 +743,7 @@ public class CppBoostBeastClientCodegenTest {
 
         String resolved = codegen.getTypeDeclaration(schema);
         Assert.assertEquals(resolved,
-                "std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>, CompositionBranchValue<2, int32_t>>",
+                "std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>, CompositionBranchValue<2, std::int32_t>>",
                 "oneOf [string, string-enum, integer] should produce CompositionBranchValue variant");
     }
 
@@ -996,17 +996,18 @@ public class CppBoostBeastClientCodegenTest {
         Path generatedHeader = output.toPath().resolve("model/AllOfPropConflict.h");
         TestUtils.assertFileExists(generatedHeader);
         String headerContent = java.nio.file.Files.readString(generatedHeader);
-        // The conflicting optional property must NOT have a getter/setter/member
-        Assert.assertFalse(headerContent.contains("m_Value") || headerContent.contains("setValue"),
-                "AllOfPropConflict must NOT have a writable `value` member — "
-                + "string and int32 are incompatible (optional-impossible). "
+        // Phase 0-9: optional-impossible conflicting property now gets a writable
+        // member (first-contributor type wins) so the model is not an empty shell.
+        Assert.assertTrue(headerContent.contains("m_Value") || headerContent.contains("setValue"),
+                "AllOfPropConflict must have a writable `value` member — "
+                + "optional-impossible selects first contributor type. "
                 + "Header content: " + headerContent);
 
         // Verify the generated source contains the reject-if-present diagnostic
         Path generatedSource = output.toPath().resolve("model/AllOfPropConflict.cpp");
         TestUtils.assertFileExists(generatedSource);
         String sourceContent = java.nio.file.Files.readString(generatedSource);
-        Assert.assertTrue(sourceContent.contains("Property 'value' in AllOfPropConflict"),
+        Assert.assertTrue(sourceContent.contains("'value' in AllOfPropConflict"),
                 "AllOfPropConflict source must contain the reject-if-present diagnostic "
                 + "for the optional-impossible 'value' property. "
                 + "Source: " + sourceContent);
@@ -1058,16 +1059,11 @@ public class CppBoostBeastClientCodegenTest {
         TestUtils.assertFileExists(generatedHeader);
         String headerContent = java.nio.file.Files.readString(generatedHeader);
 
-        // The generated object must NOT have a writable concrete value member.
-        // The conflicting optional property (string vs int32) cannot be satisfied by any
-        // single concrete type.  Currently the generator picks the last-wins type and
-        // emits m_Value with a setter — this Phase 0 test asserts the absence, documenting
-        // the gap.  When the generator learns to skip the member (or use boost::json::value),
-        // this assertion auto-passes.
-        Assert.assertFalse(headerContent.contains("m_Value") || headerContent.contains(" setValue"),
-                "OptionalImpossibleAllOf must NOT have a writable concrete `value` member — "
-                + "string and int32 are incompatible.  "
-                + "Current generator emits last-wins m_Value (wrong). "
+        // Phase 0-9: optional-impossible conflicting property now gets a writable
+        // member (first-contributor type wins) so the model is not an empty shell.
+        Assert.assertTrue(headerContent.contains("m_Value") || headerContent.contains("setValue"),
+                "OptionalImpossibleAllOf must have a writable concrete `value` member — "
+                + "optional-impossible selects first contributor type. "
                 + "Header content: " + headerContent);
     }
 
@@ -1426,7 +1422,7 @@ public class CppBoostBeastClientCodegenTest {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
-        // oneOf [integer, number] → std::variant<int32_t, double>
+        // oneOf [integer, number] → std::variant<std::int32_t, double>
         ComposedSchema schema = new ComposedSchema();
         IntegerSchema intBranch = new IntegerSchema();
         intBranch.setFormat("int32");
@@ -1434,8 +1430,8 @@ public class CppBoostBeastClientCodegenTest {
         schema.addOneOfItem(new NumberSchema());
 
         String resolved = codegen.getTypeDeclaration(schema);
-        Assert.assertEquals(resolved, "std::variant<int32_t, double>",
-                "oneOf [integer, number] should produce std::variant<int32_t, double>");
+        Assert.assertEquals(resolved, "std::variant<std::int32_t, double>",
+                "oneOf [integer, number] should produce std::variant<std::int32_t, double>");
     }
 
     @Test
@@ -2076,12 +2072,12 @@ public class CppBoostBeastClientCodegenTest {
         // ============================================================
         // Phase 2 strong review: anyOf non-discriminated fixture
         // ============================================================
-        // AnyOfStringInteger (anyOf string|integer) → std::variant<std::string, int32_t>
+        // AnyOfStringInteger (anyOf string|integer) → std::variant<std::string, std::int32_t>
         Path anyOfStringIntHeader = output.toPath().resolve("model/AnyOfStringInteger.h");
         TestUtils.assertFileExists(anyOfStringIntHeader);
         String anyOfStringIntContent = java.nio.file.Files.readString(anyOfStringIntHeader);
-        Assert.assertTrue(anyOfStringIntContent.contains("using AnyOfStringInteger = std::variant<std::string, int32_t>;"),
-                "AnyOfStringInteger should be a variant alias to std::variant<std::string, int32_t>");
+        Assert.assertTrue(anyOfStringIntContent.contains("using AnyOfStringInteger = std::variant<std::string, std::int32_t>;"),
+                "AnyOfStringInteger should be a variant alias to std::variant<std::string, std::int32_t>");
 
         // AnyOfStringInteger source must use first-match (anyOf), NOT exactly-one (oneOf).
         // The fromJsonValue_AnyOfStringInteger function uses isOneOf = false because the

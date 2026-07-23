@@ -101,7 +101,7 @@ public:
     /// </remarks>
     virtual void
     deletePet(
-        const int64_t& petId, const std::string& apiKey);
+        const std::int64_t& petId, const std::string& apiKey);
 
     /// <summary>
     /// Find pet by ID
@@ -111,7 +111,7 @@ public:
     /// </remarks>
     virtual std::shared_ptr<Pet>
     getPetById(
-        const int64_t& petId);
+        const std::int64_t& petId);
     /// <summary>
     /// Updates a pet in the store with form data
     /// </summary>
@@ -120,7 +120,7 @@ public:
     /// </remarks>
     virtual void
     updatePetWithForm(
-        const int64_t& petId, const std::string& name, const std::string& status);
+        const std::int64_t& petId, const std::string& name, const std::string& status);
     /// <summary>
     /// Finds Pets by status
     /// </summary>
@@ -149,7 +149,7 @@ public:
     /// </remarks>
     virtual std::shared_ptr<ApiResponse>
     uploadFile(
-        const int64_t& petId, const std::string& additionalMetadata, const std::string& file);
+        const std::int64_t& petId, const std::string& additionalMetadata, const std::string& file);
 
 
 protected:

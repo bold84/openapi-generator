@@ -53,20 +53,20 @@ public:
     /// <summary>
     /// 
     /// </summary>
-    int64_t getId() const;
-    void setId(int64_t value);
+    std::int64_t getId() const;
+    void setId(std::int64_t value);
 
     /// <summary>
     /// 
     /// </summary>
-    int64_t getPetId() const;
-    void setPetId(int64_t value);
+    std::int64_t getPetId() const;
+    void setPetId(std::int64_t value);
 
     /// <summary>
     /// 
     /// </summary>
-    int32_t getQuantity() const;
-    void setQuantity(int32_t value);
+    std::int32_t getQuantity() const;
+    void setQuantity(std::int32_t value);
 
     /// <summary>
     /// 
@@ -96,11 +96,11 @@ protected:
 
 
 protected:
-    int64_t m_Id = 0L;
+    std::int64_t m_Id = 0L;
     bool m_IdIsSet = false;
-    int64_t m_PetId = 0L;
+    std::int64_t m_PetId = 0L;
     bool m_PetIdIsSet = false;
-    int32_t m_Quantity = 0;
+    std::int32_t m_Quantity = 0;
     bool m_QuantityIsSet = false;
     std::string m_ShipDate = "";
     bool m_ShipDateIsSet = false;

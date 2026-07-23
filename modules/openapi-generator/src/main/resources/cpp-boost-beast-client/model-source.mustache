@@ -421,79 +421,80 @@ ValidationResult validate_{{validator-id}}(
     {{#has-validation-enum}}
     {{! validation-enum-kind tells the template what predominant kind the
         enum values are: "string", "integer", "number", or "bool". }}
-    {{#validation-enum-kind}}
-    if (std::string("{{.}}") == "string") {
-        if (instance.is_string()) {
-            bool found = false;
-            {{#validation-enum-values}}
-            if (instance.as_string() == "{{.}}") found = true;
-            {{/validation-enum-values}}
-            if (!found) {
-                return ValidationResult::invalidAt(path,
-                    "string value not in allowed enum set");
-            }
-        } else {
-            return ValidationResult::invalidAt(path, "expected string enum value");
-        }
-    } else if (std::string("{{.}}") == "integer") {
-        if (instance.is_int64() || instance.is_uint64()) {
-            bool found = false;
-            std::int64_t rawInt = instance.is_int64()
-                ? instance.as_int64() : static_cast<std::int64_t>(instance.as_uint64());
-            {{#validation-enum-values}}
-            if (rawInt == static_cast<std::int64_t>({{.}})) found = true;
-            {{/validation-enum-values}}
-            if (!found) {
-                return ValidationResult::invalidAt(path,
-                    "integer value not in allowed enum set");
-            }
-        } else if (isJsonInteger(instance)) {
-            // Accept integral doubles as enum matches via mathematical integer
-            double rawDbl = instance.as_double();
-            bool found = false;
-            {{#validation-enum-values}}
-            if (rawDbl == static_cast<double>({{.}})) found = true;
-            {{/validation-enum-values}}
-            if (!found) {
-                return ValidationResult::invalidAt(path,
-                    "numeric value not in allowed enum set");
-            }
-        } else {
-            return ValidationResult::invalidAt(path, "expected integer enum value");
-        }
-    } else if (std::string("{{.}}") == "number") {
-        if (isJsonNumber(instance)) {
-            double rawNum = instance.is_double()
-                ? instance.as_double()
-                : static_cast<double>(instance.is_int64()
-                    ? instance.as_int64()
-                    : static_cast<std::int64_t>(instance.as_uint64()));
-            bool found = false;
-            {{#validation-enum-values}}
-            if (std::abs(rawNum - static_cast<double>({{.}})) < 1e-12) found = true;
-            {{/validation-enum-values}}
-            if (!found) {
-                return ValidationResult::invalidAt(path,
-                    "number value not in allowed enum set");
-            }
-        } else {
-            return ValidationResult::invalidAt(path, "expected number enum value");
-        }
-    } else if (std::string("{{.}}") == "bool") {
-        if (!instance.is_bool()) {
-            return ValidationResult::invalidAt(path, "expected boolean enum value");
-        }
-        bool rawBool = instance.as_bool();
+    {{#validation-enum-kind-string}}
+    if (instance.is_string()) {
         bool found = false;
         {{#validation-enum-values}}
-        if (rawBool == static_cast<bool>({{.}})) found = true;
+        if (instance.as_string() == "{{.}}") found = true;
         {{/validation-enum-values}}
         if (!found) {
             return ValidationResult::invalidAt(path,
-                "bool value not in allowed enum set");
+                "string value not in allowed enum set");
         }
+    } else {
+        return ValidationResult::invalidAt(path, "expected string enum value");
     }
-    {{/validation-enum-kind}}
+    {{/validation-enum-kind-string}}
+    {{#validation-enum-kind-integer}}
+    if (instance.is_int64() || instance.is_uint64()) {
+        bool found = false;
+        std::int64_t rawInt = instance.is_int64()
+            ? instance.as_int64() : static_cast<std::int64_t>(instance.as_uint64());
+        {{#validation-enum-values}}
+        if (rawInt == static_cast<std::int64_t>({{.}})) found = true;
+        {{/validation-enum-values}}
+        if (!found) {
+            return ValidationResult::invalidAt(path,
+                "integer value not in allowed enum set");
+        }
+    } else if (isJsonInteger(instance)) {
+        // Accept integral doubles as enum matches via mathematical integer
+        double rawDbl = instance.as_double();
+        bool found = false;
+        {{#validation-enum-values}}
+        if (rawDbl == static_cast<double>({{.}})) found = true;
+        {{/validation-enum-values}}
+        if (!found) {
+            return ValidationResult::invalidAt(path,
+                "numeric value not in allowed enum set");
+        }
+    } else {
+        return ValidationResult::invalidAt(path, "expected integer enum value");
+    }
+    {{/validation-enum-kind-integer}}
+    {{#validation-enum-kind-number}}
+    if (isJsonNumber(instance)) {
+        double rawNum = instance.is_double()
+            ? instance.as_double()
+            : static_cast<double>(instance.is_int64()
+                ? instance.as_int64()
+                : static_cast<std::int64_t>(instance.as_uint64()));
+        bool found = false;
+        {{#validation-enum-values}}
+        if (std::abs(rawNum - static_cast<double>({{.}})) < 1e-12) found = true;
+        {{/validation-enum-values}}
+        if (!found) {
+            return ValidationResult::invalidAt(path,
+                "number value not in allowed enum set");
+        }
+    } else {
+        return ValidationResult::invalidAt(path, "expected number enum value");
+    }
+    {{/validation-enum-kind-number}}
+    {{#validation-enum-kind-bool}}
+    if (!instance.is_bool()) {
+        return ValidationResult::invalidAt(path, "expected boolean enum value");
+    }
+    bool rawBool = instance.as_bool();
+    bool found = false;
+    {{#validation-enum-values}}
+    if (rawBool == static_cast<bool>({{.}})) found = true;
+    {{/validation-enum-values}}
+    if (!found) {
+        return ValidationResult::invalidAt(path,
+            "bool value not in allowed enum set");
+    }
+    {{/validation-enum-kind-bool}}
     {{/has-validation-enum}}
 
     // Const validation (OAS const — exact value must match)
@@ -697,7 +698,9 @@ ValidationResult validate_{{validator-id}}(
     {{/discriminator}}
     // Non-discriminated {{vendorExtensions.x-cpp-composed-keyword}} — enforce exactly-one for oneOf, first-match for anyOf
     constexpr bool isOneOf = "{{vendorExtensions.x-cpp-composed-keyword}}"[0] == 'o';
+    {{^vendorExtensions.x-cpp-has-duplicate-types}}
     std::size_t const variantSize = std::variant_size_v<{{classname}}>;
+    {{/vendorExtensions.x-cpp-has-duplicate-types}}
     {{classname}} result;
     // errorPath accumulates nested JSON location (e.g. ".items[0].content")
     // for diagnostics when branch matching or property decode fails.
@@ -709,7 +712,9 @@ ValidationResult validate_{{validator-id}}(
     // which picks the first parseable alternative — wrong for tagged dupes).
     std::size_t validMatchCount = 0;
     std::size_t matchedBranchIndex = 0;
+    (void)matchedBranchIndex;
     bool foundMatch = false;
+    (void)foundMatch;
     ValidationPath vp;
     {{#vendorExtensions.x-has-discriminator-branch-index}}
     // Validate discriminator-preferred branch first (reorder for diagnostics)

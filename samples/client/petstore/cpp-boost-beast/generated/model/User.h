@@ -53,8 +53,8 @@ public:
     /// <summary>
     /// 
     /// </summary>
-    int64_t getId() const;
-    void setId(int64_t value);
+    std::int64_t getId() const;
+    void setId(std::int64_t value);
 
     /// <summary>
     /// 
@@ -95,8 +95,8 @@ public:
     /// <summary>
     /// User Status
     /// </summary>
-    int32_t getUserStatus() const;
-    void setUserStatus(int32_t value);
+    std::int32_t getUserStatus() const;
+    void setUserStatus(std::int32_t value);
 
 protected:
     //////////////////////////////////////
@@ -108,7 +108,7 @@ protected:
 
 
 protected:
-    int64_t m_Id = 0L;
+    std::int64_t m_Id = 0L;
     bool m_IdIsSet = false;
     std::string m_Username = "";
     bool m_UsernameIsSet = false;
@@ -122,7 +122,7 @@ protected:
     bool m_PasswordIsSet = false;
     std::string m_Phone = "";
     bool m_PhoneIsSet = false;
-    int32_t m_UserStatus = 0;
+    std::int32_t m_UserStatus = 0;
     bool m_UserStatusIsSet = false;
 };
 

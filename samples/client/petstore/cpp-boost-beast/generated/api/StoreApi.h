@@ -91,14 +91,14 @@ public:
     /// </remarks>
     virtual std::shared_ptr<Order>
     getOrderById(
-        const int64_t& orderId);
+        const std::int64_t& orderId);
     /// <summary>
     /// Returns pet inventories by status
     /// </summary>
     /// <remarks>
     /// Returns a map of status codes to quantities
     /// </remarks>
-    virtual std::map<std::string, int32_t>
+    virtual std::map<std::string, std::int32_t>
     getInventory(
         );
 

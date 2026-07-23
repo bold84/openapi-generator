@@ -55,8 +55,8 @@ public:
     /// <summary>
     /// 
     /// </summary>
-    int64_t getId() const;
-    void setId(int64_t value);
+    std::int64_t getId() const;
+    void setId(std::int64_t value);
 
     /// <summary>
     /// 
@@ -98,7 +98,7 @@ protected:
 
 
 protected:
-    int64_t m_Id = 0L;
+    std::int64_t m_Id = 0L;
     bool m_IdIsSet = false;
     Category m_Category;
     bool m_CategoryIsSet = false;

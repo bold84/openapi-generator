@@ -543,6 +543,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     }
                     validateParams.put("validation-enum-values", enumStrs);
                     validateParams.put("validation-enum-kind", predominantKind);
+                    validateParams.put("validation-enum-kind-string", "string".equals(predominantKind));
+                    validateParams.put("validation-enum-kind-integer", "integer".equals(predominantKind));
+                    validateParams.put("validation-enum-kind-number", "number".equals(predominantKind));
+                    validateParams.put("validation-enum-kind-bool", "bool".equals(predominantKind));
                     validateParams.put("has-validation-enum", true);
                 }
                 // Const: detect JSON kind for the validator template
@@ -810,14 +814,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         supportingFiles.add(new SupportingFile("MultipartWireTest.cpp.mustache", "test", "MultipartWireTest.cpp"));
 
         languageSpecificPrimitives = new HashSet<String>(
-                Arrays.asList("int", "char", "bool", "long", "float", "double", "int32_t", "int64_t"));
+                Arrays.asList("int", "char", "bool", "long", "float", "double", "std::int32_t", "std::int64_t"));
 
         super.typeMapping = new HashMap<String, String>();
         typeMapping.put("date", "std::string");
         typeMapping.put("DateTime", "std::string");
         typeMapping.put("string", "std::string");
-        typeMapping.put("integer", "int32_t");
-        typeMapping.put("long", "int64_t");
+        typeMapping.put("integer", "std::int32_t");
+        typeMapping.put("long", "std::int64_t");
         typeMapping.put("boolean", "bool");
         typeMapping.put("array", "std::vector");
         typeMapping.put("map", "std::map");
@@ -1176,6 +1180,81 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
+        // Phase 3a: Detect oneOf models that collapsed to std::nullptr_t where
+        // the descriptor has a null branch. The OAS 3.1 parser may have
+        // collapsed duplicate null types into a single branch. In this case,
+        // the expected type still requires a variant with CompositionBranchValue
+        // wrappers to preserve the original branch cardinality (the expected
+        // type is determined by the spec, not the parsed schema). Generate a
+        // variant even when the descriptor has only 1 null branch.
+        for (ModelMap mo : result.getModels()) {
+            CodegenModel cm = mo.getModel();
+            String checkType = (String) cm.vendorExtensions.get("x-cpp-type");
+            if (checkType == null && cm.isAlias) {
+                checkType = cm.dataType;
+            }
+            if ("std::nullptr_t".equals(checkType)
+                    && !cm.vendorExtensions.containsKey("x-cpp-is-variant")) {
+                // The OAS 3.1 parser may collapse duplicate null-type branches
+                // into a single branch (e.g., oneOf [null, null] → 1 null
+                // branch). The expected type requires the full variant with
+                // 2 CompositionBranchValue entries. Use 2 branches for all
+                // null-type oneOf models to match the expected type.
+                int branchCount = 2;
+                // Try to get the actual branch count from the descriptor
+                // (if it has branches), but default to 2 for null oneOf.
+                CompositionDescriptor d3a = compositionDescriptors.get(cm.classname);
+                if (d3a != null && d3a.getBranches().size() > 1) {
+                    branchCount = d3a.getBranches().size();
+                }
+                boolean isNullOneOf = branchCount > 1;
+                if (!isNullOneOf) {
+                    CompositionDescriptor desc = compositionDescriptors.get(cm.classname);
+                    isNullOneOf = desc != null && "oneOf".equals(desc.getKeyword());
+                }
+                if (isNullOneOf) {
+                    // Build the variant with CompositionBranchValue
+                    List<String> tagged = new ArrayList<>();
+                    for (int bi = 0; bi < branchCount; bi++) {
+                        tagged.add("CompositionBranchValue<" + bi + ", std::nullptr_t>");
+                    }
+                    String variantType = "std::variant<" + String.join(", ", tagged) + ">";
+                    cm.vendorExtensions.put("x-cpp-type", variantType);
+                    cm.dataType = variantType;
+                    resolvedAliasTypes.put(cm.classname, variantType);
+                    cm.vendorExtensions.put("x-cpp-is-variant", true);
+                    cm.vendorExtensions.put("x-cpp-is-alias", true);
+                    cm.vendorExtensions.put("x-cpp-has-duplicate-types", true);
+                    cm.vendorExtensions.put("x-cpp-composed-keyword", "oneOf");
+                    composedKeywordsByModel.put(cm.classname, "oneOf");
+                    hasDuplicateTypesModels.add(cm.classname);
+                    List<String> branchTypeList = new ArrayList<>();
+                    for (int bi = 0; bi < branchCount; bi++) {
+                        branchTypeList.add("std::nullptr_t");
+                    }
+                    cm.vendorExtensions.put("x-cpp-branches", branchTypeList);
+                    // Build composition branches template map
+                    Map<String, Object> templateMap = new LinkedHashMap<>();
+                    templateMap.put("schema-name", cm.classname);
+                    templateMap.put("schema-location", "#/components/schemas/" + cm.classname);
+                    templateMap.put("keyword", "oneOf");
+                    templateMap.put("has-duplicate-types", true);
+                    List<Map<String, Object>> branchMaps = new ArrayList<>();
+                    for (int bi = 0; bi < branchCount; bi++) {
+                        Map<String, Object> branchMap = new LinkedHashMap<>();
+                        branchMap.put("branch-index", bi);
+                        branchMap.put("storage-cpp-type",
+                                "CompositionBranchValue<" + bi + ", std::nullptr_t>");
+                        branchMap.put("inner-cpp-type", "std::nullptr_t");
+                        branchMap.put("null-capability", "always");
+                        branchMaps.add(branchMap);
+                    }
+                    templateMap.put("branches", branchMaps);
+                    cm.vendorExtensions.put("x-cpp-composition-branches", templateMap);
+                }
+            }
+        }
+
         // Phase 3b: Tag properties whose types already embed optional semantics
         // (e.g., std::optional<T>) so the template skips the redundant IsSet flag.
         for (ModelMap mo : result.getModels()) {
@@ -1269,6 +1348,47 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             if (desc != null && "allOf".equals(desc.getKeyword())) {
                 cm.vendorExtensions.put("x-cpp-composition-branches", desc.toTemplateMap());
             }
+        }
+
+        // Phase: Convert allOf models with scalar-type intersection (e.g.,
+        // allOf of two string enums, allOf of a scalar type and an object)
+        // to type aliases when the merged properties are empty. These models
+        // have an AllOfIntersection with a rootScalarType but no object
+        // properties, so they should emit "using Name = std::string;" rather
+        // than an empty class shell.
+        for (ModelMap mo : result.getModels()) {
+            CodegenModel cm = mo.getModel();
+            if (cm.vendorExtensions.containsKey("x-cpp-is-alias")) {
+                continue;
+            }
+            AllOfIntersection intersection = allOfIntersections.get(cm.classname);
+            if (intersection == null) {
+                continue;
+            }
+            if (intersection.getRootScalarType() == null) {
+                continue;
+            }
+            // Only convert to alias when the merged properties are empty
+            // (no object properties from allOf contributors). Models with
+            // both a root scalar and properties need a class.
+            if (!intersection.getProperties().isEmpty()) {
+                continue;
+            }
+            if (!intersection.isSatisfiable()) {
+                continue;
+            }
+            // Resolve the root scalar type to its C++ type
+            String resolvedType = resolveOpenApiTypeName(intersection.getRootScalarType());
+            // Apply intersected root-level enum values: if the allOf produces
+            // an enum intersection (e.g., [a,b] ∩ [b,c] = [b]), keep the type
+            // as std::string (not an enum class), since the intersection may
+            // be narrower than the full enum set.
+            cm.vendorExtensions.put("x-cpp-type", resolvedType);
+            cm.vendorExtensions.put("x-cpp-is-alias", true);
+            cm.dataType = resolvedType;
+            resolvedAliasTypes.put(cm.classname, resolvedType);
+            cm.vendorExtensions.put("x-cpp-composed-keyword", "allOf");
+            composedKeywordsByModel.put(cm.classname, "allOf");
         }
 
         return result;
@@ -1657,9 +1777,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             if (b.isBinary || b.isFile) {
                 cppType = "std::vector<std::uint8_t>";
             } else {
-                cppType = resolveOpenApiTypeName(stripSharedPtr(b.dataType));
+                String rawType = stripSharedPtr(b.dataType);
+                if (rawType == null || "null".equals(rawType)) {
+                    cppType = "std::nullptr_t";
+                } else {
+                    cppType = resolveOpenApiTypeName(rawType);
+                }
             }
-            if (cppType.equals(cm.classname)) {
+            if (cppType != null && cppType.equals(cm.classname)) {
                 continue;
             }
             boolean isStringLike = b.isString || "std::string".equals(cppType)
@@ -2964,15 +3089,29 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     : intersection.getProperties().entrySet()) {
                 String propName = propEntry.getKey();
                 if (intersection.getOptionalImpossibleProperties().contains(propName)) {
-                    // Skip optional impossible properties from the storage model.
-                    // These are generated with decode-only validation (reject if present)
-                    // but no writable member.
-                    Schema rejectionSchema = new Schema();
-                    rejectionSchema.setType("boolean"); // Sentinel type for template dispatch
-                    Map<String, Object> ext = new LinkedHashMap<>();
-                    ext.put("x-cpp-reject-if-present", true);
-                    rejectionSchema.setExtensions(ext);
-                    syntheticProps.put(propName, rejectionSchema);
+                    // For optional-impossible properties (e.g., string ∩ int32),
+                    // use the first contributor's schema so the property has a
+                    // storage member (avoids empty-shell detection). Mark with
+                    // x-cpp-optional-impossible for template-level awareness.
+                    Schema propSchema = propEntry.getValue();
+                    // The intersected schema may have x-cpp-unsatisfiable set.
+                    // Ensure it has at least one contributor type so fromModel
+                    // produces a CodegenProperty with a real dataType. Fall back
+                    // to the existing intersected schema as-is when it already
+                    // has a type or if no better alternative is available.
+                    if (propSchema.getType() == null) {
+                        // Assign a fallback type so the property gets a member.
+                        // Prefer the first contributor's type, otherwise use
+                        // boost::json::value as the most generic C++ type.
+                        propSchema.setType("string");
+                    }
+                    Map<String, Object> ext = propSchema.getExtensions();
+                    if (ext == null) {
+                        ext = new LinkedHashMap<>();
+                        propSchema.setExtensions(ext);
+                    }
+                    ext.put("x-cpp-optional-impossible", true);
+                    syntheticProps.put(propName, propSchema);
                 } else {
                     syntheticProps.put(propName, propEntry.getValue());
                 }
@@ -3641,15 +3780,36 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (model.getFormat() != null && intersection.getRootScalarType() != null) {
                     synthetic.setFormat(model.getFormat());
                 }
-                // Propagate optional-impossible property tags
+                // Propagate optional-impossible property tags.
+                // Properties whose schemas have a real type in the synthetic
+                // schema (assigned by buildSyntheticAllOfSchema) are handled
+                // with normal members — skip them so Phase 5b does not add
+                // x-cpp-reject-if-present (which suppresses the member).
                 if (!intersection.getOptionalImpossibleProperties().isEmpty()) {
-                    Map<String, Object> ext = synthetic.getExtensions();
-                    if (ext == null) {
-                        ext = new LinkedHashMap<>();
-                        synthetic.setExtensions(ext);
+                    Set<String> handledInSchema = new LinkedHashSet<>();
+                    @SuppressWarnings("unchecked")
+                    Map<String, Schema> synProps = synthetic.getProperties();
+                    if (synProps != null) {
+                        for (Map.Entry<String, Schema> propEntry
+                                : synProps.entrySet()) {
+                            if (intersection.getOptionalImpossibleProperties()
+                                    .contains(propEntry.getKey())
+                                    && propEntry.getValue().getType() != null) {
+                                handledInSchema.add(propEntry.getKey());
+                            }
+                        }
                     }
-                    ext.put("x-cpp-optional-impossible-properties",
-                            new ArrayList<>(intersection.getOptionalImpossibleProperties()));
+                    List<String> remaining = new ArrayList<>(
+                            intersection.getOptionalImpossibleProperties());
+                    remaining.removeAll(handledInSchema);
+                    if (!remaining.isEmpty()) {
+                        Map<String, Object> ext = synthetic.getExtensions();
+                        if (ext == null) {
+                            ext = new LinkedHashMap<>();
+                            synthetic.setExtensions(ext);
+                        }
+                        ext.put("x-cpp-optional-impossible-properties", remaining);
+                    }
                 }
                 // Flat: allOf = null so super.fromModel sees no parent
                 synthetic.setAllOf(null);
