@@ -629,7 +629,7 @@ public class CppBoostBeastClientCodegenTest {
                 "InputParam oneOf source should use countVariantBranches for exactly-one check");
         // The anyOf path comment is also present (both branches emitted textually by if constexpr)
 
-        // DedupTest is now boost::json::value alias (not variant) — source uses
+        // DedupTest is now CompositionBranchValue variant — source uses
         // JsonValueConverter which dispatches through model conversion helpers
         // for model-containing types (e.g., std::optional<SomeObject>) and falls
         // back to value_to/value_from for plain types.
@@ -705,7 +705,7 @@ public class CppBoostBeastClientCodegenTest {
                 "OneOfWithStringOverlap must NOT type-erase to boost::json::value");
 
         // Scenario 16b: StringOverlapHolder property references OneOfWithStringOverlap
-        // which is a using-alias for boost::json::value. Verify the property uses the
+        // which is a using-alias for a CompositionBranchValue variant. Verify the property uses the
         // typedef (the alias model name, not a plain std::string).
         Path stringOverlapHolderHeader = output.toPath().resolve("model/StringOverlapHolder.h");
         TestUtils.assertFileExists(stringOverlapHolderHeader);
@@ -761,8 +761,8 @@ public class CppBoostBeastClientCodegenTest {
         codegen.processOpts();
 
         // oneOf: [string, string-enum, integer] — string branches collapse to
-        // std::string but the open-string + string-enum overlap loses oneOf
-        // exclusivity. Must type-erase to boost::json::value.
+        // std::string. Phase 3 preserves identity via CompositionBranchValue
+        // wrappers instead of type-erasing.
         ComposedSchema schema = new ComposedSchema();
         schema.addOneOfItem(new StringSchema());
         StringSchema enumSchema = new StringSchema();
@@ -772,8 +772,9 @@ public class CppBoostBeastClientCodegenTest {
         schema.addOneOfItem(new IntegerSchema());
 
         String resolved = codegen.getTypeDeclaration(schema);
-        Assert.assertEquals(resolved, "boost::json::value",
-                "oneOf [string, string-enum, integer] must type-erase to boost::json::value");
+        Assert.assertEquals(resolved,
+                "std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>, CompositionBranchValue<2, int32_t>>",
+                "oneOf [string, string-enum, integer] should produce CompositionBranchValue variant");
     }
 
     @Test
