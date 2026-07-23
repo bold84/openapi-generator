@@ -733,41 +733,73 @@ ValidationResult validate_{{validator-id}}(
     // for diagnostics when branch matching or property decode fails.
     std::string errorPath;
 
-    // Phase 2: use generated validators for membership counting.
-    // Validators check schema assertions against raw JSON (no C++ conversion).
-    // After membership is confirmed, tryParseBranch converts to storage.
+    // Phase 2+3: use generated validators for membership counting AND
+    // record the first matching branch index.  After membership is
+    // confirmed, convert the specific matched branch (not tryVariantBranches
+    // which picks the first parseable alternative — wrong for tagged dupes).
     std::size_t validMatchCount = 0;
+    std::size_t matchedBranchIndex = 0;
+    bool foundMatch = false;
     ValidationPath vp;
     {{#vendorExtensions.x-cpp-composition-branches}}
     {{#branches}}
     {{#validator-id}}
     {
         auto vr = validate_{{validator-id}}(value, vp);
-        if (vr.success) ++validMatchCount;
+        if (vr.success) {
+            ++validMatchCount;
+            if (!foundMatch) {
+                matchedBranchIndex = {{branch-index}};
+                foundMatch = true;
+            }
+        }
     }
     {{/validator-id}}
     {{/branches}}
     {{/vendorExtensions.x-cpp-composition-branches}}
+
+    // Helper: convert the matched branch by index into a variant value.
+    // For tagged duplicates (CompositionBranchValue), directly construct
+    // the specific alternative.  For non-duplicates, fall back to the
+    // generic branch converter.
+    auto convertMatchedBranch = [&]() -> void {
+        {{#vendorExtensions.x-cpp-has-duplicate-types}}
+        {{#branches}}
+        if (matchedBranchIndex == {{branch-index}}) {
+            {{{inner-cpp-type}}} converted;
+            if (!tryParseBranch(value, converted, &errorPath)) {
+                throw std::invalid_argument(
+                    "Branch {{branch-index}} conversion failed for {{classname}}");
+            }
+            result = {{classname}}({{{storage-cpp-type}}}{std::move(converted)});
+        }
+        {{/branches}}
+        {{/vendorExtensions.x-cpp-has-duplicate-types}}
+        {{^vendorExtensions.x-cpp-has-duplicate-types}}
+        if (!tryVariantBranches(value, result,
+                std::make_index_sequence<variantSize>{}, &errorPath)) {
+            throw std::invalid_argument(
+                "No matching branch for {{classname}} from JSON value at '"
+                + errorPath + "'");
+        }
+        {{/vendorExtensions.x-cpp-has-duplicate-types}}
+    };
+
     if constexpr (isOneOf) {
         // oneOf: exactly one branch must pass its schema assertions
         if (validMatchCount == 0) {
-            // Fall through to tryParseBranch for detailed error path
-            {{classname}} captureDummy;
-            std::string capturePath;
-            tryVariantBranches(value, captureDummy, std::make_index_sequence<variantSize>{}, &capturePath);
-            if (capturePath.empty()) {
-                throw std::invalid_argument("No matching branch for {{classname}} from JSON value");
-            }
+            // Fall through to branch conversion for detailed error path
+            convertMatchedBranch();
+            // If convertMatchedBranch didn't throw, branch didn't match
             throw std::invalid_argument(
-                "No matching branch for {{classname}} from JSON value at '" + capturePath + "'");
+                "No matching branch for {{classname}} from JSON value");
         }
         if (validMatchCount > 1) {
-            throw std::invalid_argument("More than one matching branch for oneOf {{classname}}");
+            throw std::invalid_argument(
+                "More than one matching branch for oneOf {{classname}}");
         }
-        // Retrieve the first (and only) matching branch for the result
-        if (!tryVariantBranches(value, result, std::make_index_sequence<variantSize>{}, &errorPath)) {
-            throw std::invalid_argument("No matching branch for {{classname}} from JSON value at '" + errorPath + "'");
-        }
+        // Convert the single matching branch
+        convertMatchedBranch();
     } else {
         // anyOf: at least one branch must pass its schema assertions
         if (validMatchCount == 0) {
@@ -797,9 +829,7 @@ ValidationResult validate_{{validator-id}}(
                 "No matching branch for anyOf {{classname}}: " + failures);
         }
         // anyOf: first-matching branch is sufficient for storage
-        if (!tryVariantBranches(value, result, std::make_index_sequence<variantSize>{}, &errorPath)) {
-            throw std::invalid_argument("No matching branch for {{classname}} from JSON value at '" + errorPath + "'");
-        }
+        convertMatchedBranch();
     }
     return result;
 }
@@ -825,8 +855,8 @@ inline {{{inner-cpp-type}}} getBranch{{branch-index}}({{classname}} const& v) {
 }
 
 /// Creates a {{classname}} holding branch {{branch-index}}.
-inline {{classname}} makeBranch{{branch-index}}({{{inner-cpp-type}}} const& val) {
-    return {{classname}}(std::in_place_type<{{{storage-cpp-type}}}>, val);
+inline {{classname}} makeBranch{{branch-index}}({{{inner-cpp-type}}} val) {
+    return {{classname}}({{{storage-cpp-type}}}{std::move(val)});
 }
 
 {{/storage-cpp-type}}

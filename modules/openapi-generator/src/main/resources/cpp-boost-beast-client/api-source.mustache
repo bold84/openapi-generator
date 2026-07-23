@@ -472,6 +472,9 @@ boost::json::value toRequestJsonValue(const std::variant<Ts...>& requestValue);
 template<typename T>
 boost::json::value toRequestJsonValue(const std::optional<T>& requestValue);
 
+template<std::size_t Idx, typename Val>
+boost::json::value toRequestJsonValue(const CompositionBranchValue<Idx, Val>& v);
+
 template<typename T>
 boost::json::value toRequestJsonValue(const std::shared_ptr<T>& requestValue) {
     return requestValue == nullptr ? boost::json::value(nullptr) : requestValue->toJsonValue();
@@ -482,6 +485,11 @@ boost::json::value toRequestJsonValue(const std::variant<Ts...>& requestValue) {
     return std::visit([](auto const& v) -> boost::json::value {
         return toRequestJsonValue(v);
     }, requestValue);
+}
+
+template<std::size_t Idx, typename Val>
+boost::json::value toRequestJsonValue(const CompositionBranchValue<Idx, Val>& v) {
+    return toRequestJsonValue(v.value);
 }
 
 template<typename T>
@@ -693,6 +701,13 @@ bool tryParseBranch(const boost::json::value& value, T& result) {
                 m.emplace(std::string(entry.key()), std::move(converted));
             }
             result = std::move(m);
+            return true;
+        } else if constexpr (IsCompositionBranchValue<T>{}) {
+            // CompositionBranchValue<Idx, Inner> — unwrap, parse inner, rewrap.
+            using InnerType = decltype(T::value);
+            InnerType inner;
+            if (!tryParseBranch(value, inner)) return false;
+            result.value = std::move(inner);
             return true;
         } else {
             // Model type with fromJsonValue member

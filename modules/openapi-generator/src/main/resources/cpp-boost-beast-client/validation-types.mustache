@@ -317,6 +317,11 @@ inline bool validatePattern(boost::json::value const& instance,
 template <std::size_t BranchIndex, typename ValueType>
 struct CompositionBranchValue {
     ValueType value;
+
+    CompositionBranchValue() = default;
+
+    explicit CompositionBranchValue(ValueType v)
+        : value(std::move(v)) {}
 };
 
 // ============================================================================

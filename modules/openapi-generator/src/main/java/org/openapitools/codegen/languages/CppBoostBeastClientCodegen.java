@@ -1952,6 +1952,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // Rule 1: anyOf/oneOf: [T, null] → std::optional<T>
         // Use descriptor nullCapability when available for semantic accuracy.
         // Uses originalBranchIndex to align with descriptor after self-ref filtering.
+        // Tightened: non-null branch must have NullCapability.NEVER (not CONDITIONAL).
         if (descriptor != null) {
             int alwaysNullCount = 0;
             int nonNullComposedIndex = -1;
@@ -1963,7 +1964,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         descBranches.get(descIdx).getNullCapability();
                 if (nc == CompositionBranchDescriptor.NullCapability.ALWAYS) {
                     alwaysNullCount++;
-                } else if (nonNullComposedIndex < 0) {
+                } else if (nc == CompositionBranchDescriptor.NullCapability.NEVER
+                        && nonNullComposedIndex < 0) {
                     nonNullComposedIndex = ci;
                 }
             }
@@ -1988,30 +1990,68 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
-        // Rule 2: anyOf-only collapse of all-string (including string-enum) to std::string.
-        // Do NOT apply this collapse to oneOf — exclusive semantics differ.
+        // Rule 2: anyOf-only collapse of all-string to std::string.
+        // Do NOT apply when any branch has enum constraints — those need
+        // validators on the decode path (Finding 3: enum-only anyOf).
+        // Do NOT apply to oneOf (exclusive semantics differ).
         if ("anyOf".equals(composedKeyword) && branchTypes.stream().allMatch("std::string"::equals)) {
-            return "std::string";
+            // Check if any branch has enum assertions using descriptor metadata
+            // or fallback ComposedBranch isEnum flag.
+            boolean hasEnumString = false;
+            if (descriptor != null) {
+                List<CompositionBranchDescriptor> descBranches = descriptor.getBranches();
+                for (ComposedBranch cb : branches) {
+                    int descIdx = cb.originalBranchIndex;
+                    if (descIdx >= 0 && descIdx < descBranches.size()
+                            && descBranches.get(descIdx).getSupportedAssertions().contains("enum")) {
+                        hasEnumString = true;
+                        break;
+                    }
+                }
+            } else {
+                hasEnumString = branches.stream().anyMatch(b -> b.isEnum);
+            }
+            if (!hasEnumString) {
+                return "std::string";
+            }
+            // Has enum string branches — fall through to CompositionBranchValue
+            // preservation (Rule 5) which keeps validators active.
         }
 
         // Rule 3: Remove null branches for further processing.
         // Uses originalBranchIndex to align with descriptor after self-ref filtering.
+        // Preserve all branches when every branch is null (Finding 4: all-null
+        // anyOf / duplicate-null oneOf must preserve null cardinality).
         List<ComposedBranch> nonNullMeta;
         if (descriptor != null) {
             List<CompositionBranchDescriptor> descBranches = descriptor.getBranches();
             nonNullMeta = new ArrayList<>();
+            boolean hasNonNull = false;
             for (ComposedBranch cb : branches) {
                 int descIdx = cb.originalBranchIndex;
-                if (descIdx >= 0 && descIdx < descBranches.size()
-                        && descBranches.get(descIdx).getNullCapability()
-                                != CompositionBranchDescriptor.NullCapability.ALWAYS) {
-                    nonNullMeta.add(cb);
+                if (descIdx >= 0 && descIdx < descBranches.size()) {
+                    CompositionBranchDescriptor.NullCapability nc =
+                            descBranches.get(descIdx).getNullCapability();
+                    if (nc != CompositionBranchDescriptor.NullCapability.ALWAYS) {
+                        nonNullMeta.add(cb);
+                        hasNonNull = true;
+                    }
                 }
             }
+            // All branches were null — keep them for identity preservation
+            if (!hasNonNull && !branches.isEmpty()) {
+                nonNullMeta = new ArrayList<>(branches);
+            }
         } else {
-            nonNullMeta = branches.stream()
+            List<ComposedBranch> nonNullOnly = branches.stream()
                     .filter(b -> !"std::nullptr_t".equals(b.cppType))
                     .collect(Collectors.toList());
+            if (!nonNullOnly.isEmpty()) {
+                nonNullMeta = nonNullOnly;
+            } else {
+                // All branches are null — keep them
+                nonNullMeta = new ArrayList<>(branches);
+            }
         }
         List<String> nonNullBranches = nonNullMeta.stream()
                 .map(b -> b.cppType)
@@ -2104,10 +2144,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // Re-append null when Rule 1 did not consume it. Rule 1 only
             // consumes null for [T, null] (exactly one null + two total
             // branches). All other null-containing compositions reach
-            // here with hasNull true; we must always re-add because nonNull
-            // was stripped in Rule 3.
+            // here with hasNull true; we must re-add unless the all-null
+            // preservation (Rule 3) already kept nullptr_t in tagged.
             boolean hasNull = branchTypes.stream().anyMatch("std::nullptr_t"::equals);
-            if (hasNull) {
+            boolean nullsAlreadyPreserved = tagged.stream().anyMatch(
+                    t -> t.contains("std::nullptr_t"));
+            if (hasNull && !nullsAlreadyPreserved) {
                 tagged.add("std::nullptr_t");
             }
             return "std::variant<" + String.join(", ", tagged) + ">";
@@ -2171,10 +2213,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // Rule 8: Emit std::variant<Branches...>
         List<String> variantBranches = new ArrayList<>(deduped);
         // Re-append null for any null-containing composition not consumed
-        // by Rule 1 ([T, null] -> optional<T>).  Rule 1 always returns early,
+        // by Rule 1 ([T, null] -> optional<T>). Rule 1 always returns early,
         // so every null surviving to this point must be restored.
         boolean hasNull = branchTypes.stream().anyMatch("std::nullptr_t"::equals);
-        if (hasNull) {
+        boolean nullsAlreadyPreserved = variantBranches.stream().anyMatch(
+                v -> v.contains("std::nullptr_t"));
+        if (hasNull && !nullsAlreadyPreserved) {
             variantBranches.add("std::nullptr_t");
         }
         return "std::variant<" + String.join(", ", variantBranches) + ">";

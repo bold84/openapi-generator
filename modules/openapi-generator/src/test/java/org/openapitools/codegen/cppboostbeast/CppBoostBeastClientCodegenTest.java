@@ -1100,6 +1100,21 @@ public class CppBoostBeastClientCodegenTest {
                 constraintContent.contains("CompositionBranchValue<1, double>"),
                 "ConstrainedNumber[1] must be CompositionBranchValue<1, double>; content: "
                         + constraintContent.substring(0, Math.min(500, constraintContent.length())));
+        // Verify fromJsonValue uses descriptor-guided conversion (not blind tryVariantBranches)
+        Path constrainedSource = output.toPath().resolve("model/ConstrainedNumber.cpp");
+        TestUtils.assertFileExists(constrainedSource);
+        String constraintSourceContent = java.nio.file.Files.readString(constrainedSource);
+        Assert.assertTrue(
+                constraintSourceContent.contains("matchedBranchIndex"),
+                "ConstrainedNumber fromJsonValue must track matchedBranchIndex from "
+                        + "validator (not tryVariantBranches); content: "
+                        + constraintSourceContent.substring(0, Math.min(500, constraintSourceContent.length())));
+        Assert.assertTrue(
+                constraintSourceContent.contains(
+                        "CompositionBranchValue<0, double>{std::move(converted)}"),
+                "ConstrainedNumber fromJsonValue must construct CompositionBranchValue<0, "
+                        + "double> from the converted branch value; content: "
+                        + constraintSourceContent.substring(0, Math.min(500, constraintSourceContent.length())));
     }
 
     @Test
@@ -2244,6 +2259,21 @@ public class CppBoostBeastClientCodegenTest {
                 "DedupTest must use CompositionBranchValue to preserve string "
                         + "branch identity; content: "
                         + dedupContent.substring(0, Math.min(500, dedupContent.length())));
+
+        // Verify fromJsonValue uses descriptor-guided conversion
+        Path dedupSource = output.toPath().resolve("model/DedupTest.cpp");
+        Assert.assertTrue(java.nio.file.Files.exists(dedupSource),
+                "DedupTest must generate a model source file");
+        String dedupSourceContent = new String(java.nio.file.Files.readAllBytes(dedupSource));
+        Assert.assertTrue(dedupSourceContent.contains("matchedBranchIndex"),
+                "DedupTest fromJsonValue must track matchedBranchIndex from "
+                        + "validator (not tryVariantBranches); content: "
+                        + dedupSourceContent.substring(0, Math.min(500, dedupSourceContent.length())));
+        Assert.assertTrue(
+                dedupSourceContent.contains("CompositionBranchValue<0, std::string>{std::move(converted)}"),
+                "DedupTest fromJsonValue must construct CompositionBranchValue<0, "
+                        + "std::string> from the converted branch value; content: "
+                        + dedupSourceContent.substring(0, Math.min(500, dedupSourceContent.length())));
 
         // RefHolder must reference OptionalScore and InputParam models
         Path refHolder = output.toPath().resolve("model/RefHolder.h");
