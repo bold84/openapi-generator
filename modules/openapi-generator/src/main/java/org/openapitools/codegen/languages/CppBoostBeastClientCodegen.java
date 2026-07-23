@@ -1520,12 +1520,6 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             Map<String, Object> templateMap = descriptor.toTemplateMap();
             @SuppressWarnings("unchecked")
             var templateBranches = (List<Map<String, Object>>) templateMap.get("branches");
-            // Count null branches to align storage with shortcut behavior.
-            // When hasDuplicateTypes, the shortcut wraps ALL branches
-            // (including null) in CompositionBranchValue — no bare nullptr_t.
-            long nullCount = composedBranches.stream()
-                    .filter(b -> "std::nullptr_t".equals(b.cppType))
-                    .count();
             for (int bi = 0; bi < composedBranches.size(); bi++) {
                 ComposedBranch cb = composedBranches.get(bi);
                 int descIdx = cb.originalBranchIndex;
@@ -2162,7 +2156,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 for (int ni = 0; ni < branches.size(); ni++) {
                     if ("std::nullptr_t".equals(branches.get(ni).cppType)) {
                         int origIdx = branches.get(ni).originalBranchIndex;
-                        int brIdx = origIdx >= 0 ? origIdx : tagged.size();
+                        int brIdx = origIdx >= 0 ? origIdx : ni;
                         String cbvNull = "CompositionBranchValue<" + brIdx
                                 + ", std::nullptr_t>";
                         if (!tagged.contains(cbvNull)) {
