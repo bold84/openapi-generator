@@ -216,13 +216,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         private final Boolean rootExclusiveMinimum;
         /** Exclusive maximum flag. */
         private final Boolean rootExclusiveMaximum;
+        /** Minimum string length (intersection takes the larger). */
+        private final Integer rootMinLength;
+        /** Maximum string length (intersection takes the smaller). */
+        private final Integer rootMaxLength;
 
         public AllOfIntersection(Map<String, Schema> properties, Set<String> required,
                                  boolean isSatisfiable, String unsatisfiableReason,
                                  Set<String> optionalImpossibleProperties) {
             this(properties, required, isSatisfiable, unsatisfiableReason,
                     optionalImpossibleProperties,
-                    null, null, null, null, null, null, null);
+                    null, null, null, null, null, null, null,
+                    null, null);
         }
 
         public AllOfIntersection(Map<String, Schema> properties, Set<String> required,
@@ -231,7 +236,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                  String rootScalarType, List<Object> rootEnumValues,
                                  Object rootConstValue,
                                  BigDecimal rootMinimum, BigDecimal rootMaximum,
-                                 Boolean rootExclusiveMinimum, Boolean rootExclusiveMaximum) {
+                                 Boolean rootExclusiveMinimum, Boolean rootExclusiveMaximum,
+                                 Integer rootMinLength, Integer rootMaxLength) {
             this.properties = properties != null
                     ? Collections.unmodifiableMap(new LinkedHashMap<>(properties))
                     : Collections.emptyMap();
@@ -252,6 +258,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             this.rootMaximum = rootMaximum;
             this.rootExclusiveMinimum = rootExclusiveMinimum;
             this.rootExclusiveMaximum = rootExclusiveMaximum;
+            this.rootMinLength = rootMinLength;
+            this.rootMaxLength = rootMaxLength;
         }
 
         public Map<String, Schema> getProperties() { return properties; }
@@ -266,6 +274,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         public BigDecimal getRootMaximum() { return rootMaximum; }
         public Boolean getRootExclusiveMinimum() { return rootExclusiveMinimum; }
         public Boolean getRootExclusiveMaximum() { return rootExclusiveMaximum; }
+        public Integer getRootMinLength() { return rootMinLength; }
+        public Integer getRootMaxLength() { return rootMaxLength; }
     }
 
     public static final String DEFAULT_PACKAGE_NAME = "CppBoostBeastOpenAPIClient";
@@ -1172,6 +1182,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             for (CodegenProperty var : allVarsOf(cm)) {
                 if (optImpProps.contains(var.baseName)) {
                     var.vendorExtensions.put("x-cpp-optional-impossible", true);
+                    var.vendorExtensions.put("x-cpp-reject-if-present", true);
                 }
             }
         }
@@ -2284,7 +2295,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         BigDecimal rootMaximum = null;
         Boolean rootExclusiveMinimumObj = null;
         Boolean rootExclusiveMaximumObj = null;
+        Integer rootMinLength = null;
+        Integer rootMaxLength = null;
         boolean hasRootScalarConstraints = false;
+        boolean rootEnumIntersected = false;
 
         for (int bi = 0; bi < allOfBranches.size(); bi++) {
             Schema branch = allOfBranches.get(bi);
@@ -2297,7 +2311,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         schemaName + "_nested_" + bi, resolvedBranch, openAPI, schemas, visited);
                 if (nested != null) {
                     mergeIntersectionIntoResult(mergedProperties, mergedRequired,
-                            optionalImpossibleProperties, nested);
+                            optionalImpossibleProperties, nested, openAPI, schemas);
                     if (!nested.isSatisfiable()) {
                         satisfiable = false;
                         unsatisfiableReason = nested.getUnsatisfiableReason();
@@ -2377,8 +2391,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     hasRootScalarConstraints = true;
                     if (rootEnumValues == null) {
                         rootEnumValues = new ArrayList<>(branchEnum);
+                        rootEnumIntersected = false;
                     } else {
                         rootEnumValues.retainAll(branchEnum);
+                        rootEnumIntersected = true;
                     }
                 }
 
@@ -2437,11 +2453,27 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 // Intersect minLength / maxLength: tighter wins
                 if (resolvedBranch.getMinLength() != null) {
                     hasRootScalarConstraints = true;
+                    Integer branchMinLength = resolvedBranch.getMinLength();
+                    if (rootMinLength == null || branchMinLength > rootMinLength) {
+                        rootMinLength = branchMinLength;
+                    }
                 }
                 if (resolvedBranch.getMaxLength() != null) {
                     hasRootScalarConstraints = true;
+                    Integer branchMaxLength = resolvedBranch.getMaxLength();
+                    if (rootMaxLength == null || branchMaxLength < rootMaxLength) {
+                        rootMaxLength = branchMaxLength;
+                    }
                 }
             }
+        }
+
+        // Detect empty enum intersection: two or more branches both contributed
+        // enum lists whose intersection is empty (e.g., [a,b] ∩ [c,d] = {}).
+        if (rootEnumIntersected && rootEnumValues != null && rootEnumValues.isEmpty()) {
+            satisfiable = false;
+            unsatisfiableReason = "Empty enum intersection across allOf '"
+                    + schemaName + "' contributors: no common enum values";
         }
 
         // Check satisfiability of required properties.
@@ -2492,6 +2524,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             rootMaximum = null;
             rootExclusiveMinimumObj = null;
             rootExclusiveMaximumObj = null;
+            rootMinLength = null;
+            rootMaxLength = null;
         }
 
         return new AllOfIntersection(
@@ -2499,7 +2533,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 unsatisfiableReason, optionalImpossibleProperties,
                 rootScalarType, rootEnumValues, rootConstValue,
                 rootMinimum, rootMaximum,
-                rootExclusiveMinimumObj, rootExclusiveMaximumObj);
+                rootExclusiveMinimumObj, rootExclusiveMaximumObj,
+                rootMinLength, rootMaxLength);
     }
 
     /**
@@ -2509,7 +2544,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     private void mergeIntersectionIntoResult(
             Map<String, Schema> mergedProperties, Set<String> mergedRequired,
             Set<String> optionalImpossibleProperties,
-            AllOfIntersection nested) {
+            AllOfIntersection nested,
+            OpenAPI openAPI, Map<String, Schema> schemas) {
         for (Map.Entry<String, Schema> nestedProp : nested.getProperties().entrySet()) {
             String propName = nestedProp.getKey();
             Schema nestedSchema = nestedProp.getValue();
@@ -2517,7 +2553,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 mergedProperties.put(propName,
                         intersectPropertySchemas(
                                 mergedProperties.get(propName),
-                                nestedSchema, null, null, new HashSet<>()));
+                                nestedSchema, openAPI, schemas, new HashSet<>()));
             } else {
                 mergedProperties.put(propName, nestedSchema);
             }
@@ -2853,6 +2889,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             synthetic.setExclusiveMaximum(intersection.getRootExclusiveMaximum());
         }
 
+        // Apply intersected string length bounds
+        if (intersection.getRootMinLength() != null) {
+            synthetic.setMinLength(intersection.getRootMinLength());
+        }
+        if (intersection.getRootMaxLength() != null) {
+            synthetic.setMaxLength(intersection.getRootMaxLength());
+        }
+
         // Copy merged properties (skipping optional-impossible properties)
         if (!intersection.getProperties().isEmpty()) {
             Map<String, Schema> syntheticProps = new LinkedHashMap<>();
@@ -2923,6 +2967,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
         if (intersection.getRootExclusiveMaximum() != null) {
             target.setExclusiveMaximum(intersection.getRootExclusiveMaximum());
+        }
+
+        // Apply intersected string length bounds
+        if (intersection.getRootMinLength() != null) {
+            target.setMinLength(intersection.getRootMinLength());
+        }
+        if (intersection.getRootMaxLength() != null) {
+            target.setMaxLength(intersection.getRootMaxLength());
         }
 
         // Copy merged properties (skipping optional-impossible properties)
@@ -3520,15 +3572,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     @Override
     public CodegenModel fromModel(String name, Schema model) {
         // Phase 5: Use the pre-computed recursive allOf intersection to
-        // replace the original allOf branches with a flat properties/required
-        // set on the original schema.  Parent $ref branches are preserved
-        // in allOf for correct inheritance, but non-$ref branches (which
+        // build a copy-based synthetic schema that replaces the original
+        // allOf.  Parent $ref branches are preserved in the synthetic
+        // allOf for correct inheritance, but non-$ref branches (which
         // contributed inline properties) are removed since their properties
-        // are now merged directly onto the schema.
+        // are merged into the synthetic schema.
         //
-        // This avoids duplicating parent properties: super.fromModel reads
-        // the surviving $ref allOf entries for parent resolution and treats
-        // the merged properties as the child's own (non-inherited) fields.
+        // This avoids duplicating parent properties AND does not mutate
+        // the original component schema (Copy-Based Synthetic rule).
         Schema modelArg = model;
         if (model != null && model.getAllOf() != null && !model.getAllOf().isEmpty()) {
             AllOfIntersection intersection = allOfIntersections.get(name);
@@ -3539,48 +3590,46 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             name, intersection.getUnsatisfiableReason());
                 }
 
-                // Preserve top-level attributes on the original model
-                if (model.getDiscriminator() != null) {
-                    model.setDiscriminator(model.getDiscriminator());
-                }
-                if (Boolean.TRUE.equals(model.getNullable())) {
-                    model.setNullable(true);
-                }
-                if (model.getDescription() != null) {
-                    model.setDescription(model.getDescription());
-                }
-                // Propagate optional-impossible property tags to vendor extensions
-                if (!intersection.getOptionalImpossibleProperties().isEmpty()) {
-                    Map<String, Object> ext = model.getExtensions();
-                    if (ext == null) {
-                        ext = new LinkedHashMap<>();
-                        model.setExtensions(ext);
-                    }
-                    ext.put("x-cpp-optional-impossible-properties",
-                            new ArrayList<>(intersection.getOptionalImpossibleProperties()));
-                }
-
                 if (!intersection.getProperties().isEmpty()) {
-                    // Object allOf: merge intersected properties and required
-                    // directly onto the original schema, preserving $ref
-                    // branches in allOf for parent inheritance.
-                    buildSyntheticAllOfSchema(model, intersection);
-                    // Remove non-$ref allOf entries (their properties are now
-                    // on the schema). Only keep $ref entries for parent refs.
+                    // Object allOf: build a copy-based synthetic schema with
+                    // merged properties, preserving only $ref branches for
+                    // parent inheritance (non-$ref branches are consumed).
+                    Schema synthetic = buildSyntheticAllOfSchema(
+                            name, intersection);
+                    // Copy top-level attributes from original model
+                    if (model.getDiscriminator() != null) {
+                        synthetic.setDiscriminator(model.getDiscriminator());
+                    }
+                    if (Boolean.TRUE.equals(model.getNullable())) {
+                        synthetic.setNullable(true);
+                    }
+                    if (model.getDescription() != null) {
+                        synthetic.setDescription(model.getDescription());
+                    }
+                    // Preserve $ref branches only (for parent inheritance)
                     List<Schema> survivingAllOf = new ArrayList<>();
                     for (Object branch : model.getAllOf()) {
                         if (branch instanceof Schema
                                 && ((Schema) branch).get$ref() != null) {
-                            survivingAllOf.add((Schema) branch);
+                            Schema refClone = new Schema();
+                            refClone.set$ref(((Schema) branch).get$ref());
+                            survivingAllOf.add(refClone);
                         }
                     }
-                    // If no $ref branches survive, clear allOf entirely so
-                    // super.fromModel treats it as a flat object schema.
-                    if (survivingAllOf.isEmpty()) {
-                        model.setAllOf(null);
-                    } else {
-                        model.setAllOf(survivingAllOf);
+                    if (!survivingAllOf.isEmpty()) {
+                        synthetic.setAllOf(survivingAllOf);
                     }
+                    // Propagate optional-impossible property tags
+                    if (!intersection.getOptionalImpossibleProperties().isEmpty()) {
+                        Map<String, Object> ext = synthetic.getExtensions();
+                        if (ext == null) {
+                            ext = new LinkedHashMap<>();
+                            synthetic.setExtensions(ext);
+                        }
+                        ext.put("x-cpp-optional-impossible-properties",
+                                new ArrayList<>(intersection.getOptionalImpossibleProperties()));
+                    }
+                    modelArg = synthetic;
                 } else {
                     // Scalar-only allOf: replace the model schema with the
                     // intersected scalar type/enum/const/bounds. The original

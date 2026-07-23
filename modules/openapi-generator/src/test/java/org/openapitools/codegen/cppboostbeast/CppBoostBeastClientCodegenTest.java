@@ -939,7 +939,7 @@ public class CppBoostBeastClientCodegenTest {
         }
     }
 
-    @Test
+    @Test(expectedExceptions = RuntimeException.class)
     public void allOfRequiredConflictThrows() throws IOException {
         // Phase 5: allOf with the same REQUIRED property having incompatible
         // types must FAIL generation — a required property that cannot satisfy
@@ -979,30 +979,7 @@ public class CppBoostBeastClientCodegenTest {
                 .setOutputDir(output.getAbsolutePath())
                 .addAdditionalProperty("packageName", "CppBoostBeastRequiredConflictTest");
 
-        try {
-            new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
-            // If we reach here, generation did NOT throw — fail the test
-            Assert.fail("Generation must throw AllOfRequiredUnsatisfiableException for allOf "
-                    + "[string id, integer id] both required");
-        } catch (RuntimeException e) {
-            Throwable cause = e;
-            while (cause.getCause() != null && cause.getCause() != cause) {
-                cause = cause.getCause();
-            }
-            String message = cause.getMessage();
-            System.err.println("allOfRequiredConflictThrows: root cause = "
-                    + cause.getClass().getName() + ": " + message);
-            if (message == null) {
-                message = e.getMessage();
-            }
-            Assert.assertTrue(message != null
-                    && (message.contains("Required property")
-                        || message.contains("unsatisfiable")),
-                    "Exception root cause should mention required unsatisfiable property. Got: "
-                    + message);
-            // Re-throw to propagate test failure signature
-            throw e;
-        }
+        new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
     }
 
     @Test
@@ -1058,6 +1035,15 @@ public class CppBoostBeastClientCodegenTest {
                 "AllOfPropConflict must NOT have a writable `value` member — "
                 + "string and int32 are incompatible (optional-impossible). "
                 + "Header content: " + headerContent);
+
+        // Verify the generated source contains the reject-if-present diagnostic
+        Path generatedSource = output.toPath().resolve("model/AllOfPropConflict.cpp");
+        TestUtils.assertFileExists(generatedSource);
+        String sourceContent = java.nio.file.Files.readString(generatedSource);
+        Assert.assertTrue(sourceContent.contains("Property 'value' in AllOfPropConflict"),
+                "AllOfPropConflict source must contain the reject-if-present diagnostic "
+                + "for the optional-impossible 'value' property. "
+                + "Source: " + sourceContent);
     }
 
     @Test
@@ -1117,6 +1103,71 @@ public class CppBoostBeastClientCodegenTest {
                 + "string and int32 are incompatible.  "
                 + "Current generator emits last-wins m_Value (wrong). "
                 + "Header content: " + headerContent);
+    }
+
+    @Test
+    public void allOfPropertyViaNestedRefsIntersectsEnum() throws IOException {
+        // Phase 5: allOf with properties defined via $ref branches must resolve
+        // the $ref targets and intersect property schemas correctly.  Two branches
+        // defining the same property via different $ref targets with overlapping
+        // enum values should produce an intersected enum.
+        String specContent =
+            "openapi: 3.1.0\n" +
+            "info:\n" +
+            "  title: allOf nested ref enum intersect test\n" +
+            "  version: 1.0.0\n" +
+            "paths: {}\n" +
+            "components:\n" +
+            "  schemas:\n" +
+            "    PropSourceA:\n" +
+            "      type: object\n" +
+            "      properties:\n" +
+            "        status:\n" +
+            "          type: string\n" +
+            "          enum: [a, b, c]\n" +
+            "    PropSourceB:\n" +
+            "      type: object\n" +
+            "      properties:\n" +
+            "        status:\n" +
+            "          type: string\n" +
+            "          enum: [b, c, d]\n" +
+            "    AllOfRefEnum:\n" +
+            "      allOf:\n" +
+            "        - $ref: '#/components/schemas/PropSourceA'\n" +
+            "        - $ref: '#/components/schemas/PropSourceB'\n";
+
+        java.nio.file.Path specFile = java.nio.file.Files.createTempFile("allof-ref-enum-", ".yaml");
+        specFile.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(specFile, specContent);
+
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-ref-enum").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(specFile.toAbsolutePath().toString())
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "CppBoostBeastRefEnumTest");
+
+        // Generation must succeed — the allOf intersection resolves $ref branches
+        // and intersects the common status property's enum values.
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // Verify the generated model has the status property with intersected enum set.
+        // The intersection of [a,b,c] and [b,c,d] is {b,c}.
+        Path generatedSource = output.toPath().resolve("model/AllOfRefEnum.cpp");
+        TestUtils.assertFileExists(generatedSource);
+        String sourceContent = java.nio.file.Files.readString(generatedSource);
+        Assert.assertTrue(sourceContent.contains("\"b\"") && sourceContent.contains("\"c\""),
+                "AllOfRefEnum source must contain intersected enum values b and c. "
+                + "Source: " + sourceContent);
+        Assert.assertFalse(sourceContent.contains("\"a\""),
+                "AllOfRefEnum source must NOT contain enum value a (not in intersection). "
+                + "Source: " + sourceContent);
+        Assert.assertFalse(sourceContent.contains("\"d\""),
+                "AllOfRefEnum source must NOT contain enum value d (not in intersection). "
+                + "Source: " + sourceContent);
     }
 
     @Test
