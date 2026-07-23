@@ -2073,38 +2073,41 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             for (int i = 0; i < nonNullBranches.size(); i++) {
                 String rawType = nonNullBranches.get(i);
                 int origIdx = nonNullMeta.get(i).originalBranchIndex;
-                if (origIdx >= 0) {
-                    // Flatten nested variant types within tagged branches
-                    if (rawType.startsWith("std::variant<") && rawType.endsWith(">")) {
-                        String inner = rawType.substring(13, rawType.length() - 1);
-                        int depth = 0;
-                        int start = 0;
-                        for (int ci = 0; ci < inner.length(); ci++) {
-                            char c = inner.charAt(ci);
-                            if (c == '<') depth++;
-                            else if (c == '>') depth--;
-                            else if (c == ',' && depth == 0) {
-                                String innerType = inner.substring(start, ci).trim();
-                                tagged.add("CompositionBranchValue<" + origIdx
-                                        + ", " + innerType + ">");
-                                start = ci + 1;
-                            }
-                        }
-                        if (start < inner.length()) {
-                            String innerType = inner.substring(start).trim();
-                            tagged.add("CompositionBranchValue<" + origIdx
+                // For inline schemas (origIdx < 0), use flat position as tag.
+                int brIdx = origIdx >= 0 ? origIdx : i;
+                // Flatten nested variant types within tagged branches
+                if (rawType.startsWith("std::variant<") && rawType.endsWith(">")) {
+                    String inner = rawType.substring(13, rawType.length() - 1);
+                    int depth = 0;
+                    int start = 0;
+                    for (int ci = 0; ci < inner.length(); ci++) {
+                        char c = inner.charAt(ci);
+                        if (c == '<') depth++;
+                        else if (c == '>') depth--;
+                        else if (c == ',' && depth == 0) {
+                            String innerType = inner.substring(start, ci).trim();
+                            tagged.add("CompositionBranchValue<" + brIdx
                                     + ", " + innerType + ">");
+                            start = ci + 1;
                         }
-                    } else {
-                        tagged.add("CompositionBranchValue<" + origIdx
-                                + ", " + rawType + ">");
+                    }
+                    if (start < inner.length()) {
+                        String innerType = inner.substring(start).trim();
+                        tagged.add("CompositionBranchValue<" + brIdx
+                                + ", " + innerType + ">");
                     }
                 } else {
-                    tagged.add(rawType);
+                    tagged.add("CompositionBranchValue<" + brIdx
+                            + ", " + rawType + ">");
                 }
             }
+            // Re-append null when Rule 1 did not consume it. Rule 1 only
+            // consumes null for [T, null] (exactly one null + two total
+            // branches). All other null-containing compositions reach
+            // here with hasNull true; we must always re-add because nonNull
+            // was stripped in Rule 3.
             boolean hasNull = branchTypes.stream().anyMatch("std::nullptr_t"::equals);
-            if (hasNull && tagged.size() > 1) {
+            if (hasNull) {
                 tagged.add("std::nullptr_t");
             }
             return "std::variant<" + String.join(", ", tagged) + ">";
@@ -2167,8 +2170,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
         // Rule 8: Emit std::variant<Branches...>
         List<String> variantBranches = new ArrayList<>(deduped);
+        // Re-append null for any null-containing composition not consumed
+        // by Rule 1 ([T, null] -> optional<T>).  Rule 1 always returns early,
+        // so every null surviving to this point must be restored.
         boolean hasNull = branchTypes.stream().anyMatch("std::nullptr_t"::equals);
-        if (hasNull && deduped.size() > 1) {
+        if (hasNull) {
             variantBranches.add("std::nullptr_t");
         }
         return "std::variant<" + String.join(", ", variantBranches) + ">";

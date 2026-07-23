@@ -942,10 +942,10 @@ struct HasModelToJsonValue<T, std::void_t<decltype(std::declval<const T&>().toJs
 
 // Trait: detects whether a type has fromJsonValue member
 template <typename T, typename = void>
-struct HasModelFromJsonValue : std::false_type {};
+struct HasFromJsonValueMethod : std::false_type {};
 
 template <typename T>
-struct HasModelFromJsonValue<T,
+struct HasFromJsonValueMethod<T,
     std::void_t<decltype(std::declval<T&>().fromJsonValue(std::declval<const boost::json::value&>()))>>
     : std::true_type {};
 
@@ -1079,7 +1079,7 @@ bool tryParseBranch(boost::json::value const& value, T& result, std::string* err
             // Do NOT swallow model validation errors (required field, type
             // mismatch, discriminator): propagate them via errorPath so the
             // caller can include them in the final diagnostic.
-            if constexpr (HasModelFromJsonValue<T>{}) {
+            if constexpr (HasFromJsonValueMethod<T>{}) {
                 T candidate;
                 try {
                     candidate.fromJsonValue(value);
@@ -1191,7 +1191,7 @@ struct JsonValueConverter
 
     static Target fromJsonValue(const boost::json::value& jsonValue)
     {
-        return jsonValueConverterFromJsonValue<Target>(jsonValue, HasModelFromJsonValue<Target>{});
+        return jsonValueConverterFromJsonValue<Target>(jsonValue, HasFromJsonValueMethod<Target>{});
     }
 };
 

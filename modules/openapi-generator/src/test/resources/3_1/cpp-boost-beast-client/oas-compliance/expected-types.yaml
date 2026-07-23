@@ -40,8 +40,8 @@ MultiContentStreamEvent: std::variant<StreamProgress, StreamComplete, StreamErro
 # --- multipart oneOf binary|object ---
 MultipartMetaField: std::variant<std::vector<std::uint8_t>, MetaRecord>
 
-# --- oneOf constrained numbers (multipleOf) — both branches type:number → boost::json::value ---
-ConstrainedNumber: boost::json::value
+# --- oneOf constrained numbers (multipleOf) — both branches type:number → CompositionBranchValue variant ---
+ConstrainedNumber: std::variant<CompositionBranchValue<0, double>, CompositionBranchValue<1, double>>
 
 # --- anyOf enum union [red] ∪ [blue] → std::string ---
 AnyOfEnumUnion: std::string

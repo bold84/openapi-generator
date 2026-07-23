@@ -483,14 +483,18 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(singleBranchContent.contains("using SingleBranchTest = std::string;"),
                 "SingleBranchTest should emit using alias to std::string");
 
-        // DedupTest (oneOf string+string-enum+integer) — string branches collapse to
-        // std::string but the open-string + string-enum overlap loses oneOf exclusivity.
-        // Must type-erase to boost::json::value.
+        // DedupTest (oneOf string-enum+integer+string) — two branches collapse to
+        // std::string, but Phase 3 preserves identity via CompositionBranchValue
+        // wrappers so oneOf exclusivity is enforced at the tagged-type level.
         Path dedupHeader = output.toPath().resolve("model/DedupTest.h");
         String dedupContent = java.nio.file.Files.readString(dedupHeader);
-        Assert.assertTrue(dedupContent.contains("using DedupTest = boost::json::value;"),
-                "DedupTest should emit boost::json::value (oneOf string overlap not representable)");
-
+        Assert.assertTrue(dedupContent.contains("CompositionBranchValue<0, std::string>"),
+                "DedupTest branch 0 must preserve string identity via CompositionBranchValue; "
+                        + "content: " + dedupContent.substring(0, Math.min(500, dedupContent.length())));
+        Assert.assertTrue(dedupContent.contains("CompositionBranchValue<2, std::string>"),
+                "DedupTest branch 2 must preserve string identity via CompositionBranchValue; "
+                        + "content: " + dedupContent.substring(0, Math.min(500, dedupContent.length())));
+ 
         // AllNullTest (anyOf null+null) should be an alias to boost::json::value
         Path allNullHeader = output.toPath().resolve("model/AllNullTest.h");
         String allNullContent = java.nio.file.Files.readString(allNullHeader);
@@ -504,8 +508,8 @@ public class CppBoostBeastClientCodegenTest {
         // Verify variant model headers include <variant>
         Assert.assertTrue(inputParamContent.contains("#include <variant>"),
                 "InputParam (variant) header should include <variant>");
-        Assert.assertFalse(dedupContent.contains("#include <variant>"),
-                "DedupTest (boost::json::value alias) header should NOT include <variant>");
+        Assert.assertTrue(dedupContent.contains("#include <variant>"),
+                "DedupTest (CompositionBranchValue variant) header should include <variant>");
 
         // Verify include guards: each header has exactly one #ifndef and one #endif
         // (check the alias and non-alias paths)
@@ -1045,27 +1049,29 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
-    public void oneOfConstrainedNumbersProducesBoostJsonValue() throws IOException {
+    public void oneOfConstrainedNumbersProducesCompositionBranchValueVariant() throws IOException {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
         // oneOf [number, number] — both branches are double after dedup,
-        // exclusivity is lost → boost::json::value
+        // identity is preserved via CompositionBranchValue wrappers.
         ComposedSchema schema = new ComposedSchema();
         schema.addOneOfItem(new NumberSchema());
         schema.addOneOfItem(new NumberSchema());
 
         String resolved = codegen.getTypeDeclaration(schema);
-        Assert.assertEquals(resolved, "boost::json::value",
-                "oneOf [number, number] (dedup types) should produce boost::json::value");
+        Assert.assertEquals(
+                "std::variant<CompositionBranchValue<0, double>, CompositionBranchValue<1, double>>",
+                resolved,
+                "oneOf [number, number] (duplicate types) should produce "
+                        + "CompositionBranchValue variant, not boost::json::value");
     }
 
     @Test
     public void oneOfConstrainedNumbersWithMultipleOfFromFixtures() throws IOException {
         // Verify ConstrainedNumber (oneOf with multipleOf) generates from Gate A fixtures.
-        // The multipleOf constraints cannot be checked at the C++ type level since both
-        // branches are type:number (double).  The test verifies the model header exists
-        // and the type is boost::json::value (type-erased due to dedup).
+        // Both branches are type:number (double) so they resolve to duplicate C++ types.
+        // Phase 3 preserves identity via CompositionBranchValue wrappers.
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-multof").toFile();
         output.deleteOnExit();
 
@@ -1081,8 +1087,19 @@ public class CppBoostBeastClientCodegenTest {
         Path constrainedHeader = output.toPath().resolve("model/ConstrainedNumber.h");
         TestUtils.assertFileExists(constrainedHeader);
         String constraintContent = java.nio.file.Files.readString(constrainedHeader);
-        Assert.assertTrue(constraintContent.contains("using ConstrainedNumber = boost::json::value;"),
-                "ConstrainedNumber (oneOf number+number) must be boost::json::value alias");
+        Assert.assertTrue(
+                constraintContent.contains("CompositionBranchValue"),
+                "ConstrainedNumber (oneOf number+number) must use CompositionBranchValue "
+                        + "to preserve branch identity; content: "
+                        + constraintContent.substring(0, Math.min(500, constraintContent.length())));
+        Assert.assertTrue(
+                constraintContent.contains("CompositionBranchValue<0, double>"),
+                "ConstrainedNumber[0] must be CompositionBranchValue<0, double>; content: "
+                        + constraintContent.substring(0, Math.min(500, constraintContent.length())));
+        Assert.assertTrue(
+                constraintContent.contains("CompositionBranchValue<1, double>"),
+                "ConstrainedNumber[1] must be CompositionBranchValue<1, double>; content: "
+                        + constraintContent.substring(0, Math.min(500, constraintContent.length())));
     }
 
     @Test
@@ -2221,12 +2238,11 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(java.nio.file.Files.exists(dedupTest),
                 "DedupTest must generate a model header");
         String dedupContent = new String(java.nio.file.Files.readAllBytes(dedupTest));
-        // DedupTest (oneOf string + string-enum + integer) must erase to
-        // boost::json::value because the two string branches are indistinguishable
-        // after type lowering.
-        Assert.assertTrue(dedupContent.contains("boost::json::value"),
-                "DedupTest must type-erase to boost::json::value (oneOf "
-                        + "string+string-enum collapse); content: "
+        // DedupTest (oneOf string-enum + integer + string) — two branches are
+        // both std::string. Phase 3 preserves identity via CompositionBranchValue.
+        Assert.assertTrue(dedupContent.contains("CompositionBranchValue"),
+                "DedupTest must use CompositionBranchValue to preserve string "
+                        + "branch identity; content: "
                         + dedupContent.substring(0, Math.min(500, dedupContent.length())));
 
         // RefHolder must reference OptionalScore and InputParam models
