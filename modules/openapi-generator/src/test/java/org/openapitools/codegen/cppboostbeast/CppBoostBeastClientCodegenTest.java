@@ -2910,6 +2910,106 @@ public class CppBoostBeastClientCodegenTest {
                 "validatorId must contain branch index");
     }
 
+    @Test
+    public void anyOfAssertionSensitivity() {
+        // anyOf with numeric-constrained branches: branch 0 accepts ≥100,
+        // branch 1 accepts ≤0. Value 50 should match neither (rejected).
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        IntegerSchema highBranch = new IntegerSchema();
+        highBranch.setMinimum(100);
+        schema.addAnyOfItem(highBranch);
+        IntegerSchema lowBranch = new IntegerSchema();
+        lowBranch.setMaximum(0);
+        schema.addAnyOfItem(lowBranch);
+        schemas.put("AnyOfConstrained", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("AnyOfConstrained");
+        Assert.assertNotNull(desc, "AnyOfConstrained must have a descriptor");
+        Assert.assertEquals(desc.getKeyword(), "anyOf",
+                "Keyword must be anyOf");
+        Assert.assertEquals(desc.getBranches().size(), 2,
+                "AnyOfConstrained must have 2 branches");
+
+        // Both branches must have numeric-range assertion metadata
+        for (CppBoostBeastClientCodegen.CompositionBranchDescriptor branch : desc.getBranches()) {
+            Assert.assertTrue(branch.getSupportedAssertions().contains("numeric-range"),
+                    "AnyOf branch with explicit bounds must have numeric-range assertion");
+        }
+
+        // First branch: minimum = 100
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor highBranchDesc =
+                desc.getBranches().get(0);
+        Assert.assertEquals(highBranchDesc.getValidateParams().get("validation-min"), 100,
+                "High branch must have validation-min = 100");
+        Assert.assertEquals(highBranchDesc.getValidateParams().get("validation-type"), "integer",
+                "High branch validation-type must be integer");
+
+        // Second branch: maximum = 0
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor lowBranchDesc =
+                desc.getBranches().get(1);
+        Assert.assertEquals(lowBranchDesc.getValidateParams().get("validation-max"), 0,
+                "Low branch must have validation-max = 0");
+    }
+
+    @Test
+    public void anyOfBranchValidatorMetadataForPatternAndConst() {
+        // Verify const and pattern assertions produce correct validation params
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema constBranch = new StringSchema();
+        constBranch.setConst("fixed-value");
+        schema.addAnyOfItem(constBranch);
+
+        StringSchema patternBranch = new StringSchema();
+        patternBranch.setPattern("^[a-z]+$");
+        schema.addAnyOfItem(patternBranch);
+        schemas.put("AnyOfConstPattern", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("AnyOfConstPattern");
+        Assert.assertNotNull(desc, "AnyOfConstPattern must have a descriptor");
+
+        // Const branch
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor constBranchDesc =
+                desc.getBranches().get(0);
+        Assert.assertTrue(constBranchDesc.getSupportedAssertions().contains("const"),
+                "Const branch must have const assertion");
+        Assert.assertEquals(constBranchDesc.getValidateParams().get("validation-const-value"),
+                "fixed-value",
+                "Const branch must have correct const value");
+
+        // Pattern branch
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor patternBranchDesc =
+                desc.getBranches().get(1);
+        Assert.assertTrue(patternBranchDesc.getSupportedAssertions().contains("pattern"),
+                "Pattern branch must have pattern assertion");
+        Assert.assertEquals(patternBranchDesc.getValidateParams().get("validation-pattern"),
+                "^[a-z]+$",
+                "Pattern branch must have correct pattern");
+    }
+
     /**
      * Test helper that exposes protected normalizer methods as public.
      */

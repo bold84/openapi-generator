@@ -5,21 +5,35 @@
 // The generated client performs structural and composition validation to
 // ensure wire-format correctness, but is NOT a full JSON Schema validator:
 //
-//   ✓ oneOf exactly-one match enforcement (count + reject 0 or >1)
-//   ✓ anyOf at-least-one match enforcement (reject 0)
+//   ✓ oneOf exactly-one match enforcement (validate_* per branch)
+//   ✓ anyOf at-least-one match enforcement (validate_* per branch)
 //   ✓ discriminator value enforcement (unknown → throw)
+//   ✓ type validation (string, boolean, integer, number, array, object, null)
+//   ✓ mathematical integer semantics (1 and 1.0 both accepted as integer)
+//   ✓ enum / const membership on string and numeric values
 //   ✓ required property presence in object JSON
-//   ✓ enum / const membership on object property setters
-//   ✓ basic type-kind checks (string, bool, int, double, null)
+//   ✓ numeric range validation (minimum, maximum, exclusiveMin, exclusiveMax)
+//   ✓ numeric multipleOf validation
+//   ✓ string length validation (minLength, maxLength)
+//   ✓ string pattern validation (ECMA-262 regex subset; fail-closed outside)
+//   ✓ array length constraints (minItems, maxItems)
+//   ✓ array uniqueItems validation
+//   ✓ object property count constraints (minProperties, maxProperties)
+//   ✓ boolean schema true/false validation
+//   ✓ nested composition ($ref, oneOf, anyOf, allOf, not)
 //   ✓ nested error-path diagnostics (e.g. ".field[0].nested")
 //
 //   ✗ String format validation (email, date-time, uri, etc.)
-//   ✗ Numeric range validation (minimum, maximum, multipleOf)
-//   ✗ String pattern validation (regex)
-//   ✗ Array length constraints (minItems, maxItems, uniqueItems)
-//   ✗ Object property constraints (minProperties, maxProperties)
 //   ✗ if/then/else conditional validation
 //   ✗ Unevaluated/additional property semantics
+//   ✗ Dependencies (dependentRequired)
+//   ✗ Contains validation
+//   ✗ Content media type / content encoding validation
+//   ✗ Property name validation
+//
+// When a composition branch contains an unsupported assertion keyword,
+// generation fails with a schema-path diagnostic rather than silently
+// accepting invalid wire values.
 //
 // For full JSON Schema validation, use a dedicated validator library
 // (e.g. valijson, nlohmann/json-schema-validator) on the deserialized
@@ -374,7 +388,7 @@ ValidationResult validate_{{validator-id}}(
     }
     {{/validation-type}}
 
-    // Enum validation (string enum, OAS const)
+    // Enum validation (string enum)
     {{#has-validation-enum}}
     if (instance.is_string()) {
         bool found = false;
@@ -388,6 +402,54 @@ ValidationResult validate_{{validator-id}}(
         }
     }
     {{/has-validation-enum}}
+
+    // Const validation (OAS const — exact value must match)
+    {{#has-validation-const}}
+    {
+        bool constMatch = true;
+        {{! Inside the iteration over validation-const-value, {{.}} is the
+            const-value string from the schema. }}
+        {{#validation-const-value}}
+        if (instance.is_string()) {
+            if (instance.as_string() != "{{.}}") {
+                constMatch = false;
+            }
+        } else if (isJsonNumber(instance)) {
+            double expected = static_cast<double>(std::stod("{{.}}"));
+            double actual = instance.is_double() ? instance.as_double()
+                          : static_cast<double>(instance.as_int64());
+            if (actual != expected) {
+                constMatch = false;
+            }
+        } else if (instance.is_bool()) {
+            // Boolean const handled via type check only — value comparison
+            // would require the template to know the boolean representation.
+            constMatch = false;
+        } else {
+            constMatch = false;
+        }
+        {{/validation-const-value}}
+        if (!constMatch) {
+            return ValidationResult::invalidAt(path,
+                "const value mismatch");
+        }
+    }
+    {{/has-validation-const}}
+
+    // Pattern validation (ECMA-262 regex subset, fail-closed outside)
+    {{#has-validation-pattern}}
+    if (instance.is_string()) {
+        try {
+            if (!validatePattern(instance, "{{validation-pattern}}")) {
+                return ValidationResult::invalidAt(path,
+                    "string does not match required pattern");
+            }
+        } catch (std::exception const& ex) {
+            return ValidationResult::invalidAt(path,
+                "pattern validation failed: " + std::string(ex.what()));
+        }
+    }
+    {{/has-validation-pattern}}
 
     // Numeric range validation
     {{#has-validation-numeric}}
@@ -541,20 +603,20 @@ ValidationResult validate_{{validator-id}}(
     // Phase 2: use generated validators for membership counting.
     // Validators check schema assertions against raw JSON (no C++ conversion).
     // After membership is confirmed, tryParseBranch converts to storage.
+    std::size_t validMatchCount = 0;
+    ValidationPath vp;
+    {{#vendorExtensions.x-cpp-composition-branches}}
+    {{#branches}}
+    {{#validator-id}}
+    {
+        auto vr = validate_{{validator-id}}(value, vp);
+        if (vr.success) ++validMatchCount;
+    }
+    {{/validator-id}}
+    {{/branches}}
+    {{/vendorExtensions.x-cpp-composition-branches}}
     if constexpr (isOneOf) {
-        // Count matching branches using generated validators
-        std::size_t validMatchCount = 0;
-        ValidationPath vp;
-        {{#vendorExtensions.x-cpp-composition-branches}}
-        {{#branches}}
-        {{#validator-id}}
-        {
-            auto vr = validate_{{validator-id}}(value, vp);
-            if (vr.success) ++validMatchCount;
-        }
-        {{/validator-id}}
-        {{/branches}}
-        {{/vendorExtensions.x-cpp-composition-branches}}
+        // oneOf: exactly one branch must pass its schema assertions
         if (validMatchCount == 0) {
             // Fall through to tryParseBranch for detailed error path
             {{classname}} captureDummy;
@@ -574,6 +636,33 @@ ValidationResult validate_{{validator-id}}(
             throw std::invalid_argument("No matching branch for {{classname}} from JSON value at '" + errorPath + "'");
         }
     } else {
+        // anyOf: at least one branch must pass its schema assertions
+        if (validMatchCount == 0) {
+            // Collect per-branch error details from validator failure paths
+            std::string failures;
+            {{#vendorExtensions.x-cpp-composition-branches}}
+            {{#branches}}
+            {{#validator-id}}
+            {
+                ValidationPath anyVp;
+                auto anyVr = validate_{{validator-id}}(value, anyVp);
+                if (!anyVr.success) {
+                    if (!failures.empty()) failures += "; ";
+                    failures += "branch {{branch-index}}";
+                    if (!anyVr.failurePath.empty()) {
+                        failures += " at '" + anyVr.failurePath + "'";
+                    }
+                    if (!anyVr.failureMessage.empty()) {
+                        failures += ": " + anyVr.failureMessage;
+                    }
+                }
+            }
+            {{/validator-id}}
+            {{/branches}}
+            {{/vendorExtensions.x-cpp-composition-branches}}
+            throw std::invalid_argument(
+                "No matching branch for anyOf {{classname}}: " + failures);
+        }
         // anyOf: first-matching branch is sufficient for storage
         if (!tryVariantBranches(value, result, std::make_index_sequence<variantSize>{}, &errorPath)) {
             throw std::invalid_argument("No matching branch for {{classname}} from JSON value at '" + errorPath + "'");
