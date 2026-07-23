@@ -979,7 +979,22 @@ public class CppBoostBeastClientCodegenTest {
                 .setOutputDir(output.getAbsolutePath())
                 .addAdditionalProperty("packageName", "CppBoostBeastRequiredConflictTest");
 
-        new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        try {
+            new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        } catch (RuntimeException e) {
+            // Walk to root cause
+            Throwable cause = e;
+            while (cause.getCause() != null && cause.getCause() != cause) {
+                cause = cause.getCause();
+            }
+            String msg = cause.getMessage();
+            Assert.assertTrue(msg != null
+                            && (msg.contains("Unsatisfiable allOf")
+                                || msg.contains("Required property")
+                                || msg.contains("id")),
+                    "Exception must mention Unsatisfiable allOf / Required property / id. Got: " + msg);
+            throw e;
+        }
     }
 
     @Test
@@ -1168,6 +1183,65 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertFalse(sourceContent.contains("\"d\""),
                 "AllOfRefEnum source must NOT contain enum value d (not in intersection). "
                 + "Source: " + sourceContent);
+    }
+
+    @Test
+    public void allOfFlatSyntheticOwnsOnlyChildProps() throws IOException {
+        // Phase 5 (Flat): allOf with a $ref parent and inline child properties
+        // must produce a model where only the child's own properties appear as
+        // owned storage.  Parent properties are NOT duplicated by the synthetic
+        // schema — they are merged into the flat synthetic, so the generated
+        // model declares ALL properties as direct members, with no parent ref.
+        String specContent =
+            "openapi: 3.1.0\n" +
+            "info:\n" +
+            "  title: allOf flat synthetic test\n" +
+            "  version: 1.0.0\n" +
+            "paths: {}\n" +
+            "components:\n" +
+            "  schemas:\n" +
+            "    Parent:\n" +
+            "      type: object\n" +
+            "      properties:\n" +
+            "        inheritedProp:\n" +
+            "          type: string\n" +
+            "    Child:\n" +
+            "      allOf:\n" +
+            "        - $ref: '#/components/schemas/Parent'\n" +
+            "        - type: object\n" +
+            "          properties:\n" +
+            "            childProp:\n" +
+            "              type: integer\n" +
+            "              format: int32\n";
+
+        java.nio.file.Path specFile = java.nio.file.Files.createTempFile("allof-flat-synth-", ".yaml");
+        specFile.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(specFile, specContent);
+
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-flat-synth").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(specFile.toAbsolutePath().toString())
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "CppBoostBeastFlatSynthTest");
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // Child must NOT inherit from Parent (flat synthetic has allOf=null)
+        Path header = output.toPath().resolve("model/Child.h");
+        TestUtils.assertFileExists(header);
+        String headerContent = java.nio.file.Files.readString(header);
+        // Child must declare childProp as an owned member
+        Assert.assertTrue(headerContent.contains("childProp"),
+                "Child must declare childProp as owned storage. "
+                + "Header: " + headerContent);
+        // Child must also carry inheritedProp as its OWN member (flat)
+        Assert.assertTrue(headerContent.contains("inheritedProp"),
+                "Child must declare inheritedProp as owned storage (flat synthetic). "
+                + "Header: " + headerContent);
     }
 
     @Test

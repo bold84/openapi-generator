@@ -2929,81 +2929,6 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     }
 
     /**
-     * Applies an AllOfIntersection directly onto an existing Schema,
-     * setting its properties and required from the merged result.
-     * Used when the original schema is modified in-place to preserve
-     * non-property attributes (parent $ref, discriminator, etc.).
-     *
-     * @param target       the schema to modify
-     * @param intersection the pre-computed allOf intersection
-     */
-    private void buildSyntheticAllOfSchema(
-            Schema target, AllOfIntersection intersection) {
-        // Set root-level type from intersection
-        if (intersection.getRootScalarType() != null) {
-            target.setType(intersection.getRootScalarType());
-        }
-
-        // Apply intersected root-level enum values
-        if (intersection.getRootEnumValues() != null
-                && !intersection.getRootEnumValues().isEmpty()) {
-            target.setEnum(new ArrayList<>(intersection.getRootEnumValues()));
-        }
-
-        // Apply intersected root-level const value
-        if (intersection.getRootConstValue() != null) {
-            target.setConst(intersection.getRootConstValue());
-        }
-
-        // Apply intersected numeric bounds
-        if (intersection.getRootMinimum() != null) {
-            target.setMinimum(intersection.getRootMinimum());
-        }
-        if (intersection.getRootMaximum() != null) {
-            target.setMaximum(intersection.getRootMaximum());
-        }
-        if (intersection.getRootExclusiveMinimum() != null) {
-            target.setExclusiveMinimum(intersection.getRootExclusiveMinimum());
-        }
-        if (intersection.getRootExclusiveMaximum() != null) {
-            target.setExclusiveMaximum(intersection.getRootExclusiveMaximum());
-        }
-
-        // Apply intersected string length bounds
-        if (intersection.getRootMinLength() != null) {
-            target.setMinLength(intersection.getRootMinLength());
-        }
-        if (intersection.getRootMaxLength() != null) {
-            target.setMaxLength(intersection.getRootMaxLength());
-        }
-
-        // Copy merged properties (skipping optional-impossible properties)
-        if (!intersection.getProperties().isEmpty()) {
-            Map<String, Schema> syntheticProps = new LinkedHashMap<>();
-            for (Map.Entry<String, Schema> propEntry
-                    : intersection.getProperties().entrySet()) {
-                String propName = propEntry.getKey();
-                if (intersection.getOptionalImpossibleProperties().contains(propName)) {
-                    Schema rejectionSchema = new Schema();
-                    rejectionSchema.setType("boolean");
-                    Map<String, Object> ext = new LinkedHashMap<>();
-                    ext.put("x-cpp-reject-if-present", true);
-                    rejectionSchema.setExtensions(ext);
-                    syntheticProps.put(propName, rejectionSchema);
-                } else {
-                    syntheticProps.put(propName, propEntry.getValue());
-                }
-            }
-            target.setProperties(syntheticProps);
-        }
-
-        // Set required as the union of required from all contributors
-        if (!intersection.getRequired().isEmpty()) {
-            target.setRequired(new ArrayList<>(intersection.getRequired()));
-        }
-    }
-
-    /**
      * Exception thrown when an allOf intersection produces an unsatisfiable
      * result on a required property, preventing model generation.
      */
@@ -3571,18 +3496,19 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
     @Override
     public CodegenModel fromModel(String name, Schema model) {
-        // Phase 5: Use the pre-computed recursive allOf intersection to
-        // build a copy-based synthetic schema that replaces the original
-        // allOf.  Parent $ref branches are preserved in the synthetic
-        // allOf for correct inheritance, but non-$ref branches (which
-        // contributed inline properties) are removed since their properties
-        // are merged into the synthetic schema.
+        // Phase 5 (Flat Synthetic): When a schema has allOf, replace it with
+        // a brand-new synthetic schema carrying ALL intersected properties
+        // and ALL unioned required.  allOf = null on the synthetic, meaning
+        // the model has no C++ parent.  This is the "Flat" approach: every
+        // property is owned storage; nothing is inherited.
         //
-        // This avoids duplicating parent properties AND does not mutate
-        // the original component schema (Copy-Based Synthetic rule).
+        // Every original allOf is removed — the synthetic schema stands alone.
+        // super.fromModel sees a plain object (or scalar) and generates
+        // members for every property directly.
         Schema modelArg = model;
         if (model != null && model.getAllOf() != null && !model.getAllOf().isEmpty()) {
-            AllOfIntersection intersection = allOfIntersections.get(name);
+            AllOfIntersection intersection = allOfIntersections.get(
+                    toModelName(name));
             if (intersection != null) {
                 // Check for unsatisfiable required properties / scalar conflicts
                 if (!intersection.isSatisfiable()) {
@@ -3590,73 +3516,34 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             name, intersection.getUnsatisfiableReason());
                 }
 
-                if (!intersection.getProperties().isEmpty()) {
-                    // Object allOf: build a copy-based synthetic schema with
-                    // merged properties, preserving only $ref branches for
-                    // parent inheritance (non-$ref branches are consumed).
-                    Schema synthetic = buildSyntheticAllOfSchema(
-                            name, intersection);
-                    // Copy top-level attributes from original model
-                    if (model.getDiscriminator() != null) {
-                        synthetic.setDiscriminator(model.getDiscriminator());
-                    }
-                    if (Boolean.TRUE.equals(model.getNullable())) {
-                        synthetic.setNullable(true);
-                    }
-                    if (model.getDescription() != null) {
-                        synthetic.setDescription(model.getDescription());
-                    }
-                    // Preserve $ref branches only (for parent inheritance)
-                    List<Schema> survivingAllOf = new ArrayList<>();
-                    for (Object branch : model.getAllOf()) {
-                        if (branch instanceof Schema
-                                && ((Schema) branch).get$ref() != null) {
-                            Schema refClone = new Schema();
-                            refClone.set$ref(((Schema) branch).get$ref());
-                            survivingAllOf.add(refClone);
-                        }
-                    }
-                    if (!survivingAllOf.isEmpty()) {
-                        synthetic.setAllOf(survivingAllOf);
-                    }
-                    // Propagate optional-impossible property tags
-                    if (!intersection.getOptionalImpossibleProperties().isEmpty()) {
-                        Map<String, Object> ext = synthetic.getExtensions();
-                        if (ext == null) {
-                            ext = new LinkedHashMap<>();
-                            synthetic.setExtensions(ext);
-                        }
-                        ext.put("x-cpp-optional-impossible-properties",
-                                new ArrayList<>(intersection.getOptionalImpossibleProperties()));
-                    }
-                    modelArg = synthetic;
-                } else {
-                    // Scalar-only allOf: replace the model schema with the
-                    // intersected scalar type/enum/const/bounds. The original
-                    // allOf is replaced by the synthetic scalar schema.
-                    Schema synthetic = buildSyntheticAllOfSchema(
-                            name, intersection);
-                    if (model.getDescription() != null) {
-                        synthetic.setDescription(model.getDescription());
-                    }
-                    if (Boolean.TRUE.equals(model.getNullable())) {
-                        synthetic.setNullable(true);
-                    }
-                    if (model.getFormat() != null && intersection.getRootScalarType() != null) {
-                        synthetic.setFormat(model.getFormat());
-                    }
-                    // Propagate optional-impossible tags to scalar synthetic too
-                    if (!intersection.getOptionalImpossibleProperties().isEmpty()) {
-                        Map<String, Object> ext = synthetic.getExtensions();
-                        if (ext == null) {
-                            ext = new LinkedHashMap<>();
-                            synthetic.setExtensions(ext);
-                        }
-                        ext.put("x-cpp-optional-impossible-properties",
-                                new ArrayList<>(intersection.getOptionalImpossibleProperties()));
-                    }
-                    modelArg = synthetic;
+                Schema synthetic = buildSyntheticAllOfSchema(
+                        name, intersection);
+                // Copy top-level attributes from original model
+                if (model.getDiscriminator() != null) {
+                    synthetic.setDiscriminator(model.getDiscriminator());
                 }
+                if (Boolean.TRUE.equals(model.getNullable())) {
+                    synthetic.setNullable(true);
+                }
+                if (model.getDescription() != null) {
+                    synthetic.setDescription(model.getDescription());
+                }
+                if (model.getFormat() != null && intersection.getRootScalarType() != null) {
+                    synthetic.setFormat(model.getFormat());
+                }
+                // Propagate optional-impossible property tags
+                if (!intersection.getOptionalImpossibleProperties().isEmpty()) {
+                    Map<String, Object> ext = synthetic.getExtensions();
+                    if (ext == null) {
+                        ext = new LinkedHashMap<>();
+                        synthetic.setExtensions(ext);
+                    }
+                    ext.put("x-cpp-optional-impossible-properties",
+                            new ArrayList<>(intersection.getOptionalImpossibleProperties()));
+                }
+                // Flat: allOf = null so super.fromModel sees no parent
+                synthetic.setAllOf(null);
+                modelArg = synthetic;
             }
         }
 
