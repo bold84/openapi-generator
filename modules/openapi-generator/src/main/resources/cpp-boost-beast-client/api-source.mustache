@@ -522,24 +522,35 @@ boost::json::value toRequestJsonValue(const std::map<std::string, T>& requestVal
 
 /// addVariantFormParameter definition (forward-declared above).
 /// Must be defined after toRequestJsonValue so lambdas can find it via ADL.
+/// When encodingContentType is non-empty, it overrides the per-branch default
+/// according to the OAS Encoding Object contentType precedence:
+///   1. Encoding Object contentType
+///   2. contentMediaType (OAS 3.1)
+///   3. OAS default for the property type (octet-stream for binary, JSON for objects)
 template<typename VariantType>
 void addVariantFormParameter(
     std::vector<FormParameter>& formParameters,
     const std::string& name,
-    const VariantType& value) {
+    const VariantType& value,
+    const std::string& encodingContentType = "") {
+    const std::string resolvedContentType = encodingContentType;
     std::visit([&](auto const& branch) {
         using BranchType = std::decay_t<decltype(branch)>;
         // Only explicit byte containers are treated as file/binary branches.
         // std::string branches are serialized as JSON to correctly handle
         // string|object variant unions (e.g., oneOf [string, DataObject]).
         if constexpr (std::is_same_v<BranchType, std::vector<std::uint8_t>>) {
-            // Binary branch — send as file part with octet-stream
+            // Binary branch — send as file part with encoding or default content type
+            std::string partContentType = resolvedContentType.empty()
+                ? "application/octet-stream" : resolvedContentType;
             formParameters.emplace_back(name, toFormParameterValue(branch), true,
-                                        "application/octet-stream");
+                                        partContentType);
         } else {
             // Object or string branch — serialize as JSON part
+            std::string partContentType = resolvedContentType.empty()
+                ? "application/json" : resolvedContentType;
             std::string jsonValue = boost::json::serialize(toRequestJsonValue(branch));
-            formParameters.emplace_back(name, jsonValue, false, "application/json");
+            formParameters.emplace_back(name, jsonValue, false, partContentType);
         }
     }, value);
 }

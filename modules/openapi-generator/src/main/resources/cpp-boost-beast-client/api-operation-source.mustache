@@ -34,13 +34,14 @@
 {{#allParams}}
 {{#isFormParam}}
 {{#vendorExtensions.x-codegen-is-variant-form-param}}
-    addVariantFormParameter(formParameters, "{{{baseName}}}", {{{paramName}}});
+    addVariantFormParameter(formParameters, "{{{baseName}}}", {{{paramName}}}{{#contentType}}, "{{{contentType}}}"{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{^vendorExtensions.x-codegen-is-variant-form-param}}
     formParameters.emplace_back(
         "{{{baseName}}}",
         toFormParameterValue({{{paramName}}}),
-        {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}});
+        {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}}{{#contentType}},
+        "{{{contentType}}}"{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
@@ -422,13 +423,14 @@
 {{#allParams}}
 {{#isFormParam}}
 {{#vendorExtensions.x-codegen-is-variant-form-param}}
-    addVariantFormParameter(formParameters, "{{{baseName}}}", {{{paramName}}});
+    addVariantFormParameter(formParameters, "{{{baseName}}}", {{{paramName}}}{{#contentType}}, "{{{contentType}}}"{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{^vendorExtensions.x-codegen-is-variant-form-param}}
     formParameters.emplace_back(
         "{{{baseName}}}",
         toFormParameterValue({{{paramName}}}),
-        {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}});
+        {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}}{{#contentType}},
+        "{{{contentType}}}"{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
