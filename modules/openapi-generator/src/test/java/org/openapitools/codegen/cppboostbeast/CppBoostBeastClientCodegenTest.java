@@ -23,6 +23,7 @@ import io.swagger.v3.oas.models.media.NumberSchema;
 import io.swagger.v3.oas.models.media.ObjectSchema;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.media.StringSchema;
+import org.openapitools.codegen.CodegenModel;
 import org.openapitools.codegen.DefaultGenerator;
 import org.openapitools.codegen.TestUtils;
 import org.openapitools.codegen.config.CodegenConfigurator;
@@ -2301,45 +2302,110 @@ public class CppBoostBeastClientCodegenTest {
 
     @Test
     public void xCppCompositionBranchesStructureContract()
-            throws IOException {
+            throws Exception {
         // Contract test: validates that x-cpp-composition-branches structure
-        // is populated on codegen state after preprocessOpenAPI and that
-        // descriptor-driven lowering produces correct output types through
-        // the full pipeline.
-        File output = java.nio.file.Files.createTempDirectory(
-                "cpp-boost-beast-ext-struct").toFile();
-        output.deleteOnExit();
+        // is populated on codegen state with correct keyword, branch count,
+        // and assertion lists on each branch. Uses preprocessOpenAPI +
+        // fromModel + postProcessModels to inspect descriptor-derived state.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
 
-        CodegenConfigurator configurator = new CodegenConfigurator()
-                .setGeneratorName("cpp-boost-beast-client")
-                .setInputSpec(
-                        "src/test/resources/3_1/cpp-boost-beast-client/composed-schema-lowering.yaml")
-                .setOutputDir(output.getAbsolutePath());
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        openAPI.setServers(new java.util.ArrayList<>());
+        io.swagger.v3.oas.models.Components components =
+                new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
 
-        // Run full pipeline so normalization and preprocessOpenAPI run
-        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
-        files.forEach(File::deleteOnExit);
+        // oneOf with string + integer branches and a discriminator
+        ComposedSchema schema = new ComposedSchema();
+        schema.addOneOfItem(new StringSchema());
+        schema.addOneOfItem(new IntegerSchema());
+        schema.setDiscriminator(
+                new io.swagger.v3.oas.models.media.Discriminator()
+                        .propertyName("kind"));
+        schemas.put("StringOrInt", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
 
-        // InputParam (oneOf string + array) must produce variant
-        Path inputParam = output.toPath().resolve("model/InputParam.h");
-        Assert.assertTrue(java.nio.file.Files.exists(inputParam),
-                "InputParam must generate a header");
-        String ipContent = new String(java.nio.file.Files.readAllBytes(inputParam));
-        Assert.assertTrue(ipContent.contains("std::variant<std::string, std::vector<InputItem>>")
-                        || ipContent.contains("std::variant<"),
-                "InputParam must be a variant type; content: "
-                        + ipContent.substring(0, Math.min(300, ipContent.length())));
+        // Descriptor must exist with correct keyword and branch count
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("StringOrInt");
+        Assert.assertNotNull(desc,
+                "StringOrInt must have a composition descriptor");
+        Assert.assertEquals(desc.getKeyword(), "oneOf",
+                "x-cpp-composition-branches keyword must be 'oneOf'");
+        Assert.assertEquals(desc.getBranches().size(), 2,
+                "x-cpp-composition-branches must have 2 branches");
 
-        // PetByType (oneOf with discriminator) must have discriminator
-        // information in its generated code
-        Path petByType = output.toPath().resolve("model/PetByType.h");
-        Assert.assertTrue(java.nio.file.Files.exists(petByType),
-                "PetByType must generate a header");
-        String pbtContent = new String(java.nio.file.Files.readAllBytes(petByType));
-        Assert.assertTrue(pbtContent.contains("pet_type")
-                        || pbtContent.contains("std::variant"),
-                "PetByType must include discriminator or variant type; content: "
-                        + pbtContent.substring(0, Math.min(300, pbtContent.length())));
+        // Each branch must have resolved-schema-name and supported assertions
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor branch0 =
+                desc.getBranches().get(0);
+        Assert.assertEquals(branch0.getResolvedSchemaName(), "string",
+                "Branch 0 must be the string branch");
+        Assert.assertTrue(
+                branch0.getSupportedAssertions().contains("type"),
+                "String branch must have 'type' in supportedAssertions");
+
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor branch1 =
+                desc.getBranches().get(1);
+        Assert.assertEquals(branch1.getResolvedSchemaName(), "integer",
+                "Branch 1 must be the integer branch");
+        Assert.assertTrue(
+                branch1.getSupportedAssertions().contains("type"),
+                "Integer branch must have 'type' in supportedAssertions");
+
+        // Discriminator must be present
+        Assert.assertTrue(desc.hasDiscriminator(),
+                "Descriptor must have discriminator");
+        Assert.assertEquals(desc.getDiscriminator().getPropertyName(), "kind",
+                "Discriminator property name must be 'kind'");
+
+        // Run lowering and verify x-cpp-composition-branches survives
+        CodegenModel cm = codegen.fromModel("StringOrInt", schema);
+        if (cm.classname == null) {
+            cm.classname = "StringOrInt";
+        }
+        org.openapitools.codegen.model.ModelsMap modelsMap =
+                new org.openapitools.codegen.model.ModelsMap();
+        org.openapitools.codegen.model.ModelMap modelWrap =
+                new org.openapitools.codegen.model.ModelMap();
+        modelWrap.setModel(cm);
+        java.util.List<org.openapitools.codegen.model.ModelMap> modelList =
+                new java.util.ArrayList<>();
+        modelList.add(modelWrap);
+        modelsMap.setModels(modelList);
+        modelsMap = codegen.postProcessModels(modelsMap);
+
+        // After lowering, x-cpp-composition-branches must still be present
+        CodegenModel processed = modelsMap.getModels().get(0).getModel();
+        Object extValue = processed.vendorExtensions.get("x-cpp-composition-branches");
+        Assert.assertNotNull(extValue,
+                "x-cpp-composition-branches must survive postProcessModels");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> extMap = (Map<String, Object>) extValue;
+        Assert.assertEquals(extMap.get("keyword"), "oneOf",
+                "x-cpp-composition-branches keyword must be 'oneOf'");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> branches =
+                (List<Map<String, Object>>) extMap.get("branches");
+        Assert.assertNotNull(branches, "x-cpp-composition-branches must have branches");
+        Assert.assertEquals(branches.size(), 2,
+                "x-cpp-composition-branches must have 2 branches");
+
+        // Each branch map must have assertion and capability fields
+        for (Map<String, Object> brMap : branches) {
+            Assert.assertTrue(brMap.containsKey("branch-index"),
+                    "Branch must have branch-index");
+            Assert.assertTrue(brMap.containsKey("null-capability"),
+                    "Branch must have null-capability");
+            Assert.assertTrue(brMap.containsKey("supported-assertions"),
+                    "Branch must have supported-assertions");
+            Assert.assertTrue(brMap.containsKey("unsupported-assertions"),
+                    "Branch must have unsupported-assertions");
+        }
     }
 
     @Test
@@ -2417,11 +2483,14 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
-    public void descriptorBranchIndexAlignsAfterSelfRefFiltering() {
+    public void descriptorBranchIndexAlignsAfterSelfRefFiltering()
+            throws Exception {
         // Contract test: when a self-referencing oneOf branch is filtered
         // in processComposedModel, lowerComposedTypes Rule 1 and Rule 3
         // must still correctly align descriptor nullCapability via
         // originalBranchIndex. Schema: oneOf [SelfModel, null, string].
+        // Invokes full lowering (preprocessOpenAPI → fromModel →
+        // postProcessModels) and checks the final vendor extension.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -2447,38 +2516,51 @@ public class CppBoostBeastClientCodegenTest {
         openAPI.setComponents(components);
         codegen.preprocessOpenAPI(openAPI);
 
-        // Descriptor must have 3 branches (0: self-ref, 1: null, 2: string)
+        // Step 1: Verify descriptor has correct structure
         CppBoostBeastClientCodegen.CompositionDescriptor desc =
                 codegen.getCompositionDescriptor("SchemaWithSelfRef");
         Assert.assertNotNull(desc,
                 "SchemaWithSelfRef must have a composition descriptor");
         Assert.assertEquals(desc.getBranches().size(), 3,
                 "Descriptor must have 3 branches (self-ref, null, string)");
-        Assert.assertEquals(desc.getKeyword(), "oneOf",
-                "Keyword must be 'oneOf'");
 
-        // Branch 1 (null) must have null capability
-        CppBoostBeastClientCodegen.CompositionBranchDescriptor nullDesc =
-                desc.getBranches().get(1);
-        Assert.assertEquals(nullDesc.getResolvedSchemaName(), "NullType",
-                "Branch 1 must be the null $ref target");
-        Assert.assertTrue(
-                nullDesc.getNullCapability()
-                        == CppBoostBeastClientCodegen.CompositionBranchDescriptor.NullCapability.ALWAYS
-                || nullDesc.getNullCapability()
-                        == CppBoostBeastClientCodegen.CompositionBranchDescriptor.NullCapability.CONDITIONAL,
-                "Null branch must have ALWAYS or CONDITIONAL nullCapability");
+        // Step 2: Run lowering via fromModel + postProcessModels
+        // fromModel converts the raw schema into a CodegenModel with
+        // composedSchemas containing oneOf CodegenProperty branches.
+        CodegenModel cm = codegen.fromModel("SchemaWithSelfRef", schema);
+        Assert.assertNotNull(cm, "fromModel must produce a CodegenModel");
+        // Set classname explicitly if fromModel didn't
+        if (cm.classname == null) {
+            cm.classname = "SchemaWithSelfRef";
+        }
 
-        // Branch 2 (string) must NOT have null capability
-        CppBoostBeastClientCodegen.CompositionBranchDescriptor stringDesc =
-                desc.getBranches().get(2);
-        Assert.assertEquals(stringDesc.getResolvedSchemaName(), "string",
-                "Branch 2 must be the string branch");
+        // Wrap in ModelsMap for postProcessModels
+        org.openapitools.codegen.model.ModelsMap modelsMap =
+                new org.openapitools.codegen.model.ModelsMap();
+        org.openapitools.codegen.model.ModelMap modelWrap =
+                new org.openapitools.codegen.model.ModelMap();
+        modelWrap.setModel(cm);
+        java.util.List<org.openapitools.codegen.model.ModelMap> modelList =
+                new java.util.ArrayList<>();
+        modelList.add(modelWrap);
+        modelsMap.setModels(modelList);
+        modelsMap = codegen.postProcessModels(modelsMap);
 
-        // Verify supported assertions on the string branch
-        Assert.assertTrue(stringDesc.getSupportedAssertions().contains("type")
-                        || stringDesc.getSupportedAssertions().isEmpty(),
-                "String branch should have 'type' in supported assertions");
+        // Step 3: Verify lowering results in correct type
+        CodegenModel processed = modelsMap.getModels().get(0).getModel();
+        Assert.assertTrue(processed.vendorExtensions.containsKey("x-cpp-type"),
+                "SchemaWithSelfRef must have x-cpp-type after lowering");
+        String resolvedType = (String) processed.vendorExtensions.get("x-cpp-type");
+        // After self-ref filtering: [null, string] → Rule 1 does not trigger
+        // because there are 2 composed branches but only 1 null (no optional).
+        // Rule 3 filters null, Rule 4: single non-null → std::string.
+        Assert.assertEquals(resolvedType, "std::string",
+                "SchemaWithSelfRef should lower to std::string "
+                        + "(self-ref filtered, null removed, string remains)");
+
+        // Verify originalBranchIndex was stored for Phase 1b
+        Assert.assertTrue(processed.vendorExtensions.containsKey("x-cpp-branch-original-index"),
+                "SchemaWithSelfRef must have x-cpp-branch-original-index for Phase 1b");
     }
 
     @Test

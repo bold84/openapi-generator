@@ -968,10 +968,19 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         //   2. Fall back to stored x-cpp-branch-is-enum metadata from the
                         //      first lowering pass (handles inline enum schemas where the
                         //      CodegenProperty.isEnum flag was set directly).
+                        //
+                        // originalBranchIndex uses stored x-cpp-branch-original-index
+                        // (from Phase 1) to correctly align with the CompositionDescriptor
+                        // after self-referencing branches were filtered.
                         @SuppressWarnings("unchecked")
                         List<Boolean> storedIsEnum = (List<Boolean>) cm.vendorExtensions.get("x-cpp-branch-is-enum");
+                        @SuppressWarnings("unchecked")
+                        List<Integer> storedOriginalIndices = (List<Integer>) cm.vendorExtensions
+                                .get("x-cpp-branch-original-index");
                         List<ComposedBranch> branchesWithMeta = new ArrayList<>();
                         for (int i = 0; i < resolved.size(); i++) {
+                            int descIndex = (storedOriginalIndices != null && i < storedOriginalIndices.size())
+                                    ? storedOriginalIndices.get(i) : i;
                             boolean isEnum = false;
                             if ("std::string".equals(resolved.get(i))) {
                                 // Source 1: Look up the original branch model for enum status.
@@ -984,7 +993,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                 }
                             }
                             boolean isStringLike = "std::string".equals(resolved.get(i));
-                            branchesWithMeta.add(new ComposedBranch(resolved.get(i), isEnum, isStringLike, i));
+                            branchesWithMeta.add(new ComposedBranch(resolved.get(i), isEnum, isStringLike, descIndex));
                         }
                         CompositionDescriptor phase1bDesc =
                                 compositionDescriptors.get(cm.classname);
@@ -1240,6 +1249,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
 
         if (branches == null) {
+            // Fall through to descriptor path when oneOf/anyOf branches were
+            // consumed by the default pipeline but a composition descriptor
+            // still exists (e.g., all branches were self-references or the
+            // schema uses composedSchemas for allOf only).
+            CompositionDescriptor desc = compositionDescriptors.get(cm.classname);
+            if (desc != null && !"allOf".equals(desc.getKeyword())) {
+                processComposedModelFromDescriptor(cm, desc);
+            }
             return;
         }
 
@@ -1338,7 +1355,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             cm.vendorExtensions.put("x-cpp-composition-branches", fallbackMap);
         }
 
-        // Store per-branch isEnum metadata for Phase 1b re-lowering.
+        // Store per-branch metadata for Phase 1b re-lowering.
         // Phase 1b resolves model-name branch types through aliases to
         // C++ type strings but the isEnum flag (used by Rule 6 for oneOf
         // open-string + string-enum overlap detection) is not derivable
@@ -1348,6 +1365,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 .map(cb -> cb.isEnum)
                 .collect(Collectors.toList());
         cm.vendorExtensions.put("x-cpp-branch-is-enum", branchIsEnumFlags);
+        // Store original descriptor branch indices so Phase 1b can correctly
+        // align with the CompositionDescriptor after self-ref filtering.
+        List<Integer> branchOriginalIndices = composedBranches.stream()
+                .map(cb -> cb.originalBranchIndex)
+                .collect(Collectors.toList());
+        cm.vendorExtensions.put("x-cpp-branch-original-index", branchOriginalIndices);
 
         if (cm.discriminator != null) {
             cm.vendorExtensions.put("x-has-discriminator", true);
@@ -1422,11 +1445,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         composedKeywordsByModel.put(cm.classname, desc.getKeyword());
         cm.vendorExtensions.put("x-cpp-composition-branches", desc.toTemplateMap());
 
-        // Store per-branch isEnum for Phase 1b re-lowering
+        // Store per-branch metadata for Phase 1b re-lowering
         List<Boolean> branchIsEnumFlags = composedBranches.stream()
                 .map(cb -> cb.isEnum)
                 .collect(Collectors.toList());
         cm.vendorExtensions.put("x-cpp-branch-is-enum", branchIsEnumFlags);
+        List<Integer> branchOriginalIndices = composedBranches.stream()
+                .map(cb -> cb.originalBranchIndex)
+                .collect(Collectors.toList());
+        cm.vendorExtensions.put("x-cpp-branch-original-index", branchOriginalIndices);
 
         if (desc.hasDiscriminator()) {
             cm.vendorExtensions.put("x-has-discriminator", true);
@@ -1700,6 +1727,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // collapse and at least one has enum constraints (the constraint is the only
         // thing that distinguishes otherwise-identical branches). anyOf keeps the
         // string collapse (rule 2) since first-match is correct behavior.
+        //
+        // When a descriptor is available, use its supportedAssertions for enum
+        // detection instead of the ComposedBranch isEnum flag. Descriptor
+        // assertions are semantically richer (captured from raw schema scanning)
+        // and carried from preprocessOpenAPI through all lowering passes.
         if ("oneOf".equals(composedKeyword) && nonNullMeta.size() > 1) {
             long preDedupStringCount = nonNullMeta.stream()
                     .filter(b -> b.isStringLike)
@@ -1707,8 +1739,20 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             long postDedupStringCount = deduped.stream()
                     .filter("std::string"::equals)
                     .count();
+            List<CompositionBranchDescriptor> descBranches = descriptor != null
+                    ? descriptor.getBranches() : null;
             boolean hasStringEnum = nonNullMeta.stream()
-                    .anyMatch(b -> b.isStringLike && b.isEnum);
+                    .anyMatch(b -> {
+                        if (!b.isStringLike) return false;
+                        // Descriptor path: consult supportedAssertions
+                        if (descBranches != null && b.originalBranchIndex >= 0
+                                && b.originalBranchIndex < descBranches.size()) {
+                            return descBranches.get(b.originalBranchIndex)
+                                    .getSupportedAssertions().contains("enum");
+                        }
+                        // Fallback: use ComposedBranch.isEnum (CodegenProperty)
+                        return b.isEnum;
+                    });
             if (preDedupStringCount > postDedupStringCount && hasStringEnum) {
                 LOGGER.warn(
                         "oneOf string branches erase to std::string; "
