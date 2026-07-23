@@ -41,6 +41,8 @@
 #include <limits>
 #include <boost/json.hpp>
 
+#include "ValidationTypes.h"
+
 {{#modelNamespaceDeclarations}}
 namespace {{this}} {
 {{/modelNamespaceDeclarations}}
@@ -331,6 +333,169 @@ std::size_t countVariantBranches(const boost::json::value& value, std::index_seq
 }
 }
 
+// ============================================================================
+// Generated branch validators — schema-aware, side-effect-free membership
+// checks. Each function validates whether a JSON instance matches a single
+// composition branch's schema constraints.
+// ============================================================================
+
+{{#vendorExtensions.x-cpp-composition-branches}}
+{{#branches}}
+{{#validator-id}}
+ValidationResult validate_{{validator-id}}(
+    boost::json::value const& instance,
+    ValidationPath& path)
+{
+    // Schema: {{resolved-schema-name}}
+    // Assertions: {{#supported-assertions}}{{.}} {{/supported-assertions}}
+
+    // Boolean schema validation
+    if ("{{resolved-schema-name}}" == "boolean") {
+        if (!instance.is_bool() && !instance.is_null()) {
+            return ValidationResult::invalidAt(path, "expected boolean");
+        }
+    }
+
+    // Type validation
+    {{#validation-type}}
+    if (!checkJsonType(instance, "{{.}}")) {
+        return ValidationResult::invalidAt(path,
+            "expected type {{.}}");
+    }
+    {{/validation-type}}
+
+    // Mathematical integer validation for integer-typed branches
+    {{#validation-type}}
+    if (std::string("{{.}}") == "integer" && instance.is_double()) {
+        if (!isJsonInteger(instance)) {
+            return ValidationResult::invalidAt(path,
+                "expected mathematical integer, got non-integral double");
+        }
+    }
+    {{/validation-type}}
+
+    // Enum validation (string enum, OAS const)
+    {{#has-validation-enum}}
+    if (instance.is_string()) {
+        bool found = false;
+        // enum values
+        {{#validation-enum-values}}
+        if (instance.as_string() == "{{.}}") found = true;
+        {{/validation-enum-values}}
+        if (!found) {
+            return ValidationResult::invalidAt(path,
+                "value not in allowed enum set");
+        }
+    }
+    {{/has-validation-enum}}
+
+    // Numeric range validation
+    {{#has-validation-numeric}}
+    if (isJsonNumber(instance)) {
+        double numericVal = instance.is_double()
+            ? instance.as_double()
+            : static_cast<double>(instance.as_int64());
+        {{#validation-min}}
+        if (numericVal < {{validation-min}}) {
+            return ValidationResult::invalidAt(path,
+                "below minimum " + std::to_string({{validation-min}}));
+        }
+        {{/validation-min}}
+        {{#validation-max}}
+        if (numericVal > {{validation-max}}) {
+            return ValidationResult::invalidAt(path,
+                "above maximum " + std::to_string({{validation-max}}));
+        }
+        {{/validation-max}}
+        {{#validation-exclusive-min}}
+        if (numericVal <= {{validation-exclusive-min}}) {
+            return ValidationResult::invalidAt(path,
+                "at or below exclusive minimum " + std::to_string({{validation-exclusive-min}}));
+        }
+        {{/validation-exclusive-min}}
+        {{#validation-exclusive-max}}
+        if (numericVal >= {{validation-exclusive-max}}) {
+            return ValidationResult::invalidAt(path,
+                "at or above exclusive maximum " + std::to_string({{validation-exclusive-max}}));
+        }
+        {{/validation-exclusive-max}}
+    }
+    {{/has-validation-numeric}}
+
+    // String length validation
+    {{#has-validation-string-length}}
+    if (instance.is_string()) {
+        auto strLen = instance.as_string().size();
+        {{#validation-min-length}}
+        if (strLen < static_cast<std::size_t>({{validation-min-length}})) {
+            return ValidationResult::invalidAt(path,
+                "string too short (min " + std::to_string({{validation-min-length}}) + ")");
+        }
+        {{/validation-min-length}}
+        {{#validation-max-length}}
+        if (strLen > static_cast<std::size_t>({{validation-max-length}})) {
+            return ValidationResult::invalidAt(path,
+                "string too long (max " + std::to_string({{validation-max-length}}) + ")");
+        }
+        {{/validation-max-length}}
+    }
+    {{/has-validation-string-length}}
+
+    // Array length validation
+    {{#has-validation-array-length}}
+    if (instance.is_array()) {
+        auto arrSize = instance.as_array().size();
+        {{#validation-min-items}}
+        if (arrSize < static_cast<std::size_t>({{validation-min-items}})) {
+            return ValidationResult::invalidAt(path,
+                "array too short (min " + std::to_string({{validation-min-items}}) + ")");
+        }
+        {{/validation-min-items}}
+        {{#validation-max-items}}
+        if (arrSize > static_cast<std::size_t>({{validation-max-items}})) {
+            return ValidationResult::invalidAt(path,
+                "array too long (max " + std::to_string({{validation-max-items}}) + ")");
+        }
+        {{/validation-max-items}}
+    }
+    {{/has-validation-array-length}}
+
+    // Unique items validation
+    {{#has-validation-unique-items}}
+    if (instance.is_array()) {
+        auto const& arr = instance.as_array();
+        for (std::size_t ui = 0; ui < arr.size(); ++ui) {
+            for (std::size_t uj = ui + 1; uj < arr.size(); ++uj) {
+                if (arr[ui] == arr[uj]) {
+                    return ValidationResult::invalidAt(path,
+                        "duplicate element at index " + std::to_string(uj));
+                }
+            }
+        }
+    }
+    {{/has-validation-unique-items}}
+
+    // Object property validation
+    {{#has-validation-object-props}}
+    if (instance.is_object()) {
+        auto const& obj = instance.as_object();
+        {{#validation-required}}
+        // Required properties
+        if (obj.find("{{.}}") == obj.end()) {
+            return ValidationResult::invalidAt(path,
+                "missing required property '{{.}}'");
+        }
+        {{/validation-required}}
+    }
+    {{/has-validation-object-props}}
+
+    return ValidationResult::valid();
+}
+
+{{/validator-id}}
+{{/branches}}
+{{/vendorExtensions.x-cpp-composition-branches}}
+
 {{classname}} fromJsonValue_{{classname}}(boost::json::value const& value)
 {
     {{#discriminator}}
@@ -372,10 +537,26 @@ std::size_t countVariantBranches(const boost::json::value& value, std::index_seq
     // errorPath accumulates nested JSON location (e.g. ".items[0].content")
     // for diagnostics when branch matching or property decode fails.
     std::string errorPath;
+
+    // Phase 2: use generated validators for membership counting.
+    // Validators check schema assertions against raw JSON (no C++ conversion).
+    // After membership is confirmed, tryParseBranch converts to storage.
     if constexpr (isOneOf) {
-        std::size_t matchCount = countVariantBranches<{{classname}}>(value, std::make_index_sequence<variantSize>{});
-        if (matchCount == 0) {
-            // Re-run one trial to capture model error context in path
+        // Count matching branches using generated validators
+        std::size_t validMatchCount = 0;
+        ValidationPath vp;
+        {{#vendorExtensions.x-cpp-composition-branches}}
+        {{#branches}}
+        {{#validator-id}}
+        {
+            auto vr = validate_{{validator-id}}(value, vp);
+            if (vr.success) ++validMatchCount;
+        }
+        {{/validator-id}}
+        {{/branches}}
+        {{/vendorExtensions.x-cpp-composition-branches}}
+        if (validMatchCount == 0) {
+            // Fall through to tryParseBranch for detailed error path
             {{classname}} captureDummy;
             std::string capturePath;
             tryVariantBranches(value, captureDummy, std::make_index_sequence<variantSize>{}, &capturePath);
@@ -385,7 +566,7 @@ std::size_t countVariantBranches(const boost::json::value& value, std::index_seq
             throw std::invalid_argument(
                 "No matching branch for {{classname}} from JSON value at '" + capturePath + "'");
         }
-        if (matchCount > 1) {
+        if (validMatchCount > 1) {
             throw std::invalid_argument("More than one matching branch for oneOf {{classname}}");
         }
         // Retrieve the first (and only) matching branch for the result
@@ -428,6 +609,8 @@ std::size_t countVariantBranches(const boost::json::value& value, std::index_seq
 #include <array>
 {{/hasEnums}}
 #include <boost/json.hpp>
+
+#include "ValidationTypes.h"
 
 {{#modelNamespaceDeclarations}}
 namespace {{this}} {

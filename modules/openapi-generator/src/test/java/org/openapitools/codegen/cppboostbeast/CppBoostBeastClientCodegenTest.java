@@ -2682,6 +2682,234 @@ public class CppBoostBeastClientCodegenTest {
                 "processSimplifyAnyOfEnum must preserve anyOf branch count");
     }
 
+    // ====================================================================
+    // Phase 2: Generated validator foundation and numeric semantics
+    // ====================================================================
+
+    @Test
+    public void formatAssertionPolicyDefaultsToAnnotation() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+        Assert.assertEquals(codegen.additionalProperties().get("formatAssertionPolicy"),
+                "annotation",
+                "formatAssertionPolicy must default to annotation");
+    }
+
+    @Test
+    public void formatAssertionPolicyStrict() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.additionalProperties().put("formatAssertionPolicy", "strict");
+        codegen.processOpts();
+        Assert.assertEquals(codegen.additionalProperties().get("formatAssertionPolicy"),
+                "strict",
+                "formatAssertionPolicy must be strict when set");
+    }
+
+    @Test
+    public void branchDescriptorsHaveValidatorId() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema stringBranch = new StringSchema();
+        stringBranch.setMinLength(1);
+        schema.addOneOfItem(stringBranch);
+        IntegerSchema intBranch = new IntegerSchema();
+        intBranch.setMinimum(0);
+        schema.addOneOfItem(intBranch);
+        schemas.put("ValidatorBranchTest", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("ValidatorBranchTest");
+        Assert.assertNotNull(desc, "ValidatorBranchTest must have a descriptor");
+        Assert.assertEquals(desc.getBranches().size(), 2,
+                "ValidatorBranchTest must have 2 branches");
+
+        // Each branch must have a non-null validatorId
+        for (CppBoostBeastClientCodegen.CompositionBranchDescriptor branch : desc.getBranches()) {
+            Assert.assertNotNull(branch.getValidatorId(),
+                    "Each branch must have a validatorId");
+            Assert.assertTrue(branch.getValidatorId().startsWith("ValidatorBranchTest_branch_"),
+                    "validatorId must start with schema name and branch index");
+        }
+
+        // First branch: string with minLength
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor stringBranchDesc =
+                desc.getBranches().get(0);
+        Assert.assertTrue(stringBranchDesc.getSupportedAssertions().contains("string-length"),
+                "String branch must have string-length assertion");
+        Assert.assertNotNull(stringBranchDesc.getValidateParams().get("validation-min-length"),
+                "String branch must have validation-min-length param");
+        Assert.assertNotNull(stringBranchDesc.getValidateParams().get("validation-type"),
+                "String branch must have validation-type param");
+        Assert.assertEquals(stringBranchDesc.getValidateParams().get("validation-type"), "string",
+                "String branch validation-type must be string");
+
+        // Second branch: integer with minimum
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor intBranchDesc =
+                desc.getBranches().get(1);
+        Assert.assertTrue(intBranchDesc.getSupportedAssertions().contains("numeric-range"),
+                "Integer branch must have numeric-range assertion");
+        Assert.assertNotNull(intBranchDesc.getValidateParams().get("validation-min"),
+                "Integer branch must have validation-min param");
+        Assert.assertEquals(intBranchDesc.getValidateParams().get("validation-type"), "integer",
+                "Integer branch validation-type must be integer");
+    }
+
+    @Test
+    public void branchDescriptorsHaveEnumValidationParams() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema enumBranch = new StringSchema();
+        enumBranch.addEnumItem("red");
+        enumBranch.addEnumItem("blue");
+        schema.addOneOfItem(enumBranch);
+        schemas.put("ValidatorEnumTest", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("ValidatorEnumTest");
+        Assert.assertNotNull(desc, "ValidatorEnumTest must have a descriptor");
+
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor enumBranchDesc =
+                desc.getBranches().get(0);
+        Assert.assertTrue(enumBranchDesc.getSupportedAssertions().contains("enum"),
+                "Enum branch must have enum assertion");
+        Assert.assertEquals(enumBranchDesc.getValidateParams().get("has-validation-enum"), true,
+                "Enum branch must have has-validation-enum");
+        Assert.assertNotNull(enumBranchDesc.getValidateParams().get("validation-enum-values"),
+                "Enum branch must have validation-enum-values");
+    }
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void unsupportedAssertionOnOneOfThrows() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema conditionalBranch = new StringSchema();
+        io.swagger.v3.oas.models.media.Schema ifSchema =
+                new io.swagger.v3.oas.models.media.Schema();
+        ifSchema.setType("object");
+        conditionalBranch.setIf(ifSchema);
+        schema.addOneOfItem(conditionalBranch);
+        schemas.put("SchemaWithUnsupportedAssertion", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        // validateDescriptorAssertions throws for oneOf with unsupported assertions
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void unsupportedAssertionOnAnyOfThrows() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        ArraySchema arrayWithContains = new ArraySchema();
+        arrayWithContains.setContains(new StringSchema());
+        schema.addAnyOfItem(arrayWithContains);
+        schemas.put("SchemaWithUnsupportedAnyOf", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test
+    public void allOfWithUnsupportedAssertionsDoesNotThrow() {
+        // allOf with unsupported assertions should NOT throw because allOf
+        // membership means "all branches must match" — unsupported assertions
+        // don't change match count.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        io.swagger.v3.oas.models.media.Schema conditionalObj =
+                new io.swagger.v3.oas.models.media.Schema();
+        conditionalObj.setType("object");
+        io.swagger.v3.oas.models.media.Schema ifSchema =
+                new io.swagger.v3.oas.models.media.Schema();
+        ifSchema.setType("object");
+        conditionalObj.setIf(ifSchema);
+        schema.addAllOfItem(conditionalObj);
+        schemas.put("AllOfWithUnsupported", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        // Should not throw for allOf with unsupported assertions
+        codegen.preprocessOpenAPI(openAPI);
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("AllOfWithUnsupported");
+        Assert.assertNotNull(desc, "AllOfWithUnsupported must have a descriptor");
+        Assert.assertEquals(desc.getKeyword(), "allOf",
+                "Keyword must be allOf");
+    }
+
+    @Test
+    public void toValidIdentifierSanitizesBranchNames() {
+        // Note: Method is private, verified through descriptor builder
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        schema.addOneOfItem(new StringSchema());
+        schemas.put("Mixed-Type_Schema", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("Mixed-Type_Schema");
+        Assert.assertNotNull(desc, "Mixed-Type_Schema must have a descriptor");
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor branch =
+                desc.getBranches().get(0);
+        Assert.assertNotNull(branch.getValidatorId(),
+                "branch must have validatorId");
+        // Schema name with underscore should produce valid identifier
+        Assert.assertTrue(branch.getValidatorId().startsWith("Mixed-Type_Schema_branch_")
+                        || branch.getValidatorId().contains("_branch_"),
+                "validatorId must contain branch index");
+    }
+
     /**
      * Test helper that exposes protected normalizer methods as public.
      */

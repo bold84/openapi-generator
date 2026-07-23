@@ -95,26 +95,42 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     /**
      * Describes a single branch within a composed schema.
      * Captures branch index, resolved schema reference, C++ storage type,
-     * validator identity, null capability, and assertion metadata.
+     * validator identity, null capability, assertion metadata, and
+     * validation parameter values.
      *
-     * <p>{@code storageCppType} is reserved for Phase 2: it will be populated
-     * after storage selection (e.g., via lowerComposedTypes), which computes
-     * the final C++ type for each branch. During Phase 1 it remains null.
+     * <p>{@code storageCppType} is populated after storage selection
+     * (Phase 3). {@code validatorId} is populated in Phase 2 to identify
+     * the generated validate_<id>() function for this branch.
      *
-     * <p>{@code validatorId} is reserved for Phase 3: it will identify which
-     * runtime validator handles this branch. During Phase 1 it remains null.
+     * <p>Validation parameters ({@code validateParams}) carry the actual
+     * assertion values (min, max, minLength, etc.) from the source schema
+     * so Mustache templates can generate per-branch validators without
+     * re-scanning the schema tree.
      */
     public static final class CompositionBranchDescriptor {
         private final int branchIndex;
         private final String sourceSchemaRef;
         private final String resolvedSchemaName;
-        /** Phase 2 ownership: set after storage selection. Null in Phase 1. */
+        /** Phase 3 ownership: set after storage selection. */
         private final String storageCppType;
-        /** Phase 3 ownership: set after validator dispatch. Null in Phase 1. */
+        /** Phase 2 ownership: set after descriptor build. */
         private final String validatorId;
         private final NullCapability nullCapability;
         private final List<String> supportedAssertions;
         private final List<String> unsupportedAssertions;
+        /**
+         * Validation parameter values for Mustache template consumption.
+         * Keys: "validation-type", "validation-enum-values",
+         * "validation-min", "validation-max", "validation-exclusive-min",
+         * "validation-exclusive-max", "validation-multiple-of",
+         * "validation-min-length", "validation-max-length",
+         * "validation-pattern", "validation-min-items",
+         * "validation-max-items", "validation-unique-items",
+         * "validation-min-properties", "validation-max-properties",
+         * "validation-required".
+         * Values are Objects (String, Number, Boolean, List<String>).
+         */
+        private final Map<String, Object> validateParams;
 
         public enum NullCapability { NEVER, ALWAYS, CONDITIONAL }
 
@@ -122,7 +138,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                            String resolvedSchemaName, String storageCppType,
                                            String validatorId, NullCapability nullCapability,
                                            List<String> supportedAssertions,
-                                           List<String> unsupportedAssertions) {
+                                           List<String> unsupportedAssertions,
+                                           Map<String, Object> validateParams) {
             this.branchIndex = branchIndex;
             this.sourceSchemaRef = sourceSchemaRef;
             this.resolvedSchemaName = resolvedSchemaName;
@@ -135,6 +152,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             this.unsupportedAssertions = unsupportedAssertions != null
                     ? Collections.unmodifiableList(new ArrayList<>(unsupportedAssertions))
                     : Collections.emptyList();
+            this.validateParams = validateParams != null
+                    ? Collections.unmodifiableMap(new LinkedHashMap<>(validateParams))
+                    : Collections.emptyMap();
         }
 
         public int getBranchIndex() { return branchIndex; }
@@ -145,6 +165,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         public NullCapability getNullCapability() { return nullCapability; }
         public List<String> getSupportedAssertions() { return supportedAssertions; }
         public List<String> getUnsupportedAssertions() { return unsupportedAssertions; }
+        public Map<String, Object> getValidateParams() { return validateParams; }
 
         /** Converts this branch descriptor to a template-safe map for Mustache. */
         public Map<String, Object> toTemplateMap() {
@@ -159,12 +180,28 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             map.put("supported-assertions", supportedAssertions);
             map.put("has-unsupported-assertions", !unsupportedAssertions.isEmpty());
             map.put("unsupported-assertions", unsupportedAssertions);
+            // Emit validation parameters for template-driven generator functions
+            for (Map.Entry<String, Object> vp : validateParams.entrySet()) {
+                map.put(vp.getKey(), vp.getValue());
+            }
             return map;
         }
     }
 
 
     public static final String DEFAULT_PACKAGE_NAME = "CppBoostBeastOpenAPIClient";
+
+    /** Policy for format-assertion validation in branch matching.
+     *  "annotation" (default): format ranges participate only in destination
+     *    conversion, never in oneOf/anyOf branch match counts.
+     *  "strict": documented format assertions (e.g. int32 range) participate
+     *    in branch validation and can affect match counts. */
+    private String formatAssertionPolicy = "annotation";
+
+    /** Value type for the formatAssertion option. */
+    private static final String FORMAT_ASSERTION_POLICY_ANNOTATION = "annotation";
+    private static final String FORMAT_ASSERTION_POLICY_STRICT = "strict";
+
     private static final String X_CODEGEN_DEFAULT_RESPONSE_IS_RETURN_COMPATIBLE =
             "x-codegen-default-response-is-return-compatible";
     private static final String X_CODEGEN_EMPTY_BODY_TOLERANT = "x-codegen-empty-body-tolerant";
@@ -249,6 +286,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (descriptor != null) {
                     // Index by toModelName so lookups via cm.classname match.
                     compositionDescriptors.put(toModelName(schemaName), descriptor);
+                    // Phase 2: validate that all branch assertions are supported.
+                    // Throws UnsupportedSchemaAssertionException if any branch
+                    // has detectable unsupported assertions that affect membership.
+                    validateDescriptorAssertions(descriptor);
                 }
                 if ((schema.getOneOf() != null && !schema.getOneOf().isEmpty())
                         || (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty())) {
@@ -305,6 +346,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     CompositionBranchDescriptor.NullCapability.NEVER;
             List<String> supported = new ArrayList<>();
             List<String> unsupported = new ArrayList<>();
+            Map<String, Object> validateParams = new LinkedHashMap<>();
 
             // Resolve the branch schema for assertion scanning
             Schema targetForAssertions = null;
@@ -346,14 +388,32 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
             // Scan the resolved target schema for assertion keywords
             if (targetForAssertions != null) {
+                // Validation type — use the resolved type name or "type-array" for type arrays
                 if (targetForAssertions.getType() != null) {
                     supported.add("type");
+                    validateParams.put("validation-type", targetForAssertions.getType());
+                }
+                if (targetForAssertions.getTypes() != null && !targetForAssertions.getTypes().isEmpty()) {
+                    supported.add("type");
+                    validateParams.put("validation-type", "type-array");
+                    // OAS 3.1 type arrays: format as comma-separated list
+                    validateParams.put("validation-type-array", String.join(",",
+                            targetForAssertions.getTypes()));
                 }
                 if (targetForAssertions.getEnum() != null && !targetForAssertions.getEnum().isEmpty()) {
                     supported.add("enum");
+                    List<String> enumStrs = new ArrayList<>();
+                    for (Object e : targetForAssertions.getEnum()) {
+                        enumStrs.add(e != null ? e.toString() : "null");
+                    }
+                    validateParams.put("validation-enum-values", enumStrs);
+                    validateParams.put("has-validation-enum", true);
                 }
                 if (targetForAssertions.getConst() != null) {
                     supported.add("const");
+                    validateParams.put("validation-const-value",
+                            targetForAssertions.getConst().toString());
+                    validateParams.put("has-validation-const", true);
                 }
                 if (targetForAssertions.getMinimum() != null
                         || targetForAssertions.getMaximum() != null
@@ -361,40 +421,101 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         || targetForAssertions.getExclusiveMaximum() != null
                         || targetForAssertions.getMultipleOf() != null) {
                     supported.add("numeric-range");
+                    if (targetForAssertions.getMinimum() != null) {
+                        validateParams.put("validation-min", targetForAssertions.getMinimum());
+                    }
+                    if (targetForAssertions.getMaximum() != null) {
+                        validateParams.put("validation-max", targetForAssertions.getMaximum());
+                    }
+                    if (targetForAssertions.getExclusiveMinimum() != null) {
+                        validateParams.put("validation-exclusive-min",
+                                targetForAssertions.getExclusiveMinimum());
+                    }
+                    if (targetForAssertions.getExclusiveMaximum() != null) {
+                        validateParams.put("validation-exclusive-max",
+                                targetForAssertions.getExclusiveMaximum());
+                    }
+                    if (targetForAssertions.getMultipleOf() != null) {
+                        validateParams.put("validation-multiple-of",
+                                targetForAssertions.getMultipleOf());
+                    }
+                    validateParams.put("has-validation-numeric", true);
                 }
                 if (targetForAssertions.getMinLength() != null
                         || targetForAssertions.getMaxLength() != null) {
                     supported.add("string-length");
+                    if (targetForAssertions.getMinLength() != null) {
+                        validateParams.put("validation-min-length",
+                                targetForAssertions.getMinLength());
+                    }
+                    if (targetForAssertions.getMaxLength() != null) {
+                        validateParams.put("validation-max-length",
+                                targetForAssertions.getMaxLength());
+                    }
+                    validateParams.put("has-validation-string-length", true);
                 }
                 if (targetForAssertions.getPattern() != null) {
                     supported.add("pattern");
+                    validateParams.put("validation-pattern",
+                            targetForAssertions.getPattern());
+                    validateParams.put("has-validation-pattern", true);
                 }
                 if (targetForAssertions.getItems() != null
                         || targetForAssertions.getPrefixItems() != null) {
                     supported.add("array-items");
+                    if (targetForAssertions.getPrefixItems() != null) {
+                        validateParams.put("validation-prefix-items-count",
+                                targetForAssertions.getPrefixItems().size());
+                    }
+                    validateParams.put("has-validation-array-items", true);
                 }
                 if (targetForAssertions.getMinItems() != null
                         || targetForAssertions.getMaxItems() != null) {
                     supported.add("array-length");
+                    if (targetForAssertions.getMinItems() != null) {
+                        validateParams.put("validation-min-items",
+                                targetForAssertions.getMinItems());
+                    }
+                    if (targetForAssertions.getMaxItems() != null) {
+                        validateParams.put("validation-max-items",
+                                targetForAssertions.getMaxItems());
+                    }
+                    validateParams.put("has-validation-array-length", true);
                 }
                 if (Boolean.TRUE.equals(targetForAssertions.getUniqueItems())) {
                     supported.add("unique-items");
+                    validateParams.put("has-validation-unique-items", true);
                 }
                 if (targetForAssertions.getRequired() != null
                         || (targetForAssertions.getProperties() != null
                             && !targetForAssertions.getProperties().isEmpty())
                         || targetForAssertions.getAdditionalProperties() != null) {
                     supported.add("object-properties");
+                    if (targetForAssertions.getRequired() != null) {
+                        validateParams.put("validation-required",
+                                targetForAssertions.getRequired());
+                    }
+                    validateParams.put("has-validation-object-props", true);
                 }
                 if (targetForAssertions.getMinProperties() != null
                         || targetForAssertions.getMaxProperties() != null) {
                     supported.add("object-property-count");
+                    if (targetForAssertions.getMinProperties() != null) {
+                        validateParams.put("validation-min-properties",
+                                targetForAssertions.getMinProperties());
+                    }
+                    if (targetForAssertions.getMaxProperties() != null) {
+                        validateParams.put("validation-max-properties",
+                                targetForAssertions.getMaxProperties());
+                    }
+                    validateParams.put("has-validation-object-count", true);
                 }
                 if (targetForAssertions.getOneOf() != null
                         || targetForAssertions.getAnyOf() != null
                         || targetForAssertions.getAllOf() != null
                         || targetForAssertions.getNot() != null) {
                     supported.add("composition");
+                    validateParams.put("has-validation-composition", true);
                 }
 
                 // Detect unsupported assertion keywords
@@ -426,9 +547,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
             }
 
+            // Phase 2: generate a deterministic validatorId for each branch.
+            // The id is used as the base name for generated validate_<id>() functions.
+            String validatorId = toValidIdentifier(schemaName) + "_branch_" + index;
+
             CompositionBranchDescriptor branch = new CompositionBranchDescriptor(
-                    index, sourceRef, resolvedName, null, null,
-                    nullCap, supported, unsupported);
+                    index, sourceRef, resolvedName, null, validatorId,
+                    nullCap, supported, unsupported, validateParams);
             branches.add(branch);
         }
 
@@ -486,8 +611,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 this.modelPackage);
         addOption(CodegenConstants.API_PACKAGE, "C++ namespace for apis (convention: name.space.api).",
                 this.apiPackage);
+        addOption(new CliOption("formatAssertionPolicy",
+                "Policy for format-assertion validation in composition branch matching."
+                + " 'annotation' (default): format ranges affect destination conversion only,"
+                + " never match counts. 'strict': documented format assertions participate"
+                + " in branch validation.")
+                .defaultValue(FORMAT_ASSERTION_POLICY_ANNOTATION));
 
 
+        supportingFiles.add(new SupportingFile("validation-types.mustache", "model", "ValidationTypes.h"));
         supportingFiles.add(new SupportingFile("README.mustache", "", "README.md"));
         supportingFiles.add(new SupportingFile("CMakeLists.txt.mustache", "", "CMakeLists.txt"));
         supportingFiles.add(new SupportingFile("http-client-header.mustache", "api", "HttpClient.h"));
@@ -1591,6 +1723,86 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     }
 
     /**
+     * Converts an arbitrary schema name into a valid C++ identifier for use
+     * in generated validator function names. Replaces non-alphanumeric
+     * characters with underscores and ensures the result starts with a letter.
+     */
+    private static String toValidIdentifier(String name) {
+        if (name == null || name.isEmpty()) {
+            return "schema";
+        }
+        StringBuilder sb = new StringBuilder(name.length());
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (Character.isLetterOrDigit(c) || c == '_') {
+                sb.append(c);
+            } else {
+                sb.append('_');
+            }
+        }
+        String result = sb.toString();
+        if (!result.isEmpty() && !Character.isLetter(result.charAt(0))
+                && result.charAt(0) != '_') {
+            result = "_" + result;
+        }
+        return result.isEmpty() ? "schema" : result;
+    }
+
+    /**
+     * Thrown during generation when a schema branch has assertion keywords that
+     * can affect composition membership but no generated validator exists.
+     * Carries the schema location, keyword, and remediation guidance.
+     */
+    public static final class UnsupportedSchemaAssertionException
+            extends RuntimeException {
+        private final String schemaLocation;
+        private final String assertionKeyword;
+
+        public UnsupportedSchemaAssertionException(
+                String schemaLocation, String assertionKeyword) {
+            super(buildMessage(schemaLocation, assertionKeyword));
+            this.schemaLocation = schemaLocation;
+            this.assertionKeyword = assertionKeyword;
+        }
+
+        public String getSchemaLocation() { return schemaLocation; }
+        public String getAssertionKeyword() { return assertionKeyword; }
+
+        private static String buildMessage(
+                String schemaLocation, String assertionKeyword) {
+            return "Unsupported schema assertion '" + assertionKeyword
+                    + "' at " + schemaLocation
+                    + ". This keyword can affect composition membership but "
+                    + "no generated validator exists. Add support in Phase 2 "
+                    + "or later, or restructure the schema to avoid this keyword.";
+        }
+    }
+
+    /**
+     * Checks a composition descriptor for unsupported branch assertions that
+     * can affect membership. Throws UnsupportedSchemaAssertionException when
+     * a branch has unsupportedAssertions that overlap with supportedAssertions
+     * in a way that changes membership fidelity.
+     */
+    private void validateDescriptorAssertions(CompositionDescriptor desc) {
+        if (desc == null) return;
+        for (CompositionBranchDescriptor branch : desc.getBranches()) {
+            for (String unsupported : branch.getUnsupportedAssertions()) {
+                // All unsupported assertion categories currently stop generation
+                // when they appear on a oneOf/anyOf branch, because they can
+                // change membership without a generated validator.
+                // allOf models are exempted from this check because the use of
+                // unsupported assertions in allOf does not affect membership
+                // count (all branches must match).
+                if (!"allOf".equals(desc.getKeyword())) {
+                    throw new UnsupportedSchemaAssertionException(
+                            desc.getSchemaLocation(), unsupported);
+                }
+            }
+        }
+    }
+
+    /**
      * Ordered lowering rules for composed types (OAS-first):
      * 1. anyOf/oneOf: [T, null] → std::optional&lt;T&gt;
      * 2. anyOf only: all strings/string-enums → std::string
@@ -1963,6 +2175,17 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         additionalProperties.put("modelNamespace", modelPackage.replaceAll("\\.", "::"));
         additionalProperties.put("apiNamespaceDeclarations", apiPackage.split("\\."));
         additionalProperties.put("apiNamespace", apiPackage.replaceAll("\\.", "::"));
+
+        // Phase 2: format assertion policy
+        if (additionalProperties.containsKey("formatAssertionPolicy")) {
+            String policy = additionalProperties.get("formatAssertionPolicy").toString().trim().toLowerCase(Locale.ROOT);
+            if (FORMAT_ASSERTION_POLICY_STRICT.equals(policy)) {
+                formatAssertionPolicy = FORMAT_ASSERTION_POLICY_STRICT;
+            } else {
+                formatAssertionPolicy = FORMAT_ASSERTION_POLICY_ANNOTATION;
+            }
+        }
+        additionalProperties.put("formatAssertionPolicy", formatAssertionPolicy);
     }
 
     /**
