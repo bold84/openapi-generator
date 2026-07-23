@@ -1445,6 +1445,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // latter is called per-model, not globally. We need access to all models to
         // look up whether a property's dataType refers to a variant alias model.
         //
+        // When the property uses NullableField<T>, strip the NullableField wrapper
+        // so the lookup matches the inner type (a variant alias, e.g., SomeAlias).
         // Only true std::variant aliases (x-cpp-is-variant = true) have the
         // toJsonValue_/fromJsonValue_ free functions. Non-variant aliases (e.g.,
         // ModelIdsResponses = std::string) must NOT be tagged.
@@ -1453,14 +1455,24 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 CodegenModel cm = mo.getModel();
                 for (CodegenProperty var : allVarsOf(cm)) {
                     if (var.dataType != null) {
-                        // Look up the model that this property's dataType refers to
-                        ModelsMap targetEntry = processed.get(var.dataType);
+                        // Strip NullableField wrapper when present: use inner type
+                        // for alias lookup.
+                        String lookupType;
+                        if (Boolean.TRUE.equals(var.vendorExtensions.get("x-cpp-nullable-field"))) {
+                            lookupType = (String) var.vendorExtensions.get("x-cpp-nullable-field-inner-type");
+                        } else {
+                            lookupType = var.dataType;
+                        }
+                        if (lookupType == null) {
+                            continue;
+                        }
+                        ModelsMap targetEntry = processed.get(lookupType);
                         if (targetEntry != null) {
                             for (ModelMap targetMo : targetEntry.getModels()) {
                                 CodegenModel targetModel = targetMo.getModel();
                                 if (Boolean.TRUE.equals(targetModel.vendorExtensions.get("x-cpp-is-variant"))) {
                                     var.vendorExtensions.put("x-cpp-variant-alias", true);
-                                    var.vendorExtensions.put("x-cpp-variant-alias-name", var.dataType);
+                                    var.vendorExtensions.put("x-cpp-variant-alias-name", lookupType);
                                 }
                             }
                         }

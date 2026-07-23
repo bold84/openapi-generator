@@ -135,17 +135,16 @@ private:
     T value_{};
 };
 
-/// Default construct a NullableField from a json::value.
-///   Missing: returns NullableField with Value state using default-constructed T
-///   (note: this factory cannot produce Missing state from a json::value
-///    because the json::value carries only null or present data. Use the
-///    default constructor for Missing state.)
+// ============================================================================
+// IsNullableField — trait to detect NullableField<T> at compile time.
+// Used by PropertyStorage and other generic wrappers to select the correct
+// forwarding methods (hasValue/isNull/setNull/resetMissing) via if constexpr.
+// ============================================================================
+
 template <typename T>
-NullableField<T> nullableFieldFromJsonValue(boost::json::value const& jv) {
-    if (jv.is_null()) {
-        return NullableField<T>::makeNull();
-    }
-    return NullableField<T>(boost::json::value_to<T>(jv));
-}
+struct IsNullableField : std::false_type {};
+
+template <typename T>
+struct IsNullableField<NullableField<T>> : std::true_type {};
 
 #endif /* CPP_BOOST_BEAST_OPENAPI_CLIENT_NULLABLE_FIELD_H_ */

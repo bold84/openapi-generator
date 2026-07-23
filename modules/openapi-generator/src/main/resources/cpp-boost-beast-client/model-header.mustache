@@ -79,12 +79,63 @@ struct {{classname}}ModelPropertyStorage<ValueType, false>
 
     bool hasOptionalValue() const
     {
-        return value.has_value();
+        if constexpr (IsNullableField<ValueType>{}) {
+            return value.hasOptionalValue();
+        } else {
+            return value.has_value();
+        }
     }
 
     void resetOptionalValue()
     {
-        value.reset();
+        if constexpr (IsNullableField<ValueType>{}) {
+            value.resetOptionalValue();
+        } else {
+            value.reset();
+        }
+    }
+
+    /// NullableField-compatible: hasValue() forwards to NullableField::hasValue()
+    /// or std::optional::has_value() for the generic case.
+    bool hasValue() const
+    {
+        if constexpr (IsNullableField<ValueType>{}) {
+            return value.hasValue();
+        } else {
+            return value.has_value();
+        }
+    }
+
+    /// NullableField-compatible: isNull() returns NullableField::isNull()
+    /// or false for non-nullable types.
+    bool isNull() const
+    {
+        if constexpr (IsNullableField<ValueType>{}) {
+            return value.isNull();
+        }
+        return false;
+    }
+
+    /// NullableField-compatible: setNull() forwards to NullableField::setNull()
+    /// or resets the value for non-nullable types.
+    void setNull()
+    {
+        if constexpr (IsNullableField<ValueType>{}) {
+            value.setNull();
+        } else {
+            value = ValueType();
+        }
+    }
+
+    /// NullableField-compatible: resetMissing() forwards to NullableField::resetMissing()
+    /// or resets the value for non-nullable types.
+    void resetMissing()
+    {
+        if constexpr (IsNullableField<ValueType>{}) {
+            value.resetMissing();
+        } else {
+            value.reset();
+        }
     }
 
     ValueType value;
