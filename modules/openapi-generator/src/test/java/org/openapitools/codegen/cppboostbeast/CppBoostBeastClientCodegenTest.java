@@ -932,16 +932,85 @@ public class CppBoostBeastClientCodegenTest {
                 message = e.getMessage();
             }
             Assert.assertTrue(message != null && (message.contains("allOf type conflict")
-                    || message.contains("AllOfScalarConflict")),
+                    || message.contains("AllOfScalarConflict")
+                    || message.contains("Incompatible root types")),
                     "Exception root cause should mention allOf type conflict. Got: " + message);
             throw e;
         }
     }
 
-    @Test(expectedExceptions = RuntimeException.class)
-    public void allOfPropertyConflictThrows() throws IOException {
-        // This test verifies that an allOf with the same property name having
-        // incompatible types causes a RuntimeException.
+    @Test
+    public void allOfRequiredConflictThrows() throws IOException {
+        // Phase 5: allOf with the same REQUIRED property having incompatible
+        // types must FAIL generation — a required property that cannot satisfy
+        // all contributor constraints simultaneously is impossible to store.
+        String specContent =
+            "openapi: 3.1.0\n" +
+            "info:\n" +
+            "  title: allOf required conflict test\n" +
+            "  version: 1.0.0\n" +
+            "paths: {}\n" +
+            "components:\n" +
+            "  schemas:\n" +
+            "    AllOfRequiredConflict:\n" +
+            "      allOf:\n" +
+            "        - type: object\n" +
+            "          properties:\n" +
+            "            id:\n" +
+            "              type: string\n" +
+            "          required: [id]\n" +
+            "        - type: object\n" +
+            "          properties:\n" +
+            "            id:\n" +
+            "              type: integer\n" +
+            "              format: int32\n" +
+            "          required: [id]\n";
+
+        java.nio.file.Path specFile = java.nio.file.Files.createTempFile("allof-required-conflict-", ".yaml");
+        specFile.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(specFile, specContent);
+
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-required-conflict").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(specFile.toAbsolutePath().toString())
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "CppBoostBeastRequiredConflictTest");
+
+        try {
+            new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+            // If we reach here, generation did NOT throw — fail the test
+            Assert.fail("Generation must throw AllOfRequiredUnsatisfiableException for allOf "
+                    + "[string id, integer id] both required");
+        } catch (RuntimeException e) {
+            Throwable cause = e;
+            while (cause.getCause() != null && cause.getCause() != cause) {
+                cause = cause.getCause();
+            }
+            String message = cause.getMessage();
+            System.err.println("allOfRequiredConflictThrows: root cause = "
+                    + cause.getClass().getName() + ": " + message);
+            if (message == null) {
+                message = e.getMessage();
+            }
+            Assert.assertTrue(message != null
+                    && (message.contains("Required property")
+                        || message.contains("unsatisfiable")),
+                    "Exception root cause should mention required unsatisfiable property. Got: "
+                    + message);
+            // Re-throw to propagate test failure signature
+            throw e;
+        }
+    }
+
+    @Test
+    public void allOfPropertyConflictIsOptionalImpossible() throws IOException {
+        // Phase 5: allOf with the same property name having incompatible types
+        // does NOT throw — the conflicting optional property becomes
+        // optional-impossible (rejected when present, but the object is valid
+        // when the property is absent).
         String specContent =
             "openapi: 3.1.0\n" +
             "info:\n" +
@@ -975,7 +1044,20 @@ public class CppBoostBeastClientCodegenTest {
                 .setOutputDir(output.getAbsolutePath())
                 .addAdditionalProperty("packageName", "CppBoostBeastPropConflictTest");
 
-        new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        // Generation must succeed — Phase 5 intersection handles the conflict
+        // as optional-impossible instead of throwing.
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        // Verify the generated header exists and has NO writable m_value member
+        Path generatedHeader = output.toPath().resolve("model/AllOfPropConflict.h");
+        TestUtils.assertFileExists(generatedHeader);
+        String headerContent = java.nio.file.Files.readString(generatedHeader);
+        // The conflicting optional property must NOT have a getter/setter/member
+        Assert.assertFalse(headerContent.contains("m_Value") || headerContent.contains("setValue"),
+                "AllOfPropConflict must NOT have a writable `value` member — "
+                + "string and int32 are incompatible (optional-impossible). "
+                + "Header content: " + headerContent);
     }
 
     @Test

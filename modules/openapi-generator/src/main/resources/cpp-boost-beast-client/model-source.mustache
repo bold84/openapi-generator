@@ -1563,6 +1563,7 @@ boost::json::object {{classname}}::toJsonObject_internal() const
     boost::json::object object;
     {{/parent}}
     {{#vars}}
+    {{^vendorExtensions.x-cpp-reject-if-present}}
     {{#vendorExtensions.x-cpp-const}}
     {{#vendorExtensions.x-cpp-const-inline-value}}
     object["{{baseName}}"] = JsonValueConverter<{{{dataType}}}>::toJsonValue({{{vendorExtensions.x-cpp-const-inline-value}}});
@@ -1601,6 +1602,7 @@ boost::json::object {{classname}}::toJsonObject_internal() const
     }
     {{/parent}}
     {{/vendorExtensions.x-cpp-const}}
+    {{/vendorExtensions.x-cpp-reject-if-present}}
     {{/vars}}
     return object;
 }
@@ -1611,6 +1613,7 @@ void {{classname}}::fromJsonObject_internal(boost::json::object const& object)
     {{{parent}}}::fromJsonObject_internal(object);
     {{/parent}}
     {{#vars}}
+    {{^vendorExtensions.x-cpp-reject-if-present}}
     {{^vendorExtensions.x-cpp-const}}
     {{^required}}
     {{^vendorExtensions.x-cpp-no-is-set}}
@@ -1628,8 +1631,10 @@ void {{classname}}::fromJsonObject_internal(boost::json::object const& object)
     {{/vendorExtensions.x-cpp-no-is-set}}
     {{/required}}
     {{/vendorExtensions.x-cpp-const}}
+    {{/vendorExtensions.x-cpp-reject-if-present}}
     {{/vars}}
     {{#vars}}
+    {{^vendorExtensions.x-cpp-reject-if-present}}
     {{^vendorExtensions.x-cpp-const}}
     {{#parent}}
     if constexpr (!{{classname}}{{name}}PropertyIsInherited<{{{parent}}}>::value) {
@@ -1651,6 +1656,7 @@ void {{classname}}::fromJsonObject_internal(boost::json::object const& object)
     }
     {{/parent}}
     {{/vendorExtensions.x-cpp-const}}
+    {{/vendorExtensions.x-cpp-reject-if-present}}
     {{/vars}}
     {{#vars}}
     {{#vendorExtensions.x-cpp-const}}
@@ -1707,9 +1713,26 @@ void {{classname}}::fromJsonObject_internal(boost::json::object const& object)
     {{/vendorExtensions.x-cpp-const-inline-value}}
     {{/vendorExtensions.x-cpp-const}}
     {{/vars}}
+    {{#vars}}
+    {{#vendorExtensions.x-cpp-reject-if-present}}
+    // Optional-impossible property '{{baseName}}': reject when present
+    // (empty intersection across allOf contributors makes this property
+    // unsatisfiable, but a missing value is accepted for optional props).
+    {
+        const auto it = object.find("{{baseName}}");
+        if (it != object.end()) {
+            throw std::invalid_argument(
+                "Property '{{baseName}}' in {{classname}} is present but "
+                "cannot satisfy all allOf constraints (optional-impossible). "
+                "Remove the property or adjust the allOf schema.");
+        }
+    }
+    {{/vendorExtensions.x-cpp-reject-if-present}}
+    {{/vars}}
 }
 
 {{#vars}}
+{{^vendorExtensions.x-cpp-reject-if-present}}
 {{^vendorExtensions.x-cpp-const}}
 {{{dataType}}} {{classname}}::{{getter}}() const
 {
@@ -1749,6 +1772,7 @@ void {{classname}}::{{setter}}({{{dataType}}} value)
     {{/required}}
 }
 {{/vendorExtensions.x-cpp-const}}
+{{/vendorExtensions.x-cpp-reject-if-present}}
 {{/vars}}
 
 std::string createJsonStringFromModelVector(const std::vector<std::shared_ptr<{{classname}}>>& data)
