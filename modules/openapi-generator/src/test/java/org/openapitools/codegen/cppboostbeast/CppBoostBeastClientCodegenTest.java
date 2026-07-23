@@ -51,7 +51,8 @@ public class CppBoostBeastClientCodegenTest {
 
         CodegenConfigurator configurator = new CodegenConfigurator()
                 .setGeneratorName("cpp-boost-beast-client")
-                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/json-value-regression.yaml")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-object.yaml")
+                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
                 .setOutputDir(output.getAbsolutePath());
 
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
@@ -211,7 +212,8 @@ public class CppBoostBeastClientCodegenTest {
 
         CodegenConfigurator configurator = new CodegenConfigurator()
                 .setGeneratorName("cpp-boost-beast-client")
-                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/nullable-inherited-property.yaml")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/dual-object-sse.yaml")
+                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
                 .setOutputDir(output.getAbsolutePath());
 
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
@@ -2474,6 +2476,17 @@ public class CppBoostBeastClientCodegenTest {
         // Still uses executeStream for incremental delivery
         Assert.assertTrue(generatedApiSource.contains("executeStream("),
                 "Representation mode must use executeStream");
+
+        // Verify header return type matches source
+        Path apiHeader = output.toPath().resolve("api/SSEApi.h");
+        String generatedApiHeader = Files.readString(apiHeader);
+        Assert.assertTrue(generatedApiHeader.contains("std::vector<std::string>"),
+                "Representation mode header return type must be std::vector<std::string>");
+        int methodInHeader = generatedApiHeader.indexOf("getEvents(");
+        Assert.assertTrue(methodInHeader >= 0, "Header must declare getEvents");
+        String beforeMethod = generatedApiHeader.substring(Math.max(0, methodInHeader - 40), methodInHeader);
+        Assert.assertTrue(beforeMethod.contains("std::vector<std::string>"),
+                "Header return type for getEvents must be std::vector<std::string>");
     }
 
     @Test
@@ -2496,9 +2509,11 @@ public class CppBoostBeastClientCodegenTest {
         Path apiSource = output.toPath().resolve("api/SSEApi.cpp");
         String generatedApiSource = Files.readString(apiSource);
 
-        // In jsonEventData mode: return type is std::vector<Evt>
+        // Return type must be std::vector<Evt> in source
         Assert.assertTrue(generatedApiSource.contains("std::vector<Evt>"),
-                "jsonEventData mode must return std::vector<Evt>");
+                "jsonEventData mode source return type must be std::vector<Evt>");
+        Assert.assertFalse(generatedApiSource.contains("std::vector<std::string>"),
+                "jsonEventData mode source must NOT return std::vector<std::string>");
 
         // Callback uses appendParsedEvent with fromJsonValue_Evt
         Assert.assertTrue(generatedApiSource.contains("appendParsedEvent("),
@@ -2513,6 +2528,23 @@ public class CppBoostBeastClientCodegenTest {
         // Still uses executeStream
         Assert.assertTrue(generatedApiSource.contains("executeStream("),
                 "jsonEventData mode must use executeStream");
+
+        // Verify header return type matches source
+        Path apiHeader = output.toPath().resolve("api/SSEApi.h");
+        String generatedApiHeader = Files.readString(apiHeader);
+        Assert.assertTrue(generatedApiHeader.contains("std::vector<Evt>"),
+                "jsonEventData mode header return type must be std::vector<Evt>");
+        int methodInHeader = generatedApiHeader.indexOf("getEvents(");
+        Assert.assertTrue(methodInHeader >= 0, "Header must declare getEvents");
+        String beforeMethod = generatedApiHeader.substring(Math.max(0, methodInHeader - 40), methodInHeader);
+        Assert.assertTrue(beforeMethod.contains("std::vector<Evt>"),
+                "Header return type for getEvents must be std::vector<Evt>");
+
+        // Verify Evt model generated
+        Path evtHeader = output.toPath().resolve("model/Evt.h");
+        String evtHeaderContent = Files.readString(evtHeader);
+        Assert.assertTrue(evtHeaderContent.contains("fromJsonValue_Evt"),
+                "Evt model header must declare fromJsonValue_Evt free function");
     }
 
     @Test
@@ -2539,7 +2571,9 @@ public class CppBoostBeastClientCodegenTest {
 
         // In representation mode: stream returns std::vector<std::string>
         Assert.assertTrue(generatedApiSource.contains("std::vector<std::string>"),
-                "Dual-content representation mode must return std::vector<std::string>");
+                "Dual-content representation mode source must return std::vector<std::string>");
+        Assert.assertFalse(generatedApiSource.contains("std::vector<StreamEvent>"),
+                "Dual-content representation mode source must NOT return std::vector<StreamEvent>");
 
         // Callback uses push_back, not appendParsedEvent
         Assert.assertTrue(generatedApiSource.contains("push_back(eventData)"),
@@ -2558,6 +2592,17 @@ public class CppBoostBeastClientCodegenTest {
         // Verify path params are present
         Assert.assertTrue(generatedApiSource.contains("replacePathParameter(path, \"id\""),
                 "Dual-content stream method must include path parameter replacement");
+
+        // Verify header return type matches source
+        Path apiHeader = output.toPath().resolve("api/DualApi.h");
+        String generatedApiHeader = Files.readString(apiHeader);
+        Assert.assertTrue(generatedApiHeader.contains("std::vector<std::string>"),
+                "Dual-content representation mode header return type must be std::vector<std::string>");
+        int methodInHeader = generatedApiHeader.indexOf("createItemStream");
+        Assert.assertTrue(methodInHeader >= 0, "Header must declare createItemStream");
+        String beforeMethod = generatedApiHeader.substring(Math.max(0, methodInHeader - 40), methodInHeader);
+        Assert.assertTrue(beforeMethod.contains("std::vector<std::string>"),
+                "Header return type for createItemStream must be std::vector<std::string>");
     }
 
     @Test
@@ -2589,6 +2634,71 @@ public class CppBoostBeastClientCodegenTest {
                 "jsonEventData mode (per-op override) must use fromJsonValue_Evt");
         Assert.assertTrue(generatedApiSource.contains("appendParsedEvent("),
                 "jsonEventData mode (per-op override) must use appendParsedEvent");
+
+        // Verify header return type matches source
+        Path apiHeader = output.toPath().resolve("api/SSEApi.h");
+        String generatedApiHeader = Files.readString(apiHeader);
+        Assert.assertTrue(generatedApiHeader.contains("std::vector<Evt>"),
+                "jsonEventData mode header must return std::vector<Evt>");
+        int methodInHeader = generatedApiHeader.indexOf("getEvents(");
+        Assert.assertTrue(methodInHeader >= 0, "Header must declare getEvents");
+        String beforeMethod = generatedApiHeader.substring(Math.max(0, methodInHeader - 40), methodInHeader);
+        Assert.assertTrue(beforeMethod.contains("std::vector<Evt>"),
+                "Header return type for getEvents must be std::vector<Evt> in jsonEventData mode");
+    }
+
+    @Test
+    public void pureSseWithPerOperationExtensionUsesTypedPathUnderDefaultRepr() throws IOException {
+        // x-sse-event-data-schema: true on the operation overrides the default
+        // sseSchemaMode=representation. Typed JSON-per-data decoding should be
+        // active without setting the global mode.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-sse-perop").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-with-event-data-schema.yaml")
+                .setOutputDir(output.getAbsolutePath());
+        // NOTE: sseSchemaMode is NOT set; default is representation. The
+        // per-operation x-sse-event-data-schema must force typed conversion.
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path apiSource = output.toPath().resolve("api/SSEApi.cpp");
+        String generatedApiSource = Files.readString(apiSource);
+
+        // x-sse-event-data-schema override must enable typed conversion
+        Assert.assertTrue(generatedApiSource.contains("fromJsonValue_TypedEvent"),
+                "Per-operation x-sse-event-data-schema must enable fromJsonValue_TypedEvent");
+        Assert.assertTrue(generatedApiSource.contains("appendParsedEvent("),
+                "Per-operation x-sse-event-data-schema must use appendParsedEvent");
+
+        // Return type must be std::vector<TypedEvent>, not std::vector<std::string>
+        Assert.assertTrue(generatedApiSource.contains("std::vector<TypedEvent>"),
+                "Per-operation x-sse-event-data-schema source must return std::vector<TypedEvent>");
+        Assert.assertFalse(generatedApiSource.contains("std::vector<std::string>"),
+                "Per-operation x-sse-event-data-schema source must NOT use std::vector<std::string>");
+
+        // Still uses executeStream
+        Assert.assertTrue(generatedApiSource.contains("executeStream("),
+                "Per-operation extension must use executeStream");
+
+        // Verify the model exists
+        Path modelHeader = output.toPath().resolve("model/TypedEvent.h");
+        Assert.assertTrue(java.nio.file.Files.exists(modelHeader),
+                "TypedEvent model must be generated");
+
+        // Verify header return type matches source
+        Path apiHeader = output.toPath().resolve("api/SSEApi.h");
+        String generatedApiHeader = Files.readString(apiHeader);
+        Assert.assertTrue(generatedApiHeader.contains("std::vector<TypedEvent>"),
+                "x-sse-event-data-schema header must return std::vector<TypedEvent>");
+        int methodInHeader = generatedApiHeader.indexOf("getTypedEvents(");
+        Assert.assertTrue(methodInHeader >= 0, "Header must declare getTypedEvents");
+        String beforeMethod = generatedApiHeader.substring(Math.max(0, methodInHeader - 40), methodInHeader);
+        Assert.assertTrue(beforeMethod.contains("std::vector<TypedEvent>"),
+                "Header return type for getTypedEvents must be std::vector<TypedEvent>");
     }
 
     /**

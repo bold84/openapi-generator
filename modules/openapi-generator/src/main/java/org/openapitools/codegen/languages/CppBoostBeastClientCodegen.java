@@ -3569,11 +3569,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // "jsonEventData" (case-insensitive). Rejects unknown values with a
         // logged warning and falls through to the default.
         if (additionalProperties.containsKey("sseSchemaMode")) {
-            String raw = additionalProperties.get("sseSchemaMode").toString();
-            String mode = raw.trim().toLowerCase(Locale.ROOT);
-            if (SSE_SCHEMA_MODE_JSON_EVENT_DATA.equals(mode)) {
+            String raw = additionalProperties.get("sseSchemaMode").toString().trim();
+            if (raw.equalsIgnoreCase(SSE_SCHEMA_MODE_JSON_EVENT_DATA)) {
                 sseSchemaMode = SSE_SCHEMA_MODE_JSON_EVENT_DATA;
-            } else if (SSE_SCHEMA_MODE_REPRESENTATION.equals(mode)) {
+            } else if (raw.equalsIgnoreCase(SSE_SCHEMA_MODE_REPRESENTATION)) {
                 sseSchemaMode = SSE_SCHEMA_MODE_REPRESENTATION;
             } else {
                 LOGGER.warn("sseSchemaMode: unknown value '{}'; falling back to '{}'",
