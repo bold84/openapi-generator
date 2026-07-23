@@ -32,39 +32,64 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     public static final class CompositionDescriptor {
         private final String schemaName;
         private final String schemaLocation;
-        private final CompositionKeyword keyword;
+        private final String keyword;
         private final List<CompositionBranchDescriptor> branches;
-
-        public enum CompositionKeyword { ONE_OF, ANY_OF, ALL_OF }
+        private final DiscriminatorDescriptor discriminator;
 
         public CompositionDescriptor(String schemaName, String schemaLocation,
-                                     CompositionKeyword keyword,
-                                     List<CompositionBranchDescriptor> branches) {
+                                     String keyword,
+                                     List<CompositionBranchDescriptor> branches,
+                                     DiscriminatorDescriptor discriminator) {
             this.schemaName = schemaName;
             this.schemaLocation = schemaLocation;
             this.keyword = keyword;
             this.branches = Collections.unmodifiableList(
                     new ArrayList<>(branches));
+            this.discriminator = discriminator;
         }
 
         public String getSchemaName() { return schemaName; }
         public String getSchemaLocation() { return schemaLocation; }
-        public CompositionKeyword getKeyword() { return keyword; }
+        public String getKeyword() { return keyword; }
         public List<CompositionBranchDescriptor> getBranches() { return branches; }
+        public DiscriminatorDescriptor getDiscriminator() { return discriminator; }
+        public boolean hasDiscriminator() { return discriminator != null; }
 
         /** Converts this descriptor to a template-safe map for Mustache. */
         public Map<String, Object> toTemplateMap() {
             Map<String, Object> map = new LinkedHashMap<>();
             map.put("schema-name", schemaName);
             map.put("schema-location", schemaLocation);
-            map.put("keyword", keyword.name().toLowerCase(Locale.ROOT));
+            map.put("keyword", keyword);
             List<Map<String, Object>> branchMaps = new ArrayList<>();
             for (CompositionBranchDescriptor branch : branches) {
                 branchMaps.add(branch.toTemplateMap());
             }
             map.put("branches", branchMaps);
+            if (discriminator != null) {
+                map.put("discriminator-property-name", discriminator.getPropertyName());
+                map.put("discriminator-mapping", discriminator.getMapping());
+            }
             return map;
         }
+    }
+
+    /**
+     * Describes an optional discriminator on a composed schema.
+     */
+    public static final class DiscriminatorDescriptor {
+        private final String propertyName;
+        private final Map<String, String> mapping;
+
+        public DiscriminatorDescriptor(String propertyName, Map<String, String> mapping) {
+            this.propertyName = propertyName;
+            this.mapping = mapping != null
+                    ? Collections.unmodifiableMap(new LinkedHashMap<>(mapping))
+                    : Collections.emptyMap();
+        }
+
+        public String getPropertyName() { return propertyName; }
+        public Map<String, String> getMapping() { return mapping; }
     }
 
     /**
@@ -79,18 +104,28 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         private final String storageCppType;
         private final String validatorId;
         private final NullCapability nullCapability;
+        private final List<String> supportedAssertions;
+        private final List<String> unsupportedAssertions;
 
         public enum NullCapability { NEVER, ALWAYS, CONDITIONAL }
 
         public CompositionBranchDescriptor(int branchIndex, String sourceSchemaRef,
                                            String resolvedSchemaName, String storageCppType,
-                                           String validatorId, NullCapability nullCapability) {
+                                           String validatorId, NullCapability nullCapability,
+                                           List<String> supportedAssertions,
+                                           List<String> unsupportedAssertions) {
             this.branchIndex = branchIndex;
             this.sourceSchemaRef = sourceSchemaRef;
             this.resolvedSchemaName = resolvedSchemaName;
             this.storageCppType = storageCppType;
             this.validatorId = validatorId;
             this.nullCapability = nullCapability;
+            this.supportedAssertions = supportedAssertions != null
+                    ? Collections.unmodifiableList(new ArrayList<>(supportedAssertions))
+                    : Collections.emptyList();
+            this.unsupportedAssertions = unsupportedAssertions != null
+                    ? Collections.unmodifiableList(new ArrayList<>(unsupportedAssertions))
+                    : Collections.emptyList();
         }
 
         public int getBranchIndex() { return branchIndex; }
@@ -99,6 +134,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         public String getStorageCppType() { return storageCppType; }
         public String getValidatorId() { return validatorId; }
         public NullCapability getNullCapability() { return nullCapability; }
+        public List<String> getSupportedAssertions() { return supportedAssertions; }
+        public List<String> getUnsupportedAssertions() { return unsupportedAssertions; }
 
         /** Converts this branch descriptor to a template-safe map for Mustache. */
         public Map<String, Object> toTemplateMap() {
@@ -109,6 +146,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             map.put("storage-cpp-type", storageCppType);
             map.put("validator-id", validatorId);
             map.put("null-capability", nullCapability.name().toLowerCase(Locale.ROOT));
+            map.put("has-supported-assertions", !supportedAssertions.isEmpty());
+            map.put("supported-assertions", supportedAssertions);
+            map.put("has-unsupported-assertions", !unsupportedAssertions.isEmpty());
+            map.put("unsupported-assertions", unsupportedAssertions);
             return map;
         }
     }
@@ -197,7 +238,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 CompositionDescriptor descriptor = buildCompositionDescriptor(
                         schemaName, schema, openAPI, schemas, new HashSet<>());
                 if (descriptor != null) {
-                    compositionDescriptors.put(schemaName, descriptor);
+                    // Index by toModelName so lookups via cm.classname match.
+                    compositionDescriptors.put(toModelName(schemaName), descriptor);
                 }
                 if ((schema.getOneOf() != null && !schema.getOneOf().isEmpty())
                         || (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty())) {
@@ -220,17 +262,17 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (schema == null) return null;
 
         List<Schema> branchSchemas = null;
-        CompositionDescriptor.CompositionKeyword keyword = null;
+        String keyword = null;
 
         if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
             branchSchemas = schema.getOneOf();
-            keyword = CompositionDescriptor.CompositionKeyword.ONE_OF;
+            keyword = "oneOf";
         } else if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
             branchSchemas = schema.getAnyOf();
-            keyword = CompositionDescriptor.CompositionKeyword.ANY_OF;
+            keyword = "anyOf";
         } else if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) {
             branchSchemas = schema.getAllOf();
-            keyword = CompositionDescriptor.CompositionKeyword.ALL_OF;
+            keyword = "allOf";
         }
 
         if (branchSchemas == null) return null;
@@ -238,13 +280,25 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         String schemaLocation = "#/components/schemas/" + schemaName;
         List<CompositionBranchDescriptor> branches = new ArrayList<>();
 
+        // Capture optional discriminator
+        DiscriminatorDescriptor discriminatorDescriptor = null;
+        if (schema.getDiscriminator() != null) {
+            discriminatorDescriptor = new DiscriminatorDescriptor(
+                    schema.getDiscriminator().getPropertyName(),
+                    schema.getDiscriminator().getMapping());
+        }
+
         for (int index = 0; index < branchSchemas.size(); index++) {
             Schema branchSchema = branchSchemas.get(index);
             String sourceRef = null;
             String resolvedName = null;
             CompositionBranchDescriptor.NullCapability nullCap =
                     CompositionBranchDescriptor.NullCapability.NEVER;
+            List<String> supported = new ArrayList<>();
+            List<String> unsupported = new ArrayList<>();
 
+            // Resolve the branch schema for assertion scanning
+            Schema targetForAssertions = null;
             if (branchSchema != null && branchSchema.get$ref() != null) {
                 sourceRef = branchSchema.get$ref();
                 String refName = ModelUtils.getSimpleRef(branchSchema.get$ref());
@@ -258,14 +312,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     if (ModelUtils.isNullTypeSchema(openAPI, refTarget)) {
                         nullCap = CompositionBranchDescriptor.NullCapability.ALWAYS;
                     } else {
-                        // Check for nullable: true on the target
                         if (Boolean.TRUE.equals(refTarget.getNullable())) {
                             nullCap = CompositionBranchDescriptor.NullCapability.CONDITIONAL;
                         }
+                        targetForAssertions = refTarget;
                     }
                 }
             } else if (branchSchema != null) {
-                // Inline branch (should be rare after InlineModelResolver)
+                targetForAssertions = branchSchema;
                 resolvedName = branchSchema.getType();
                 if (resolvedName == null) {
                     if (branchSchema.getEnum() != null && !branchSchema.getEnum().isEmpty()) {
@@ -281,13 +335,76 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
             }
 
+            // Scan the resolved target schema for assertion keywords
+            if (targetForAssertions != null) {
+                if (targetForAssertions.getType() != null) {
+                    supported.add("type");
+                }
+                if (targetForAssertions.getEnum() != null && !targetForAssertions.getEnum().isEmpty()) {
+                    supported.add("enum");
+                }
+                if (targetForAssertions.getConst() != null) {
+                    supported.add("const");
+                }
+                if (targetForAssertions.getMinimum() != null
+                        || targetForAssertions.getMaximum() != null
+                        || targetForAssertions.getExclusiveMinimum() != null
+                        || targetForAssertions.getExclusiveMaximum() != null
+                        || targetForAssertions.getMultipleOf() != null) {
+                    supported.add("numeric-range");
+                }
+                if (targetForAssertions.getMinLength() != null
+                        || targetForAssertions.getMaxLength() != null) {
+                    supported.add("string-length");
+                }
+                if (targetForAssertions.getPattern() != null) {
+                    supported.add("pattern");
+                }
+                if (targetForAssertions.getItems() != null
+                        || targetForAssertions.getPrefixItems() != null) {
+                    supported.add("array-items");
+                }
+                if (targetForAssertions.getMinItems() != null
+                        || targetForAssertions.getMaxItems() != null) {
+                    supported.add("array-length");
+                }
+                if (Boolean.TRUE.equals(targetForAssertions.getUniqueItems())) {
+                    supported.add("unique-items");
+                }
+                if (targetForAssertions.getRequired() != null
+                        || (targetForAssertions.getProperties() != null
+                            && !targetForAssertions.getProperties().isEmpty())
+                        || targetForAssertions.getAdditionalProperties() != null) {
+                    supported.add("object-properties");
+                }
+                if (targetForAssertions.getMinProperties() != null
+                        || targetForAssertions.getMaxProperties() != null) {
+                    supported.add("object-property-count");
+                }
+                if (targetForAssertions.getOneOf() != null
+                        || targetForAssertions.getAnyOf() != null
+                        || targetForAssertions.getAllOf() != null
+                        || targetForAssertions.getNot() != null) {
+                    supported.add("composition");
+                }
+
+                // Detect unsupported assertion keywords
+                io.swagger.v3.oas.models.media.Discriminator targetDisc =
+                        targetForAssertions.getDiscriminator();
+                if (targetDisc != null) {
+                    // Discriminator on branches is annotation-only for now
+                }
+            }
+
             CompositionBranchDescriptor branch = new CompositionBranchDescriptor(
-                    index, sourceRef, resolvedName, null, null, nullCap);
+                    index, sourceRef, resolvedName, null, null,
+                    nullCap, supported, unsupported);
             branches.add(branch);
         }
 
         return new CompositionDescriptor(
-                schemaName, schemaLocation, keyword, branches);
+                schemaName, schemaLocation, keyword, branches,
+                discriminatorDescriptor);
     }
 
     public CppBoostBeastClientCodegen() {
@@ -639,10 +756,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // default codegen pipeline collapses a bare oneOf/anyOf (without type:object)
         // into a flat dataType. These models have no vars and a dataType that differs
         // from their classname (e.g., SingleBranchTest → std::string).
+        // Phase 1: Gated by descriptor presence — when a model has a composition
+        // descriptor, the descriptor is the semantic source, not dataType alone.
         for (ModelMap mo : result.getModels()) {
             CodegenModel cm = mo.getModel();
             if (cm.vendorExtensions.containsKey("x-cpp-is-alias")) {
                 continue;
+            }
+            if (compositionDescriptors.containsKey(cm.classname)) {
+                continue; // descriptor provides semantics; skip dataType heuristic
             }
             if (cm.vars != null && !cm.vars.isEmpty()) {
                 continue;
@@ -683,10 +805,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // without leaving usable branches or dataType. These models have no vars,
         // are not arrays/maps, and have `isAnyType = true` (no explicit `type` field
         // on the OpenAPI schema). Treat as boost::json::value alias.
+        // Phase 1: Gated by descriptor presence.
         for (ModelMap mo : result.getModels()) {
             CodegenModel cm = mo.getModel();
             if (cm.vendorExtensions.containsKey("x-cpp-is-alias")) {
                 continue;
+            }
+            if (compositionDescriptors.containsKey(cm.classname)) {
+                continue; // descriptor provides semantics; skip dataType heuristic
             }
             if (cm.vars != null && !cm.vars.isEmpty()) {
                 continue;
@@ -741,6 +867,20 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // A variant like std::variant<std::string, TracingConfiguration> referencing
             // itself as a branch causes the model to include its own header.
             cm.imports.removeIf(imp -> imp.equals("#include \"" + cm.classname + ".h\""));
+        }
+
+        // Phase: Emit x-cpp-composition-branches for allOf models that were
+        // processed by fromModel (not by processComposedModel). These models
+        // have descriptors but were bypassed by the oneOf/anyOf lowering loop.
+        for (ModelMap mo : result.getModels()) {
+            CodegenModel cm = mo.getModel();
+            if (cm.vendorExtensions.containsKey("x-cpp-composition-branches")) {
+                continue;
+            }
+            CompositionDescriptor desc = compositionDescriptors.get(cm.classname);
+            if (desc != null && "allOf".equals(desc.getKeyword())) {
+                cm.vendorExtensions.put("x-cpp-composition-branches", desc.toTemplateMap());
+            }
         }
 
         return result;
@@ -816,7 +956,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             boolean isStringLike = "std::string".equals(resolved.get(i));
                             branchesWithMeta.add(new ComposedBranch(resolved.get(i), isEnum, isStringLike));
                         }
-                        newType = lowerComposedTypes(branchesWithMeta, composedKeyword);
+                        newType = lowerComposedTypes(branchesWithMeta, composedKeyword, null);
                     } catch (RuntimeException e) {
                         LOGGER.warn("Failed to re-lower composed types for '{}': {} — keeping current type '{}'",
                                 cm.classname, e.getMessage(), currentType);
@@ -1061,47 +1201,53 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             return;
         }
 
-            // Collect C++ branch types (strip shared_ptr wrappers for variant members).
-            // Map OpenAPI type names (e.g., "null", "integer", "string") to C++ types
-            // because composed properties from fromProperty use OpenAPI type names as-is.
-            // Self-referencing branches (a variant containing itself) are excluded
-            // because they would create an illegal recursive type alias in C++.
-            // Binary branches (format: binary) are mapped to std::vector<std::uint8_t>
-            // so the multipart addVariantFormParameter helper can dispatch them as
-            // file parts via compile-time type checking.
-            // NOTE: Deduplication is deferred to lowerComposedTypes (step 5) so that
-            // oneOf semantics can be preserved when duplicate types would otherwise
-            // cause silent single-branch collapse.
-            List<ComposedBranch> composedBranches = new ArrayList<>();
-            for (CodegenProperty b : branches) {
-                String cppType;
-                if (b.isBinary || b.isFile) {
-                    cppType = "std::vector<std::uint8_t>";
-                } else {
-                    cppType = resolveOpenApiTypeName(stripSharedPtr(b.dataType));
-                }
-                if (cppType.equals(cm.classname)) {
-                    continue;
-                }
-                boolean isStringLike = b.isString || "std::string".equals(cppType)
-                        || "string".equals(b.dataType);
-                composedBranches.add(new ComposedBranch(cppType, b.isEnum, isStringLike));
-            }
-            List<String> branchTypes = composedBranches.stream()
-                    .map(cb -> cb.cppType)
-                    .collect(Collectors.toList());
+        // Look up the composition descriptor as the semantic source for lowering.
+        // When available, descriptor metadata (null capability, assertions, keyword)
+        // is used by lowerComposedTypes instead of inferring semantics from C++ type
+        // strings alone.
+        CompositionDescriptor descriptor = compositionDescriptors.get(cm.classname);
 
-            String resolvedType;
-            try {
-                resolvedType = lowerComposedTypes(composedBranches, composedKeyword);
-            } catch (RuntimeException e) {
-                // Fallback: if lowering fails (e.g., indistinguishable oneOf branches),
-                // treat as boost::json::value and log the warning rather than crashing
-                // the entire generation pipeline.
-                LOGGER.warn("Failed to lower composed types for '{}': {} — falling back to boost::json::value",
-                        cm.classname, e.getMessage());
-                resolvedType = "boost::json::value";
+        // Collect C++ branch types (strip shared_ptr wrappers for variant members).
+        // Map OpenAPI type names (e.g., "null", "integer", "string") to C++ types
+        // because composed properties from fromProperty use OpenAPI type names as-is.
+        // Self-referencing branches (a variant containing itself) are excluded
+        // because they would create an illegal recursive type alias in C++.
+        // Binary branches (format: binary) are mapped to std::vector<std::uint8_t>
+        // so the multipart addVariantFormParameter helper can dispatch them as
+        // file parts via compile-time type checking.
+        // NOTE: Deduplication is deferred to lowerComposedTypes (step 5) so that
+        // oneOf semantics can be preserved when duplicate types would otherwise
+        // cause silent single-branch collapse.
+        List<ComposedBranch> composedBranches = new ArrayList<>();
+        for (CodegenProperty b : branches) {
+            String cppType;
+            if (b.isBinary || b.isFile) {
+                cppType = "std::vector<std::uint8_t>";
+            } else {
+                cppType = resolveOpenApiTypeName(stripSharedPtr(b.dataType));
             }
+            if (cppType.equals(cm.classname)) {
+                continue;
+            }
+            boolean isStringLike = b.isString || "std::string".equals(cppType)
+                    || "string".equals(b.dataType);
+            composedBranches.add(new ComposedBranch(cppType, b.isEnum, isStringLike));
+        }
+        List<String> branchTypes = composedBranches.stream()
+                .map(cb -> cb.cppType)
+                .collect(Collectors.toList());
+
+        String resolvedType;
+        try {
+            resolvedType = lowerComposedTypes(composedBranches, composedKeyword, descriptor);
+        } catch (RuntimeException e) {
+            // Fallback: if lowering fails (e.g., indistinguishable oneOf branches),
+            // treat as boost::json::value and log the warning rather than crashing
+            // the entire generation pipeline.
+            LOGGER.warn("Failed to lower composed types for '{}': {} — falling back to boost::json::value",
+                    cm.classname, e.getMessage());
+            resolvedType = "boost::json::value";
+        }
 
         // Cache the resolved type for transitive resolution in Phase 1b
         resolvedAliasTypes.put(cm.classname, resolvedType);
@@ -1119,7 +1265,6 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // x-cpp-branches. These are template-safe Maps that preserve original
         // branch order, schema references, null capabilities, and assertion
         // metadata. Phase 3 switches templates to use this new extension.
-        CompositionDescriptor descriptor = compositionDescriptors.get(cm.classname);
         if (descriptor != null) {
             cm.vendorExtensions.put("x-cpp-composition-branches", descriptor.toTemplateMap());
         } else {
@@ -1301,8 +1446,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      *    (do not pretend exclusivity after both erase to std::string)
      * 7. oneOf multi-branch → single identical C++ type (alias collapse) → that type
      * 8. Emit std::variant&lt;Branches...&gt; or boost::json::value
+     * <p>
+     * When a non-null {@code descriptor} is provided, its branch metadata
+     * (nullCapability, supportedAssertions) replaces C++ type-string heuristics
+     * for Rules 1, 3, and 6.
      */
-    private String lowerComposedTypes(List<ComposedBranch> branches, String composedKeyword) {
+    private String lowerComposedTypes(List<ComposedBranch> branches, String composedKeyword,
+                                       CompositionDescriptor descriptor) {
         if (branches == null || branches.isEmpty()) {
             return "boost::json::value";
         }
@@ -1311,13 +1461,37 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 .collect(Collectors.toList());
 
         // Rule 1: anyOf/oneOf: [T, null] → std::optional<T>
-        int nullCount = (int) branchTypes.stream().filter("std::nullptr_t"::equals).count();
-        if (nullCount == 1 && branchTypes.size() == 2) {
-            String nonNullBranch = branchTypes.stream()
-                    .filter(bt -> !"std::nullptr_t".equals(bt))
-                    .findFirst().orElse(null);
-            if (nonNullBranch != null) {
-                return "std::optional<" + nonNullBranch + ">";
+        // Use descriptor nullCapability when available for semantic accuracy.
+        if (descriptor != null) {
+            int alwaysNullCount = 0;
+            int nonNullIndex = -1;
+            List<CompositionBranchDescriptor> descBranches = descriptor.getBranches();
+            for (int i = 0; i < descBranches.size(); i++) {
+                CompositionBranchDescriptor.NullCapability nc =
+                        descBranches.get(i).getNullCapability();
+                if (nc == CompositionBranchDescriptor.NullCapability.ALWAYS) {
+                    alwaysNullCount++;
+                } else {
+                    nonNullIndex = i;
+                }
+            }
+            if (alwaysNullCount == 1 && descBranches.size() == 2 && nonNullIndex >= 0
+                    && nonNullIndex < branchTypes.size()) {
+                String nonNullBranch = branchTypes.get(nonNullIndex);
+                if (nonNullBranch != null) {
+                    return "std::optional<" + nonNullBranch + ">";
+                }
+            }
+        } else {
+            // Fallback: C++ type-string heuristic (no descriptor available)
+            int nullCount = (int) branchTypes.stream().filter("std::nullptr_t"::equals).count();
+            if (nullCount == 1 && branchTypes.size() == 2) {
+                String nonNullBranch = branchTypes.stream()
+                        .filter(bt -> !"std::nullptr_t".equals(bt))
+                        .findFirst().orElse(null);
+                if (nonNullBranch != null) {
+                    return "std::optional<" + nonNullBranch + ">";
+                }
             }
         }
 
@@ -1328,9 +1502,22 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
 
         // Rule 3: Remove null branches for further processing.
-        List<ComposedBranch> nonNullMeta = branches.stream()
-                .filter(b -> !"std::nullptr_t".equals(b.cppType))
-                .collect(Collectors.toList());
+        // Use descriptor nullCapability when available.
+        List<ComposedBranch> nonNullMeta;
+        if (descriptor != null) {
+            List<CompositionBranchDescriptor> descBranches = descriptor.getBranches();
+            nonNullMeta = new ArrayList<>();
+            for (int i = 0; i < branches.size() && i < descBranches.size(); i++) {
+                if (descBranches.get(i).getNullCapability()
+                        != CompositionBranchDescriptor.NullCapability.ALWAYS) {
+                    nonNullMeta.add(branches.get(i));
+                }
+            }
+        } else {
+            nonNullMeta = branches.stream()
+                    .filter(b -> !"std::nullptr_t".equals(b.cppType))
+                    .collect(Collectors.toList());
+        }
         List<String> nonNullBranches = nonNullMeta.stream()
                 .map(b -> b.cppType)
                 .collect(Collectors.toList());
@@ -1418,7 +1605,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             boolean isString = "std::string".equals(t);
             branches.add(new ComposedBranch(t, false, isString));
         }
-        return lowerComposedTypes(branches, composedKeyword);
+        return lowerComposedTypes(branches, composedKeyword, null);
     }
 
     /**
@@ -1685,16 +1872,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                         && !"object".equals(existingType)
                                         && !"unknown".equals(propType)
                                         && !"unknown".equals(existingType)) {
-                                    // Phase 5 will handle this via recursive
-                                    // allOf intersection. For Phase 1, warn and
-                                    // let generation proceed with last-wins type
-                                    // rather than failing closed.
-                                    LOGGER.warn(
-                                        "allOf property type conflict in schema '{}': "
-                                        + "property '{}' has incompatible types [{} , {}]. "
-                                        + "Using last-wins type. Phase 5 will implement "
-                                        + "recursive intersection.",
-                                        name, propName, existingType, propType);
+                                    throw new RuntimeException(
+                                        "allOf property type conflict in schema '" + name
+                                        + "': property '" + propName + "' has incompatible types ["
+                                        + existingType + ", " + propType
+                                        + "]. allOf with conflicting property types is not supported.");
                                 }
                             } else {
                                 allOfPropertyTypes.put(propName, propType);
@@ -2357,7 +2539,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // Deduplication is deferred to lowerComposedTypes (step 5) so that
         // oneOf semantics can be preserved when duplicate types would otherwise
         // cause silent single-branch collapse.
-        return lowerComposedTypes(composedBranches, composedKeyword);
+        return lowerComposedTypes(composedBranches, composedKeyword, null);
     }
 
     @Override
