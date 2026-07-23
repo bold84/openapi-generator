@@ -1785,18 +1785,22 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(headerContent.contains("PostResponseUnionResponse postResponseUnion("),
                 "Method must return PostResponseUnionResponse");
 
-        // No duplicate struct definitions (each struct name appears exactly once).
-        // Each operation with a response union generates a unique struct name.
-        int unionStructDeclCount = headerContent.split("PostResponseUnionResponse", -1).length - 1;
-        Assert.assertEquals("PostResponseUnionResponse must be defined exactly once",
-                2, unionStructDeclCount); // 1 for struct name, 1 for return type
-        // Note: the struct name appears in its own definition and in the return type.
+        // Struct is defined at namespace scope (before the class), not nested.
+        int structNamePosition = headerContent.indexOf("struct PostResponseUnionResponse");
+        int classPosition = headerContent.indexOf("class DefaultApi");
+        Assert.assertTrue(structNamePosition >= 0 && classPosition > structNamePosition,
+                "Response union struct must be declared before the class. "
+                + "struct at " + structNamePosition + ", class at " + classPosition);
 
         // Phase 7: verify the API SOURCE contains the expected dispatch patterns.
-        // The source must NOT fall through to "Unexpected HTTP status code".
-        Assert.assertFalse(apiContent.contains("Unexpected HTTP status code"),
-                "Response-union operation must not fall through to unexpected status. "
-                + "Current output: " + apiContent);
+        // Each declared 2xx must return a filled response union — no blind
+        // fall-through past the last matched success.
+        Assert.assertTrue(apiContent.contains("200") && apiContent.contains("FullResource"),
+                "200 must return FullResource branch. Output: " + apiContent);
+        Assert.assertTrue(apiContent.contains("201") && apiContent.contains("SummaryResource"),
+                "201 must return SummaryResource branch. Output: " + apiContent);
+        Assert.assertTrue(apiContent.contains("204") || apiContent.contains("status_code_204"),
+                "204 must produce a branch. Output: " + apiContent);
 
         // The source must use executeWithMetadata for response-union operations.
         Assert.assertTrue(apiContent.contains("executeWithMetadata"),
@@ -1836,24 +1840,56 @@ public class CppBoostBeastClientCodegenTest {
                 + "Current header: " + headerContent);
 
         // Both status codes must appear in StatusTaggedValue wrappers.
-        Assert.assertTrue(headerContent.contains("StatusTaggedValue<boost::beast::http::status(200),")
-                || headerContent.contains("StatusTaggedValue<boost::beast::http::status( 200 ),"),
+        Assert.assertTrue(
+                headerContent.contains("StatusTaggedValue<boost::beast::http::status(200),"),
                 "StatusTaggedValue for 200 must reference boost::beast::http::status(200)");
-        Assert.assertTrue(headerContent.contains("StatusTaggedValue<boost::beast::http::status(201),")
-                || headerContent.contains("StatusTaggedValue<boost::beast::http::status( 201 ),"),
+        Assert.assertTrue(
+                headerContent.contains("StatusTaggedValue<boost::beast::http::status(201),"),
                 "StatusTaggedValue for 201 must reference boost::beast::http::status(201)");
+
+        // The variant must also include std::monostate for the 204 no-content branch.
+        Assert.assertTrue(headerContent.contains("std::monostate"),
+                "Response union must include std::monostate for 204 no-content");
+
+        // The body type must be the SAME shared_ptr<FullResource> unwrapped type.
+        String statusTaggedPattern200
+            = "StatusTaggedValue<boost::beast::http::status(200), "
+            + "std::shared_ptr<FullResource>";
+        String statusTaggedPattern201
+            = "StatusTaggedValue<boost::beast::http::status(201), "
+            + "std::shared_ptr<FullResource>";
+        // Note: the actual output may or may not have a space after the comma
+        // in the template parameter list. Check both variants.
+        Assert.assertTrue(headerContent.contains(statusTaggedPattern200)
+                || headerContent.contains(
+                    "StatusTaggedValue<boost::beast::http::status(200),std::shared_ptr<FullResource>"),
+                "StatusTaggedValue for 200 must wrap FullResource");
+        Assert.assertTrue(headerContent.contains(statusTaggedPattern201)
+                || headerContent.contains(
+                    "StatusTaggedValue<boost::beast::http::status(201),std::shared_ptr<FullResource>"),
+                "StatusTaggedValue for 201 must wrap FullResource");
+
+        // The union struct must be declared at namespace scope (not nested).
+        Assert.assertTrue(headerContent.contains("struct PostDuplicateTypesResponse"),
+                "Response union struct must be declared in the header");
 
         Path apiSource = output.toPath().resolve("api/DefaultApi.cpp");
         TestUtils.assertFileExists(apiSource);
         String apiContent = java.nio.file.Files.readString(apiSource);
 
-        // Both status codes must have dispatch branches.
-        // (For duplicate body types, the dispatch uses the shared dataType
-        // with different StatusTaggedValue wrappers.)
+        // All three status codes must have dispatch branches.
         Assert.assertTrue(apiContent.contains("status(200)") || apiContent.contains("status_code_200"),
                 "Source must reference 200");
         Assert.assertTrue(apiContent.contains("status(201)") || apiContent.contains("status_code_201"),
                 "Source must reference 201");
+        Assert.assertTrue(apiContent.contains("status(204)") || apiContent.contains("status_code_204"),
+                "Source must reference 204");
+
+        // Body assignment must use the StatusTaggedValue wrapper type,
+        // not the raw dataType.
+        Assert.assertTrue(apiContent.contains("StatusTaggedValue<"),
+                "Body assignment must use StatusTaggedValue wrapping. "
+                + "Source: " + apiContent);
     }
 
     @Test

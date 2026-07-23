@@ -20,6 +20,7 @@
 #include <boost/optional.hpp>
 
 #include "api/HttpClient.h"
+#include "ValidationTypes.h"
 
 {{#imports}}{{{import}}}
 {{/imports}}
@@ -30,6 +31,23 @@ namespace {{this}} {
 
 using namespace {{modelNamespace}};
 
+{{#operation}}
+{{#vendorExtensions.x-codegen-response-union}}
+/// Response union type for {{#operationId}}{{{.}}}{{/operationId}}.
+struct {{vendorExtensions.x-codegen-response-union}} {
+    boost::beast::http::status status;
+    std::string contentType;
+    std::variant<
+    {{#responses}}
+    {{#vendorExtensions.x-codegen-response-union}}
+        {{{vendorExtensions.x-codegen-response-union-body-type}}}{{^-last}},{{/-last}}
+    {{/vendorExtensions.x-codegen-response-union}}
+    {{/responses}}
+    > body;
+};
+
+{{/vendorExtensions.x-codegen-response-union}}
+{{/operation}}
 ///
 /// Exception to flag problems in the api's
 ///
@@ -66,21 +84,6 @@ public:
     /// <remarks>
     /// {{notes}}
     /// </remarks>
-{{#vendorExtensions.x-codegen-response-union}}
-    /// Response union type for {{#operationId}}{{{.}}}{{/operationId}}.
-    struct {{vendorExtensions.x-codegen-response-union}} {
-        boost::beast::http::status status;
-        std::string contentType;
-        std::variant<
-        {{#responses}}
-        {{#vendorExtensions.x-codegen-response-union}}
-            {{{vendorExtensions.x-codegen-response-union-body-type}}}{{^-last}},{{/-last}}
-        {{/vendorExtensions.x-codegen-response-union}}
-        {{/responses}}
-        > body;
-    };
-
-{{/vendorExtensions.x-codegen-response-union}}
     virtual {{#vendorExtensions.x-codegen-response-union}}{{vendorExtensions.x-codegen-response-union}}{{/vendorExtensions.x-codegen-response-union}}{{^vendorExtensions.x-codegen-response-union}}{{#vendorExtensions.x-codegen-streaming-response}}{{#vendorExtensions.x-codegen-stream-element-type}}std::vector<{{{.}}}>{{/vendorExtensions.x-codegen-stream-element-type}}{{^vendorExtensions.x-codegen-stream-element-type}}{{#returnType}}std::vector<{{{.}}}>{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-stream-element-type}}{{/vendorExtensions.x-codegen-streaming-response}}{{^vendorExtensions.x-codegen-streaming-response}}{{#returnType}}{{{.}}}{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-streaming-response}}{{/vendorExtensions.x-codegen-response-union}}
     {{#operationId}}{{{.}}}{{/operationId}}{{^operationId}}{{httpMethod}}_{{vendorExtensions.x-codegen-resource-name}}{{/operationId}}(
         {{#allParams}}const {{#vendorExtensions.x-codegen-is-optional-query-parameter}}boost::optional<{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{dataType}}}{{#vendorExtensions.x-codegen-is-optional-query-parameter}}>{{/vendorExtensions.x-codegen-is-optional-query-parameter}}& {{{paramName}}}{{^-last}}, {{/-last}}{{/allParams}});
@@ -101,21 +104,6 @@ public:
     /// <remarks>
     /// {{notes}}
     /// </remarks>
-{{#vendorExtensions.x-codegen-response-union}}
-    /// Response union type for {{#operationId}}{{{.}}}{{/operationId}}.
-    struct {{vendorExtensions.x-codegen-response-union}} {
-        boost::beast::http::status status;
-        std::string contentType;
-        std::variant<
-        {{#responses}}
-        {{#vendorExtensions.x-codegen-response-union}}
-            {{{vendorExtensions.x-codegen-response-union-body-type}}}{{^-last}},{{/-last}}
-        {{/vendorExtensions.x-codegen-response-union}}
-        {{/responses}}
-        > body;
-    };
-
-{{/vendorExtensions.x-codegen-response-union}}
     virtual {{#vendorExtensions.x-codegen-response-union}}{{vendorExtensions.x-codegen-response-union}}{{/vendorExtensions.x-codegen-response-union}}{{^vendorExtensions.x-codegen-response-union}}{{#vendorExtensions.x-codegen-streaming-response}}{{#vendorExtensions.x-codegen-stream-element-type}}std::vector<{{{.}}}>{{/vendorExtensions.x-codegen-stream-element-type}}{{^vendorExtensions.x-codegen-stream-element-type}}{{#returnType}}std::vector<{{{.}}}>{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-stream-element-type}}{{/vendorExtensions.x-codegen-streaming-response}}{{^vendorExtensions.x-codegen-streaming-response}}{{#returnType}}{{{.}}}{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-streaming-response}}{{/vendorExtensions.x-codegen-response-union}}
     {{#operationId}}{{{.}}}{{/operationId}}{{^operationId}}{{httpMethod}}_{{vendorExtensions.x-codegen-resource-name}}{{/operationId}}(
         {{#allParams}}const {{#vendorExtensions.x-codegen-is-optional-query-parameter}}boost::optional<{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{dataType}}}{{#vendorExtensions.x-codegen-is-optional-query-parameter}}>{{/vendorExtensions.x-codegen-is-optional-query-parameter}}& {{{paramName}}}{{^-last}}, {{/-last}}{{/allParams}});

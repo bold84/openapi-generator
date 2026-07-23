@@ -4224,20 +4224,6 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     X_CODEGEN_RESPONSE_UNION_BODY_TYPE, finalBodyType);
         }
 
-        // Also set the default response body type for template dispatch
-        // when a default response is eligible.
-        if (operation.vendorExtensions.containsKey(X_CODEGEN_HAS_DEFAULT_RESPONSE)
-                && Boolean.TRUE.equals(operation.vendorExtensions.get(
-                        X_CODEGEN_HAS_DEFAULT_RESPONSE))) {
-            for (CodegenResponse response : operation.responses) {
-                if (response.isDefault && response.dataType != null) {
-                    response.vendorExtensions.put(X_CODEGEN_RESPONSE_UNION, unionName);
-                    String rawType = response.dataType;
-                    response.vendorExtensions.put(
-                            X_CODEGEN_RESPONSE_UNION_BODY_TYPE, rawType);
-                }
-            }
-        }
     }
 
     private boolean isOneOfResponse(CodegenResponse response) {

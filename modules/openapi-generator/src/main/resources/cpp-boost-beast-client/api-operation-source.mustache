@@ -130,11 +130,21 @@
 {{/headerParams}}
 {{/hasHeaderParams}}
 
+{{#vendorExtensions.x-codegen-response-union}}
+    std::string responseContentType = "application/json";
+{{/vendorExtensions.x-codegen-response-union}}
+{{^vendorExtensions.x-codegen-response-union}}
 {{#returnType}}
     std::string responseContentType = "application/json";
 {{/returnType}}
+{{/vendorExtensions.x-codegen-response-union}}
 {{#hasProduces}}
     static const std::vector<std::string> acceptTypes{ {{#produces}}"{{{mediaType}}}",{{/produces}} };
+{{#vendorExtensions.x-codegen-response-union}}
+    responseContentType = selectPreferredContentType(acceptTypes);
+    headers["Accept"] = responseContentType;
+{{/vendorExtensions.x-codegen-response-union}}
+{{^vendorExtensions.x-codegen-response-union}}
 {{#returnType}}
     responseContentType = selectPreferredContentType(acceptTypes);
     headers["Accept"] = responseContentType;
@@ -142,6 +152,7 @@
 {{^returnType}}
     headers["Accept"] = selectPreferredContentType(acceptTypes);
 {{/returnType}}
+{{/vendorExtensions.x-codegen-response-union}}
 {{/hasProduces}}
 
     auto statusCode = boost::beast::http::status::unknown;
@@ -178,30 +189,40 @@
 {{/vendorExtensions.x-codegen-streaming-response}}
 {{^vendorExtensions.x-codegen-streaming-response}}
 {{#vendorExtensions.x-codegen-response-union}}
-    // Response-union path: use executeWithMetadata to capture actual
-    // Content-Type from response headers.
+    // Union-aware response-union path: use executeWithMetadata to capture
+    // actual Content-Type from response headers.
     std::string responseBody;
-    auto responseData = m_client->executeWithMetadata(
-        "{{httpMethod}}", path, serializedRequestBody, headers);
-    statusCode = responseData.status;
-    responseBody = std::move(responseData.body);
-    // Use actual Content-Type from response headers; fall back to
-    // the requested Accept type for legacy adapters.
-    {
-        std::string responseContentTypeLower = responseContentType;
-        for (auto& c : responseContentTypeLower) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-        for (const auto& [hdrKey, hdrVal] : responseData.headers) {
-            std::string keyLower = hdrKey;
-            for (auto& c : keyLower) {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    try {
+        auto responseData = m_client->executeWithMetadata(
+            "{{httpMethod}}", path, serializedRequestBody, headers);
+        statusCode = responseData.status;
+        responseBody = std::move(responseData.body);
+        // Use actual Content-Type from response headers; fall back to
+        // the requested Accept type for legacy adapters.
+        {
+            std::string responseContentTypeLower = responseContentType;
+            for (auto& c : responseContentTypeLower) {
+                c = static_cast<char>(std::tolower(
+                    static_cast<unsigned char>(c)));
             }
-            if (keyLower == "content-type") {
-                responseContentType = hdrVal;
-                break;
+            for (const auto& [hdrKey, hdrVal] : responseData.headers) {
+                std::string keyLower = hdrKey;
+                for (auto& c : keyLower) {
+                    c = static_cast<char>(std::tolower(
+                        static_cast<unsigned char>(c)));
+                }
+                if (keyLower == "content-type") {
+                    responseContentType = hdrVal;
+                    break;
+                }
             }
         }
+    }
+    catch(const std::exception& exception) {
+        handleStdException(exception);
+    }
+    catch(...) {
+        handleUncaughtException();
     }
 {{/vendorExtensions.x-codegen-response-union}}
 {{^vendorExtensions.x-codegen-response-union}}
@@ -220,6 +241,7 @@
         handleUncaughtException();
     }
 {{/vendorExtensions.x-codegen-response-union}}
+{{/vendorExtensions.x-codegen-streaming-response}}
 
 {{#vendorExtensions.x-codegen-response-union}}
     {{{vendorExtensions.x-codegen-response-union}}} deserializedResponse;
@@ -259,7 +281,7 @@
             {{#vendorExtensions.x-codegen-empty-body-tolerant}}true{{/vendorExtensions.x-codegen-empty-body-tolerant}}{{^vendorExtensions.x-codegen-empty-body-tolerant}}false{{/vendorExtensions.x-codegen-empty-body-tolerant}});
         {{/vendorExtensions.x-cpp-use-model-from-json-value}}
         {{/vendorExtensions.x-codegen-response-is-oneof}}
-        deserializedResponse.body = std::move(parsedBody);
+        deserializedResponse.body = {{{vendorExtensions.x-codegen-response-union-body-type}}}{std::move(parsedBody)};
 {{/dataType}}
 {{^dataType}}
         deserializedResponse.body = std::monostate{};
@@ -322,9 +344,18 @@
 {{#responses}}
 {{#isDefault}}
 {{#dataType}}
+{{#vendorExtensions.x-codegen-response-union-body-type}}
+    {{{dataType}}} parsedBody;
+    ResponseBodyDeserializer<{{{dataType}}}>::deserialize(
+        parsedBody, responseBody, responseContentType,
+        {{#vendorExtensions.x-codegen-empty-body-tolerant}}true{{/vendorExtensions.x-codegen-empty-body-tolerant}}{{^vendorExtensions.x-codegen-empty-body-tolerant}}false{{/vendorExtensions.x-codegen-empty-body-tolerant}});
+    deserializedResponse.body = {{{vendorExtensions.x-codegen-response-union-body-type}}}{std::move(parsedBody)};
+    return deserializedResponse;
+{{/vendorExtensions.x-codegen-response-union-body-type}}
+{{^vendorExtensions.x-codegen-response-union-body-type}}
 {{#vendorExtensions.x-codegen-default-response-is-return-compatible}}
 {{#vendorExtensions.x-codegen-streaming-response}}
-    return deserializedResponse;
+     return deserializedResponse;
 {{/vendorExtensions.x-codegen-streaming-response}}
 {{^vendorExtensions.x-codegen-streaming-response}}
     ResponseBodyDeserializer<{{{dataType}}}>::deserialize(
@@ -338,6 +369,7 @@
 {{^vendorExtensions.x-codegen-default-response-is-return-compatible}}
     throw {{classname}}Exception(statusCode, "{{{message}}}");
 {{/vendorExtensions.x-codegen-default-response-is-return-compatible}}
+{{/vendorExtensions.x-codegen-response-union-body-type}}
 {{/dataType}}
 {{^dataType}}
 {{#returnType}}
