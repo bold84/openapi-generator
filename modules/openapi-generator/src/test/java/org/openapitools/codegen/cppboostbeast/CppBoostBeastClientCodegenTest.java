@@ -1113,7 +1113,7 @@ public class CppBoostBeastClientCodegenTest {
         // code contains "b", does NOT contain "a", and does NOT contain "c" (strictly
         // {b}-only).  The .cpp file MUST exist — no silent skip if missing.
         Path intersectSource = output.toPath().resolve("model/AllOfEnumIntersection.cpp");
-        TestUtils.assertFileExists(intersectSource,
+        Assert.assertTrue(java.nio.file.Files.exists(intersectSource),
                 "AllOfEnumIntersection.cpp must exist to verify allowed values");
         String intersectSourceContent = java.nio.file.Files.readString(intersectSource);
         // The source may contain allowedValues or enum validation

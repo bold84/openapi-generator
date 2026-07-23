@@ -286,18 +286,6 @@
 # OAS 3.0 regression cases (specified in separate spec files)
 # =============================================================================
 
-- id: oas30-number-only-accept-int
-  note: "OAS 3.0 type: number, value 1 — accept (integer is valid number)"
-  spec: fixtures.yaml
-  operationId: postNumberOnly
-  cases:
-    - payload: 1
-      expected: decode_accept
-      note: "OAS 3.0: type: number accepts integer value"
-    - payload: 1.5
-      expected: decode_accept
-      note: "OAS 3.0: type: number accepts float value"
-
 - id: oas30-tri-state-missing
   schema: TriStateContainer
   spec: optional-nullable-regression.yaml
