@@ -4556,6 +4556,31 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
+        // For form params, validate that encoding style/explode combinations
+        // are representable in multipart/form-data. Only form-style is supported
+        // for multipart (space-delimited, pipe-delimited, and deep-object styles
+        // are not representable). Fail closed with a targeted diagnostic.
+        if (parameter.isFormParam) {
+            if (Boolean.TRUE.equals(parameter.isSpaceDelimited)) {
+                throw new UnsupportedSchemaAssertionException(
+                        "space-delimited encoding style on form parameter '"
+                        + parameter.baseName + "' is not representable in multipart/form-data. "
+                        + "Use form-style encoding instead.");
+            }
+            if (Boolean.TRUE.equals(parameter.isPipeDelimited)) {
+                throw new UnsupportedSchemaAssertionException(
+                        "pipe-delimited encoding style on form parameter '"
+                        + parameter.baseName + "' is not representable in multipart/form-data. "
+                        + "Use form-style encoding instead.");
+            }
+            if (Boolean.TRUE.equals(parameter.isDeepObject)) {
+                throw new UnsupportedSchemaAssertionException(
+                        "deep-object encoding style on form parameter '"
+                        + parameter.baseName + "' is not representable in multipart/form-data. "
+                        + "Use form-style encoding instead.");
+            }
+        }
+
         // Tag variant form params for branch-aware multipart serialization.
         // When a form parameter's type is a variant, the template uses
         // addVariantFormParameter to dispatch binary branches as file parts

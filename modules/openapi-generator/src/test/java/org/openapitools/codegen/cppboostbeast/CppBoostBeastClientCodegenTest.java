@@ -1894,10 +1894,9 @@ public class CppBoostBeastClientCodegenTest {
 
     @Test
     public void generatesMultipartEncodingMetadata() throws IOException {
-        // Multipart form-data with explicit encoding metadata (contentType)
+        // Multipart form-data with explicit encoding metadata (contentType).
         // The generated code must propagate image/png and application/pdf as
-        // Content-Type headers for the respective multipart parts.
-        // Also tests text/plain, JSON objects, arrays, and binary-without-encoding.
+        // 4th arguments to FormParameter emplace_back calls.
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-multipart-enc").toFile();
         output.deleteOnExit();
 
@@ -1909,7 +1908,6 @@ public class CppBoostBeastClientCodegenTest {
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
         files.forEach(File::deleteOnExit);
 
-        // The API source must reference the multipart form encoding metadata
         Path apiSource = output.toPath().resolve("api/DefaultApi.cpp");
         TestUtils.assertFileExists(apiSource);
         String apiContent = java.nio.file.Files.readString(apiSource);
@@ -1918,96 +1916,63 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(apiContent.contains("multipart/form-data"),
                 "Generated API must use multipart/form-data for encoding endpoint");
 
-        // 1. Explicit Encoding Object contentType overrides defaults
-        Assert.assertTrue(apiContent.contains("image/png"),
-                "Encoding Object contentType image/png must propagate to multipart part headers. "
-                + "Generator output excerpt: " + apiContent);
-        Assert.assertTrue(apiContent.contains("application/pdf"),
-                "Encoding Object contentType application/pdf must propagate to multipart part headers. "
-                + "Generator output excerpt: " + apiContent);
+        // 1. uploadWithEncoding: image/png and application/pdf as 4th emplace_back arg.
+        String uploadWithEnc = extractMethod(apiContent, "uploadWithEncoding(");
+        Assert.assertTrue(uploadWithEnc.contains("\"image\",\n        toFormParameterValue(image),\n        true,\n        \"image/png\""),
+                "uploadWithEncoding image must pass 'image/png' as 4th FormParameter arg. "
+                + "Method body: " + uploadWithEnc);
+        Assert.assertTrue(uploadWithEnc.contains("\"document\",\n        toFormParameterValue(document),\n        true,\n        \"application/pdf\""),
+                "uploadWithEncoding document must pass 'application/pdf' as 4th FormParameter arg. "
+                + "Method body: " + uploadWithEnc);
+        // description has no encoding — no 4th arg.
+        Assert.assertTrue(uploadWithEnc.contains("\"description\",\n        toFormParameterValue(description),\n        false"),
+                "uploadWithEncoding description (no encoding) must emit FormParameter with 3 args (no 4th). "
+                + "Method body: " + uploadWithEnc);
 
-        // 2. Text/plain part with explicit encoding
-        Assert.assertTrue(apiContent.contains("text/plain"),
-                "Encoding Object contentType text/plain must propagate to multipart part headers. "
-                + "Generator output excerpt: " + apiContent);
+        // 2. uploadTextWithEncoding: text/plain as 4th arg on textContent.
+        String uploadText = extractMethod(apiContent, "uploadTextWithEncoding(");
+        Assert.assertTrue(uploadText.contains("\"textContent\",\n        toFormParameterValue(textContent),\n        false,\n        \"text/plain\""),
+                "uploadTextWithEncoding textContent must pass 'text/plain' as 4th FormParameter arg. "
+                + "Method body: " + uploadText);
+        // notes is binary without encoding — OAS default octet-stream.
+        Assert.assertTrue(uploadText.contains("\"notes\",\n        toFormParameterValue(notes),\n        true,\n        \"application/octet-stream\""),
+                "uploadTextWithEncoding notes (binary, no encoding) must pass 'application/octet-stream' as OAS default. "
+                + "Method body: " + uploadText);
 
-        // 3. String part without encoding (OAS default for string is no Content-Type)
-        // The description form parameter without encoding should not emit a custom Content-Type.
-        // We verify that the FormParameter constructor is called without a 4th arg.
+        // 3. uploadBinaryDefault: rawData (binary, no encoding) gets OAS default.
+        String uploadBinary = extractMethod(apiContent, "uploadBinaryDefault(");
+        Assert.assertTrue(uploadBinary.contains("\"rawData\",\n        toFormParameterValue(rawData),\n        true,\n        \"application/octet-stream\""),
+                "uploadBinaryDefault rawData (binary, no encoding) must pass 'application/octet-stream' as OAS default. "
+                + "Method body: " + uploadBinary);
 
-        // 4. Binary part without encoding — defaults to application/octet-stream
-        // (via serializeMultipartFormData fallback, not through explicit contentType)
+        // 4. uploadMixedEncoding: avatar and report get encoding; signature gets default.
+        String uploadMixed = extractMethod(apiContent, "uploadMixedEncoding(");
+        Assert.assertTrue(uploadMixed.contains("\"avatar\",\n        toFormParameterValue(avatar),\n        true,\n        \"image/png\""),
+                "uploadMixedEncoding avatar must pass 'image/png' as 4th arg. "
+                + "Method body: " + uploadMixed);
+        Assert.assertTrue(uploadMixed.contains("\"report\",\n        toFormParameterValue(report),\n        true,\n        \"application/pdf\""),
+                "uploadMixedEncoding report must pass 'application/pdf' as 4th arg. "
+                + "Method body: " + uploadMixed);
+        // signature without encoding — File with OAS default octet-stream.
+        Assert.assertTrue(uploadMixed.contains("\"signature\",\n        toFormParameterValue(signature),\n        true,\n        \"application/octet-stream\""),
+                "uploadMixedEncoding signature (binary, no encoding) must pass 'application/octet-stream' as OAS default. "
+                + "Method body: " + uploadMixed);
 
-        // 5. Mixed encoding: some parts with explicit encoding, others with default
-        Assert.assertTrue(apiContent.contains("avatar"),
-                "Mixed encoding upload must include avatar form parameter");
-        Assert.assertTrue(apiContent.contains("report"),
-                "Mixed encoding upload must include report form parameter");
-        Assert.assertTrue(apiContent.contains("signature"),
-                "Mixed encoding upload must include signature form parameter");
-    }
+        // 5. uploadJsonObject: payload (object, no encoding) — no 4th arg, not file.
+        String uploadJson = extractMethod(apiContent, "uploadJsonObject(");
+        Assert.assertTrue(uploadJson.contains("\"payload\",\n        toFormParameterValue(payload),\n        false"),
+                "uploadJsonObject payload (object, no encoding) must emit FormParameter with 3 args. "
+                + "Method body: " + uploadJson);
 
-    @Test
-    public void generatesMultipartEncodingTextPlain() throws IOException {
-        // Verify text/plain encoding propagation at the Java generator level
-        // by checking that contentType is set on the CodegenParameter.
-        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-multipart-text").toFile();
-        output.deleteOnExit();
-
-        CodegenConfigurator configurator = new CodegenConfigurator()
-                .setGeneratorName("cpp-boost-beast-client")
-                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/multipart-encoding-regression.yaml")
-                .setOutputDir(output.getAbsolutePath());
-
-        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
-        files.forEach(File::deleteOnExit);
-
-        Path apiSource = output.toPath().resolve("api/DefaultApi.cpp");
-        TestUtils.assertFileExists(apiSource);
-        String apiContent = java.nio.file.Files.readString(apiSource);
-
-        // Verify the text/plain endpoint references the encoding content type
-        String uploadTextMethod = extractMethod(apiContent, "uploadTextWithEncoding(");
-        Assert.assertTrue(uploadTextMethod.contains("text/plain"),
-                "uploadTextWithEncoding must propagate text/plain from Encoding Object. "
-                + "Method: " + uploadTextMethod);
-    }
-
-    @Test
-    public void generatesMultipartEncodingDefaults() throws IOException {
-        // Verify that binary parts without Encoding Object use application/octet-stream
-        // and string parts without encoding use no Content-Type (default from serializer).
-        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-multipart-default").toFile();
-        output.deleteOnExit();
-
-        CodegenConfigurator configurator = new CodegenConfigurator()
-                .setGeneratorName("cpp-boost-beast-client")
-                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/multipart-encoding-regression.yaml")
-                .setOutputDir(output.getAbsolutePath());
-
-        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
-        files.forEach(File::deleteOnExit);
-
-        Path apiSource = output.toPath().resolve("api/DefaultApi.cpp");
-        TestUtils.assertFileExists(apiSource);
-        String apiContent = java.nio.file.Files.readString(apiSource);
-
-        // Binary without encoding — verify the template generates FormParameter
-        // with isFile=true and no explicit contentType, falling through to
-        // serializeMultipartFormData's default: application/octet-stream
-        String uploadBinaryMethod = extractMethod(apiContent, "uploadBinaryDefault(");
-        Assert.assertTrue(uploadBinaryMethod.contains("rawData"),
-                "uploadBinaryDefault must reference rawData form parameter");
-        Assert.assertTrue(uploadBinaryMethod.contains("true"),
-                "uploadBinaryDefault rawData must be flagged as file (isFile/binary)");
-
-        // Mixed encoding: explicit + default
-        String uploadMixedMethod = extractMethod(apiContent, "uploadMixedEncoding(");
-        Assert.assertTrue(uploadMixedMethod.contains("image/png"),
-                "uploadMixedEncoding avatar must use image/png from encoding");
-        Assert.assertTrue(uploadMixedMethod.contains("application/pdf"),
-                "uploadMixedEncoding report must use application/pdf from encoding");
-        // signature without encoding uses default (no explicit Content-Type)
+        // 6. uploadArrayPart: tags (array, no encoding) — no 4th arg, not file.
+        String uploadArray = extractMethod(apiContent, "uploadArrayPart(");
+        Assert.assertTrue(uploadArray.contains("\"tags\",\n        toFormParameterValue(tags),\n        false"),
+                "uploadArrayPart tags (array, no encoding) must emit FormParameter with 3 args. "
+                + "Method body: " + uploadArray);
+        // file (binary, no encoding) gets OAS default octet-stream.
+        Assert.assertTrue(uploadArray.contains("\"file\",\n        toFormParameterValue(file),\n        true,\n        \"application/octet-stream\""),
+                "uploadArrayPart file (binary, no encoding) must pass 'application/octet-stream' as OAS default. "
+                + "Method body: " + uploadArray);
     }
 
     @Test

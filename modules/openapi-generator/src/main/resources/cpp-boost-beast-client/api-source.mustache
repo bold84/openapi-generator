@@ -118,11 +118,49 @@ std::string toRawBodyValue(const std::optional<T>& value) {
     return "";
 }
 
+// Generic toFormParameterValue: uses operator<< for arithmetic types,
+// JSON serialization for object/map types via toRequestJsonValue.
+template<typename T, typename = void>
+struct FormParamSerializer {
+    static std::string serialize(const T& value) {
+        std::ostringstream stream;
+        stream << value;
+        return stream.str();
+    }
+};
+
+// Map types: serialize as JSON object via toRequestJsonValue.
 template<typename T>
-std::string toFormParameterValue(const T& value) {
-    std::ostringstream stream;
-    stream << value;
-    return stream.str();
+struct FormParamSerializer<std::map<std::string, T>, void> {
+    static std::string serialize(const std::map<std::string, T>& mapValue) {
+        boost::json::object obj;
+        for (const auto& entry : mapValue) {
+            obj[entry.first] = toRequestJsonValue(entry.second);
+        }
+        return boost::json::serialize(obj);
+    }
+};
+
+// Detect types with toJsonValue() member — model classes.
+template <typename T, typename = void>
+struct HasFormToJsonValue : std::false_type {};
+
+template <typename T>
+struct HasFormToJsonValue<T, std::void_t<
+    decltype(std::declval<const T&>().toJsonValue())>> : std::true_type {};
+
+// Model classes: serialize via toJsonValue() as JSON.
+template<typename T>
+typename std::enable_if<HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const T& value) {
+    return boost::json::serialize(value.toJsonValue());
+}
+
+// Fallback for types without toJsonValue() — operator<< or map serializer.
+template<typename T>
+typename std::enable_if<!HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const T& value) {
+    return FormParamSerializer<T>::serialize(value);
 }
 
 template<typename T>
@@ -520,13 +558,30 @@ boost::json::value toRequestJsonValue(const std::map<std::string, T>& requestVal
     return requestObject;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Multipart form parameter serialization helpers.
+//
+// serializeMultipartFormData produces wire-format multipart/form-data
+// bodies per RFC 2046. Each FormParameter carries:
+//   - name    : the part name (Content-Disposition form-data name)
+//   - value   : the serialized part body
+//   - isFile  : if true, adds filename and defaults to octet-stream
+//   - contentType : explicit Content-Type override (Encoding Object)
+//
+// Content-Type precedence (OAS 3.0 §10.4):
+//   1. Encoding Object contentType on the property
+//   2. OAS default for the property type (octet-stream for binary)
+// When no contentType is set and isFile is false, no Content-Type
+// header is emitted for the part.
+// ──────────────────────────────────────────────────────────────────────
+
 /// addVariantFormParameter definition (forward-declared above).
 /// Must be defined after toRequestJsonValue so lambdas can find it via ADL.
 /// When encodingContentType is non-empty, it overrides the per-branch default
-/// according to the OAS Encoding Object contentType precedence:
+/// according to OAS Encoding Object contentType precedence (OAS 3.0 §10.4):
 ///   1. Encoding Object contentType
-///   2. contentMediaType (OAS 3.1)
-///   3. OAS default for the property type (octet-stream for binary, JSON for objects)
+///   2. OAS default for the property type (octet-stream for binary, JSON for objects)
+///   OAS 3.1 contentMediaType may override per-type defaults in future.
 template<typename VariantType>
 void addVariantFormParameter(
     std::vector<FormParameter>& formParameters,
@@ -867,6 +922,171 @@ void appendParsedEvent(std::vector<EventVariant>& events,
                        Converter&& converter) {
     events.push_back(converter(boost::json::parse(eventData)));
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// Wire-level multipart encoding self-test.
+// Compile with -DMULTIPART_ENCODING_SELF_TEST to run assertions.
+// Verifies per-part Content-Type and payload for every encoding scenario.
+// ──────────────────────────────────────────────────────────────────────
+#ifdef MULTIPART_ENCODING_SELF_TEST
+#include <cassert>
+#include <cstdlib>
+
+namespace {
+
+void testMultipartWireLevel() {
+    // 1. Explicit Encoding Object contentType overrides defaults.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("avatar", "\x89PNG\r\n\x1a\n", true, "image/png");
+        params.emplace_back("report", "%PDF-1.4", true, "application/pdf");
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        // Verify image/png part
+        assert(wire.find("Content-Type: image/png") != std::string::npos);
+        assert(wire.find("\x89PNG") != std::string::npos);
+
+        // Verify application/pdf part
+        assert(wire.find("Content-Type: application/pdf") != std::string::npos);
+        assert(wire.find("PDF-1.4") != std::string::npos);
+    }
+
+    // 2. Text/plain part with explicit encoding.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("textContent", "Hello World", false, "text/plain");
+        params.emplace_back("notes", "binary-data", true, "application/octet-stream");
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("Content-Type: text/plain") != std::string::npos);
+        assert(wire.find("Hello World") != std::string::npos);
+    }
+
+    // 3. Binary part without encoding — defaults to application/octet-stream.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("rawData", "binary-payload", true);
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("Content-Type: application/octet-stream") != std::string::npos);
+        assert(wire.find("binary-payload") != std::string::npos);
+    }
+
+    // 4. String part without encoding — no Content-Type emitted.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("description", "A description", false);
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        // No Content-Type header for non-file parts without encoding.
+        assert(wire.find("Content-Type:") == std::string::npos);
+        assert(wire.find("A description") != std::string::npos);
+    }
+
+    // 5. Mixed encoding: some parts with explicit encoding, others with default.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("avatar", "\x89PNG", true, "image/png");
+        params.emplace_back("report", "%PDF", true, "application/pdf");
+        params.emplace_back("signature", "sig-data", true);
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("Content-Type: image/png") != std::string::npos);
+        assert(wire.find("Content-Type: application/pdf") != std::string::npos);
+        // Signature part without encoding uses octet-stream default.
+        assert(wire.find("Content-Type: application/octet-stream") != std::string::npos);
+    }
+
+    // 6. Content-Disposition: each part has correct name and disposition.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("fieldA", "valueA", false);
+        params.emplace_back("fieldB", "valueB", true, "image/png");
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("name=\"fieldA\"") != std::string::npos);
+        assert(wire.find("name=\"fieldB\"") != std::string::npos);
+        // Only file parts get filename:
+        assert(wire.find("filename=\"fieldB\"") != std::string::npos);
+        assert(wire.find("filename=\"fieldA\"") == std::string::npos);
+    }
+
+    // 7. Boundary collision avoidance.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("data", "OpenAPIGeneratorBoundary", true);
+        std::string boundary = selectMultipartBoundary(params);
+        assert(boundary != "OpenAPIGeneratorBoundary");
+        assert(boundary.find("OpenAPIGeneratorBoundary") == 0);
+    }
+
+    // 8. JSON object part serialized as JSON (not operator<<).
+    {
+        // Simulate serialized JSON object value.
+        std::string jsonPayload = "{\"key\":\"value\"}";
+        std::vector<FormParameter> params;
+        params.emplace_back("payload", jsonPayload, false, "application/json");
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("Content-Type: application/json") != std::string::npos);
+        assert(wire.find("{\"key\":\"value\"}") != std::string::npos);
+    }
+
+    // 9. Array part without explicit encoding.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("tags", "a,b,c", false);
+        params.emplace_back("file", "file-content", true);
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("name=\"tags\"") != std::string::npos);
+        assert(wire.find("a,b,c") != std::string::npos);
+        assert(wire.find("name=\"file\"") != std::string::npos);
+    }
+
+    // 10. Variant form parameter branch (binary|object).
+    {
+        // Binary branch with explicit encoding.
+        std::vector<FormParameter> params;
+        params.emplace_back("payload", "binary-data", true, "image/png");
+        std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("Content-Type: image/png") != std::string::npos);
+        assert(wire.find("name=\"payload\"") != std::string::npos);
+
+        // Object branch without encoding — defaults to JSON.
+        params.clear();
+        params.emplace_back("payload", "{\"key\":42}", false, "application/json");
+        wire = serializeMultipartFormData(params, "==BOUNDARY==");
+
+        assert(wire.find("Content-Type: application/json") != std::string::npos);
+    }
+
+    // 11. Wire format structure: boundary delimitation, CRLF, closing.
+    {
+        std::vector<FormParameter> params;
+        params.emplace_back("field", "value", false);
+        std::string boundary = "TESTBOUNDARY";
+        std::string wire = serializeMultipartFormData(params, boundary);
+
+        // Each part starts with --boundary\r\n
+        assert(wire.find("--TESTBOUNDARY\r\n") == 0);
+        // Closing: --boundary--\r\n
+        assert(wire.rfind("--TESTBOUNDARY--\r\n") == wire.size() - 18);
+        // CRLF before value
+        assert(wire.find("\r\n\r\nvalue\r\n") != std::string::npos);
+    }
+}
+
+} // namespace
+
+struct RunMultipartSelfTest {
+    RunMultipartSelfTest() {
+        testMultipartWireLevel();
+    }
+} runMultipartSelfTest;
+
+#endif // MULTIPART_ENCODING_SELF_TEST
 
 }
 

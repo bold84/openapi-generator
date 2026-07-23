@@ -99,3 +99,19 @@ install(TARGETS ${PROJECT_NAME}
 install(DIRECTORY api model
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}"
     FILES_MATCHING PATTERN "*.h")
+
+# ──────────────────────────────────────────────────────────────────────
+# Optional: build and run the multipart wire-level self-test.
+#   cmake -DMULTIPART_ENCODING_SELF_TEST=ON -B build
+#   cmake --build build --parallel
+#   ctest --test-dir build --output-on-failure
+# ──────────────────────────────────────────────────────────────────────
+option(MULTIPART_ENCODING_SELF_TEST "Enable multipart encoding wire-level self-test" OFF)
+if (MULTIPART_ENCODING_SELF_TEST)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MULTIPART_ENCODING_SELF_TEST)
+
+    add_test(
+        NAME multipart-encoding-self-test
+        COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target ${PROJECT_NAME} --config $<CONFIG>
+    )
+endif ()

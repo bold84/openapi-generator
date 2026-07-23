@@ -41,7 +41,9 @@
         "{{{baseName}}}",
         toFormParameterValue({{{paramName}}}),
         {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}}{{#contentType}},
-        "{{{contentType}}}"{{/contentType}});
+        "{{{contentType}}}"{{/contentType}}{{^contentType}}{{#isFile}},
+        "application/octet-stream"{{/isFile}}{{#isBinary}},
+        "application/octet-stream"{{/isBinary}}{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
@@ -430,7 +432,9 @@
         "{{{baseName}}}",
         toFormParameterValue({{{paramName}}}),
         {{#isFile}}true{{/isFile}}{{^isFile}}{{#isBinary}}true{{/isBinary}}{{^isBinary}}false{{/isBinary}}{{/isFile}}{{#contentType}},
-        "{{{contentType}}}"{{/contentType}});
+        "{{{contentType}}}"{{/contentType}}{{^contentType}}{{#isFile}},
+        "application/octet-stream"{{/isFile}}{{#isBinary}},
+        "application/octet-stream"{{/isBinary}}{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
