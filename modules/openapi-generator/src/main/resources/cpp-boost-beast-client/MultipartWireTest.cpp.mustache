@@ -92,7 +92,10 @@ static void testExplicitEncoding() {
     assert(wire.find("\x89PNG") != std::string::npos);
     assert(wire.find("Content-Type: application/pdf") != std::string::npos);
     assert(wire.find("PDF-1.4") != std::string::npos);
-    // Non-file string part without encoding: no Content-Type header.
+    // String part without contentType: no Content-Type at wire level
+    // (the template injects "text/plain" as the OAS default before
+    // calling emplace_back; serializeMultipartFormData only emits
+    // Content-Type when the struct field is non-empty).
     params.clear();
     params.emplace_back("description", "A description", false);
     wire = serializeMultipartFormData(params, "==BOUNDARY==");
@@ -112,23 +115,34 @@ static void testTextPlainDefault() {
     assert(wire.find("Hello") != std::string::npos);
 }
 
+static void testTextPlainArrayDefault() {
+    // 3. Primitive array part without encoding defaults to text/plain.
+    // OAS 3.0 §10.4: arrays of primitives use text/plain with form-style
+    // comma-delimited serialization.
+    std::vector<FormParameter> params;
+    params.emplace_back("tags", "a,b,c", false, "text/plain");
+    std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
+    assert(wire.find("Content-Type: text/plain") != std::string::npos);
+    assert(wire.find("a,b,c") != std::string::npos);
+}
+
 static void testJsonDefault() {
-    // 3. Object/array part without encoding defaults to application/json.
+    // 4. Object/array part without encoding defaults to application/json.
     std::vector<FormParameter> params;
     params.emplace_back("payload", "{\"key\":\"value\"}", false, "application/json");
     std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
     assert(wire.find("Content-Type: application/json") != std::string::npos);
     assert(wire.find("{\"key\":\"value\"}") != std::string::npos);
-    // Array with complex elements (JSON array serialized via toFormParameterValue).
+    // Array with model-type elements: JSON array serialization.
     params.clear();
-    params.emplace_back("tags", "[1,2,3]", false, "application/json");
+    params.emplace_back("items", "[{\"id\":1},{\"id\":2}]", false, "application/json");
     wire = serializeMultipartFormData(params, "==BOUNDARY==");
     assert(wire.find("Content-Type: application/json") != std::string::npos);
-    assert(wire.find("[1,2,3]") != std::string::npos);
+    assert(wire.find("[{\"id\":1},{\"id\":2}]") != std::string::npos);
 }
 
 static void testBinaryDefault() {
-    // 4. Binary part without encoding: OAS default application/octet-stream.
+    // 5. Binary part without encoding: OAS default application/octet-stream.
     std::vector<FormParameter> params;
     params.emplace_back("rawData", "binary-payload", true, "application/octet-stream");
     std::string wire = serializeMultipartFormData(params, "==BOUNDARY==");
@@ -137,7 +151,7 @@ static void testBinaryDefault() {
 }
 
 static void testMixedEncoding() {
-    // 5. Mixed: avatar (explicit), report (explicit), signature (default octet-stream).
+    // 6. Mixed: avatar (explicit), report (explicit), signature (default octet-stream).
     std::vector<FormParameter> params;
     params.emplace_back("avatar", "\x89PNG", true, "image/png");
     params.emplace_back("report", "%PDF", true, "application/pdf");
@@ -149,6 +163,7 @@ static void testMixedEncoding() {
 }
 
 static void testContentDisposition() {
+    // 7. Content-Disposition header structure for file and non-file parts.
     std::vector<FormParameter> params;
     params.emplace_back("fieldA", "valueA", false);
     params.emplace_back("fieldB", "valueB", true, "image/png");
@@ -161,6 +176,7 @@ static void testContentDisposition() {
 }
 
 static void testBoundaryCollision() {
+    // 8. Boundary collision avoidance: auto-append 'X' until unique.
     std::vector<FormParameter> params;
     params.emplace_back("data", "OpenAPIGeneratorBoundary", true);
     std::string boundary = selectMultipartBoundary(params);
@@ -169,6 +185,7 @@ static void testBoundaryCollision() {
 }
 
 static void testWireFormatStructure() {
+    // 9. Wire format structure: boundary delimitation, CRLF, closing.
     std::vector<FormParameter> params;
     params.emplace_back("field", "value", false);
     const std::string boundary = "TESTBOUNDARY";
@@ -184,6 +201,7 @@ static void testWireFormatStructure() {
 int main() {
     testExplicitEncoding();
     testTextPlainDefault();
+    testTextPlainArrayDefault();
     testJsonDefault();
     testBinaryDefault();
     testMixedEncoding();

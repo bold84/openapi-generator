@@ -24,6 +24,7 @@ import io.swagger.v3.oas.models.media.ObjectSchema;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.media.StringSchema;
 import org.openapitools.codegen.CodegenModel;
+import org.openapitools.codegen.CodegenParameter;
 import org.openapitools.codegen.DefaultGenerator;
 import org.openapitools.codegen.TestUtils;
 import org.openapitools.codegen.config.CodegenConfigurator;
@@ -1924,9 +1925,9 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(uploadWithEnc.contains("\"document\",\n        toFormParameterValue(document),\n        true,\n        \"application/pdf\""),
                 "uploadWithEncoding document must pass 'application/pdf' as 4th FormParameter arg. "
                 + "Method body: " + uploadWithEnc);
-        // description has no encoding — no 4th arg.
-        Assert.assertTrue(uploadWithEnc.contains("\"description\",\n        toFormParameterValue(description),\n        false"),
-                "uploadWithEncoding description (no encoding) must emit FormParameter with 3 args (no 4th). "
+        // description (string, no encoding) — OAS default text/plain.
+        Assert.assertTrue(uploadWithEnc.contains("\"description\",\n        toFormParameterValue(description),\n        false,\n        \"text/plain\""),
+                "uploadWithEncoding description (string, no encoding) must pass 'text/plain' as 4th FormParameter arg. "
                 + "Method body: " + uploadWithEnc);
 
         // 2. uploadTextWithEncoding: text/plain as 4th arg on textContent.
@@ -1958,21 +1959,87 @@ public class CppBoostBeastClientCodegenTest {
                 "uploadMixedEncoding signature (binary, no encoding) must pass 'application/octet-stream' as OAS default. "
                 + "Method body: " + uploadMixed);
 
-        // 5. uploadJsonObject: payload (object, no encoding) — no 4th arg, not file.
+        // 5. uploadJsonObject: payload (object, no encoding) — OAS default application/json.
         String uploadJson = extractMethod(apiContent, "uploadJsonObject(");
-        Assert.assertTrue(uploadJson.contains("\"payload\",\n        toFormParameterValue(payload),\n        false"),
-                "uploadJsonObject payload (object, no encoding) must emit FormParameter with 3 args. "
+        Assert.assertTrue(uploadJson.contains("\"payload\",\n        toFormParameterValue(payload),\n        false,\n        \"application/json\""),
+                "uploadJsonObject payload (object, no encoding) must pass 'application/json' as 4th FormParameter arg. "
                 + "Method body: " + uploadJson);
 
-        // 6. uploadArrayPart: tags (array, no encoding) — no 4th arg, not file.
+        // 6. uploadArrayPart: tags (primitive array, no encoding) — OAS default text/plain.
         String uploadArray = extractMethod(apiContent, "uploadArrayPart(");
-        Assert.assertTrue(uploadArray.contains("\"tags\",\n        toFormParameterValue(tags),\n        false"),
-                "uploadArrayPart tags (array, no encoding) must emit FormParameter with 3 args. "
+        Assert.assertTrue(uploadArray.contains("\"tags\",\n        toFormParameterValue(tags),\n        false,\n        \"text/plain\""),
+                "uploadArrayPart tags (primitive array, no encoding) must pass 'text/plain' as 4th FormParameter arg. "
                 + "Method body: " + uploadArray);
         // file (binary, no encoding) gets OAS default octet-stream.
         Assert.assertTrue(uploadArray.contains("\"file\",\n        toFormParameterValue(file),\n        true,\n        \"application/octet-stream\""),
                 "uploadArrayPart file (binary, no encoding) must pass 'application/octet-stream' as OAS default. "
                 + "Method body: " + uploadArray);
+    }
+
+    /**
+     * Encoding Object headers are not propagated to multipart parts.
+     * The generated code uses only the contentType field from the
+     * Encoding Object. A warning is emitted at codegen time when
+     * headers are present.
+     *
+     * <p>See OAS 3.0 §10.4: Encoding Object headers are well-defined
+     * but the current implementation does not emit per-part headers.
+     * This is acceptable because the Boost.Beast multipart writer
+     * constructs parts programmatically and does not expose a
+     * per-part header injection API.</p>
+     */
+    @Test
+    public void spaceDelimitedStyleOnFormParamFailsClosed() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+        CodegenParameter param = new CodegenParameter();
+        param.baseName = "tags";
+        param.dataType = "std::string";
+        param.isFormParam = true;
+        param.isSpaceDelimited = true;
+        Assert.assertThrows(CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class,
+                () -> codegen.postProcessParameter(param));
+    }
+
+    @Test
+    public void pipeDelimitedStyleOnFormParamFailsClosed() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+        CodegenParameter param = new CodegenParameter();
+        param.baseName = "tags";
+        param.dataType = "std::string";
+        param.isFormParam = true;
+        param.isPipeDelimited = true;
+        Assert.assertThrows(CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class,
+                () -> codegen.postProcessParameter(param));
+    }
+
+    @Test
+    public void deepObjectStyleOnFormParamFailsClosed() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+        CodegenParameter param = new CodegenParameter();
+        param.baseName = "address";
+        param.dataType = "std::string";
+        param.isFormParam = true;
+        param.isDeepObject = true;
+        Assert.assertThrows(CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class,
+                () -> codegen.postProcessParameter(param));
+    }
+
+    @Test
+    public void normalFormStyleDoesNotFail() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+        CodegenParameter param = new CodegenParameter();
+        param.baseName = "tags";
+        param.dataType = "std::string";
+        param.isFormParam = true;
+        param.isSpaceDelimited = false;
+        param.isPipeDelimited = false;
+        param.isDeepObject = false;
+        // Verifies no exception is thrown for normal form params.
+        codegen.postProcessParameter(param);
     }
 
     @Test

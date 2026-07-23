@@ -45,8 +45,10 @@
         "application/octet-stream"{{/isFile}}{{^isFile}}{{#isBinary}},
         "application/octet-stream"{{/isBinary}}{{/isFile}}{{^isFile}}{{#isString}},
         "text/plain"{{/isString}}{{/isFile}}{{^isFile}}{{#isMap}},
-        "application/json"{{/isMap}}{{/isFile}}{{^isFile}}{{#isArray}},
-        "application/json"{{/isArray}}{{/isFile}}{{/contentType}});
+        "application/json"{{/isMap}}{{/isFile}}{{^isFile}}{{#isModel}},
+        "application/json"{{/isModel}}{{/isFile}}{{^isFile}}{{#isArray}}{{#items.isModel}},
+        "application/json"{{/items.isModel}}{{^items.isModel}},
+        "text/plain"{{/items.isModel}}{{/isArray}}{{/isFile}}{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
@@ -439,8 +441,10 @@
         "application/octet-stream"{{/isFile}}{{^isFile}}{{#isBinary}},
         "application/octet-stream"{{/isBinary}}{{/isFile}}{{^isFile}}{{#isString}},
         "text/plain"{{/isString}}{{/isFile}}{{^isFile}}{{#isMap}},
-        "application/json"{{/isMap}}{{/isFile}}{{^isFile}}{{#isArray}},
-        "application/json"{{/isArray}}{{/isFile}}{{/contentType}});
+        "application/json"{{/isMap}}{{/isFile}}{{^isFile}}{{#isModel}},
+        "application/json"{{/isModel}}{{/isFile}}{{^isFile}}{{#isArray}}{{#items.isModel}},
+        "application/json"{{/items.isModel}}{{^items.isModel}},
+        "text/plain"{{/items.isModel}}{{/isArray}}{{/isFile}}{{/contentType}});
 {{/vendorExtensions.x-codegen-is-variant-form-param}}
 {{/isFormParam}}
 {{/allParams}}
