@@ -96,12 +96,21 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      * Describes a single branch within a composed schema.
      * Captures branch index, resolved schema reference, C++ storage type,
      * validator identity, null capability, and assertion metadata.
+     *
+     * <p>{@code storageCppType} is reserved for Phase 2: it will be populated
+     * after storage selection (e.g., via lowerComposedTypes), which computes
+     * the final C++ type for each branch. During Phase 1 it remains null.
+     *
+     * <p>{@code validatorId} is reserved for Phase 3: it will identify which
+     * runtime validator handles this branch. During Phase 1 it remains null.
      */
     public static final class CompositionBranchDescriptor {
         private final int branchIndex;
         private final String sourceSchemaRef;
         private final String resolvedSchemaName;
+        /** Phase 2 ownership: set after storage selection. Null in Phase 1. */
         private final String storageCppType;
+        /** Phase 3 ownership: set after validator dispatch. Null in Phase 1. */
         private final String validatorId;
         private final NullCapability nullCapability;
         private final List<String> supportedAssertions;
@@ -393,6 +402,27 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         targetForAssertions.getDiscriminator();
                 if (targetDisc != null) {
                     // Discriminator on branches is annotation-only for now
+                }
+                if (targetForAssertions.getIf() != null
+                        || targetForAssertions.getThen() != null
+                        || targetForAssertions.getElse() != null) {
+                    unsupported.add("conditional");
+                }
+                if (targetForAssertions.getDependentRequired() != null) {
+                    unsupported.add("dependencies");
+                }
+                if (targetForAssertions.getContains() != null) {
+                    unsupported.add("contains");
+                }
+                if (targetForAssertions.getUnevaluatedProperties() != null) {
+                    unsupported.add("unevaluated");
+                }
+                if (targetForAssertions.getContentMediaType() != null
+                        || targetForAssertions.getContentEncoding() != null) {
+                    unsupported.add("content-encoding");
+                }
+                if (targetForAssertions.getPropertyNames() != null) {
+                    unsupported.add("property-names");
                 }
             }
 
@@ -954,9 +984,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                 }
                             }
                             boolean isStringLike = "std::string".equals(resolved.get(i));
-                            branchesWithMeta.add(new ComposedBranch(resolved.get(i), isEnum, isStringLike));
+                            branchesWithMeta.add(new ComposedBranch(resolved.get(i), isEnum, isStringLike, i));
                         }
-                        newType = lowerComposedTypes(branchesWithMeta, composedKeyword, null);
+                        CompositionDescriptor phase1bDesc =
+                                compositionDescriptors.get(cm.classname);
+                        newType = lowerComposedTypes(branchesWithMeta, composedKeyword,
+                                phase1bDesc);
                     } catch (RuntimeException e) {
                         LOGGER.warn("Failed to re-lower composed types for '{}': {} — keeping current type '{}'",
                                 cm.classname, e.getMessage(), currentType);
@@ -1183,6 +1216,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      */
     private void processComposedModel(CodegenModel cm) {
         if (cm.getComposedSchemas() == null) {
+            // Descriptor-complete path: when composedSchemas were consumed by
+            // fromModel before we could access them, use the CompositionDescriptor
+            // built in preprocessOpenAPI to reconstruct branch metadata and
+            // perform lowering.
+            CompositionDescriptor desc = compositionDescriptors.get(cm.classname);
+            if (desc == null || "allOf".equals(desc.getKeyword())) {
+                return; // allOf models handled separately in postProcessModels
+            }
+            processComposedModelFromDescriptor(cm, desc);
             return;
         }
 
@@ -1218,8 +1260,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // NOTE: Deduplication is deferred to lowerComposedTypes (step 5) so that
         // oneOf semantics can be preserved when duplicate types would otherwise
         // cause silent single-branch collapse.
+        //
+        // Track originalBranchIndex (bi) for descriptor alignment after
+        // self-referencing branches are filtered out.
         List<ComposedBranch> composedBranches = new ArrayList<>();
-        for (CodegenProperty b : branches) {
+        for (int bi = 0; bi < branches.size(); bi++) {
+            CodegenProperty b = branches.get(bi);
             String cppType;
             if (b.isBinary || b.isFile) {
                 cppType = "std::vector<std::uint8_t>";
@@ -1231,7 +1277,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
             boolean isStringLike = b.isString || "std::string".equals(cppType)
                     || "string".equals(b.dataType);
-            composedBranches.add(new ComposedBranch(cppType, b.isEnum, isStringLike));
+            composedBranches.add(new ComposedBranch(cppType, b.isEnum, isStringLike, bi));
         }
         List<String> branchTypes = composedBranches.stream()
                 .map(cb -> cb.cppType)
@@ -1317,16 +1363,98 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         cm.dataType = resolvedType;
     }
 
+    /**
+     * Descriptor-complete path: process a composed model whose composedSchemas
+     * were consumed by fromModel, using only the descriptor metadata.
+     * Reconstructs ComposedBranch entries from descriptor branch schema names,
+     * resolves C++ types, then runs the same lowering/emission pipeline as
+     * the normal composedSchemas path.
+     */
+    private void processComposedModelFromDescriptor(CodegenModel cm,
+                                                     CompositionDescriptor desc) {
+        List<ComposedBranch> composedBranches = new ArrayList<>();
+        List<CompositionBranchDescriptor> descBranches = desc.getBranches();
+
+        for (int bi = 0; bi < descBranches.size(); bi++) {
+            CompositionBranchDescriptor db = descBranches.get(bi);
+            String resolvedSchemaName = db.getResolvedSchemaName();
+            String cppType = resolveOpenApiTypeName(resolvedSchemaName);
+
+            // Skip self-referencing branches
+            if (cppType != null && cppType.equals(cm.classname)) {
+                continue;
+            }
+            if (cppType == null) {
+                cppType = resolvedSchemaName;
+            }
+            // Skip self-referencing after fallback
+            if (cppType.equals(cm.classname)) {
+                continue;
+            }
+
+            // Determine isEnum from descriptor assertion metadata
+            boolean isEnum = db.getSupportedAssertions().contains("enum");
+            boolean isStringLike = "std::string".equals(cppType);
+            composedBranches.add(new ComposedBranch(cppType, isEnum, isStringLike, bi));
+        }
+
+        List<String> branchTypes = composedBranches.stream()
+                .map(cb -> cb.cppType)
+                .collect(Collectors.toList());
+
+        String resolvedType;
+        try {
+            resolvedType = lowerComposedTypes(composedBranches, desc.getKeyword(), desc);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Failed to lower composed types for '{}' (descriptor path): {} — falling back to boost::json::value",
+                    cm.classname, e.getMessage());
+            resolvedType = "boost::json::value";
+        }
+
+        // Cache the resolved type
+        resolvedAliasTypes.put(cm.classname, resolvedType);
+        variantModels.add(cm.classname);
+
+        // Emit vendor extensions
+        cm.vendorExtensions.put("x-cpp-type", resolvedType);
+        cm.vendorExtensions.put("x-cpp-branches", branchTypes);
+        cm.vendorExtensions.put("x-cpp-composed-keyword", desc.getKeyword());
+        composedKeywordsByModel.put(cm.classname, desc.getKeyword());
+        cm.vendorExtensions.put("x-cpp-composition-branches", desc.toTemplateMap());
+
+        // Store per-branch isEnum for Phase 1b re-lowering
+        List<Boolean> branchIsEnumFlags = composedBranches.stream()
+                .map(cb -> cb.isEnum)
+                .collect(Collectors.toList());
+        cm.vendorExtensions.put("x-cpp-branch-is-enum", branchIsEnumFlags);
+
+        if (desc.hasDiscriminator()) {
+            cm.vendorExtensions.put("x-has-discriminator", true);
+            cm.vendorExtensions.put("x-discriminator-property",
+                    desc.getDiscriminator().getPropertyName());
+            cm.vendorExtensions.put("x-discriminator-mapping",
+                    desc.getDiscriminator().getMapping());
+            cm.vendorExtensions.put("x-discriminator-resolved-type", resolvedType);
+        }
+
+        cm.dataType = resolvedType;
+    }
+
     /** Branch metadata used by ordered composition lowering. */
     private static final class ComposedBranch {
         final String cppType;
         final boolean isEnum;
         final boolean isStringLike;
+        /** Index into the CompositionDescriptor branch list.
+         *  -1 means no descriptor alignment (fallback path). */
+        final int originalBranchIndex;
 
-        ComposedBranch(String cppType, boolean isEnum, boolean isStringLike) {
+        ComposedBranch(String cppType, boolean isEnum, boolean isStringLike,
+                       int originalBranchIndex) {
             this.cppType = cppType;
             this.isEnum = isEnum;
             this.isStringLike = isStringLike;
+            this.originalBranchIndex = originalBranchIndex;
         }
     }
 
@@ -1462,22 +1590,26 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
         // Rule 1: anyOf/oneOf: [T, null] → std::optional<T>
         // Use descriptor nullCapability when available for semantic accuracy.
+        // Uses originalBranchIndex to align with descriptor after self-ref filtering.
         if (descriptor != null) {
             int alwaysNullCount = 0;
-            int nonNullIndex = -1;
+            int nonNullComposedIndex = -1;
             List<CompositionBranchDescriptor> descBranches = descriptor.getBranches();
-            for (int i = 0; i < descBranches.size(); i++) {
+            for (int ci = 0; ci < branches.size(); ci++) {
+                int descIdx = branches.get(ci).originalBranchIndex;
+                if (descIdx < 0 || descIdx >= descBranches.size()) continue;
                 CompositionBranchDescriptor.NullCapability nc =
-                        descBranches.get(i).getNullCapability();
+                        descBranches.get(descIdx).getNullCapability();
                 if (nc == CompositionBranchDescriptor.NullCapability.ALWAYS) {
                     alwaysNullCount++;
-                } else {
-                    nonNullIndex = i;
+                } else if (nonNullComposedIndex < 0) {
+                    nonNullComposedIndex = ci;
                 }
             }
-            if (alwaysNullCount == 1 && descBranches.size() == 2 && nonNullIndex >= 0
-                    && nonNullIndex < branchTypes.size()) {
-                String nonNullBranch = branchTypes.get(nonNullIndex);
+            if (alwaysNullCount == 1 && branches.size() == 2
+                    && nonNullComposedIndex >= 0
+                    && nonNullComposedIndex < branchTypes.size()) {
+                String nonNullBranch = branchTypes.get(nonNullComposedIndex);
                 if (nonNullBranch != null) {
                     return "std::optional<" + nonNullBranch + ">";
                 }
@@ -1502,15 +1634,17 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
 
         // Rule 3: Remove null branches for further processing.
-        // Use descriptor nullCapability when available.
+        // Uses originalBranchIndex to align with descriptor after self-ref filtering.
         List<ComposedBranch> nonNullMeta;
         if (descriptor != null) {
             List<CompositionBranchDescriptor> descBranches = descriptor.getBranches();
             nonNullMeta = new ArrayList<>();
-            for (int i = 0; i < branches.size() && i < descBranches.size(); i++) {
-                if (descBranches.get(i).getNullCapability()
-                        != CompositionBranchDescriptor.NullCapability.ALWAYS) {
-                    nonNullMeta.add(branches.get(i));
+            for (ComposedBranch cb : branches) {
+                int descIdx = cb.originalBranchIndex;
+                if (descIdx >= 0 && descIdx < descBranches.size()
+                        && descBranches.get(descIdx).getNullCapability()
+                                != CompositionBranchDescriptor.NullCapability.ALWAYS) {
+                    nonNullMeta.add(cb);
                 }
             }
         } else {
@@ -1603,7 +1737,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         List<ComposedBranch> branches = new ArrayList<>();
         for (String t : branchTypes) {
             boolean isString = "std::string".equals(t);
-            branches.add(new ComposedBranch(t, false, isString));
+            branches.add(new ComposedBranch(t, false, isString, -1));
         }
         return lowerComposedTypes(branches, composedKeyword, null);
     }
@@ -2533,7 +2667,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             boolean isEnum = resolvedChild.getEnum() != null && !resolvedChild.getEnum().isEmpty();
             boolean isStringLike = ModelUtils.isStringSchema(resolvedChild)
                     || "std::string".equals(childType);
-            composedBranches.add(new ComposedBranch(childType, isEnum, isStringLike));
+            composedBranches.add(new ComposedBranch(childType, isEnum, isStringLike, -1));
         }
 
         // Deduplication is deferred to lowerComposedTypes (step 5) so that
