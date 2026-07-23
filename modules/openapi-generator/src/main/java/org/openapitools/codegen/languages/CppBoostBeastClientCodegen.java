@@ -310,6 +310,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     private static final String X_CODEGEN_RESPONSE_IS_ONE_OF = "x-codegen-response-is-oneof";
     private static final String X_CODEGEN_STREAM_IS_ONE_OF = "x-codegen-stream-is-oneof";
     private static final String X_CODEGEN_DUAL_STREAM_IS_ONE_OF = "x-codegen-dual-stream-is-oneof";
+    private static final String X_CODEGEN_RESPONSE_UNION = "x-codegen-response-union";
+    private static final String X_CODEGEN_RESPONSE_UNION_BODY_TYPE = "x-codegen-response-union-body-type";
+    private static final String X_CODEGEN_RESPONSE_UNION_STATUS_INDEX = "x-codegen-response-union-status-index";
     private final Logger LOGGER = LoggerFactory.getLogger(CppBoostBeastClientCodegen.class);
     /** Tracks model names resolved as oneOf/anyOf variant types for shared_ptr exclusion. */
     private final Set<String> variantModels = new HashSet<>();
@@ -3878,6 +3881,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
         for (CodegenOperation op : operationList) {
             addApiResponseMetadata(op);
+            addResponseUnionMetadata(op);
             String path = op.path;
 
             String[] items = path.split("/", -1);
@@ -4102,6 +4106,85 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Detects operations with heterogeneous successful response shapes and tags
+     * them for response-union generation. A heterogeneous operation has multiple
+     * 2xx responses with different body types, or a mix of body/no-body responses.
+     *
+     * Sets on the operation:
+     *   x-codegen-response-union: the generated union struct name
+     * Sets on each 2xx non-default response:
+     *   x-codegen-response-union-body-type: the variant alternative body type
+     *     (e.g., "std::shared_ptr<FullResource>" or "std::monostate")
+     *
+     * Single-shape operations (one success type) are left unchanged so the
+     * existing simple-signature path is used.
+     */
+    private void addResponseUnionMetadata(CodegenOperation operation) {
+        // Collect successful (2xx, non-default) responses.
+        List<CodegenResponse> successResponses = new ArrayList<>();
+        for (CodegenResponse response : operation.responses) {
+            if (response.is2xx && !response.isDefault) {
+                successResponses.add(response);
+            }
+        }
+        if (successResponses.size() < 2) {
+            return; // single-shape or zero: no union needed
+        }
+
+        // Detect whether the success responses have distinct shapes.
+        // "Distinct" means different dataType, or mixed body/no-body.
+        boolean hasMixedShapes = false;
+        String firstDataType = successResponses.get(0).dataType;
+        for (int idx = 1; idx < successResponses.size(); ++idx) {
+            if (!Objects.equals(firstDataType, successResponses.get(idx).dataType)) {
+                hasMixedShapes = true;
+                break;
+            }
+        }
+        // Also detect body/no-body mix (same dataType string but one null).
+        if (!hasMixedShapes) {
+            boolean hasBody = false;
+            boolean hasNoBody = false;
+            for (CodegenResponse r : successResponses) {
+                if (r.dataType != null) {
+                    hasBody = true;
+                } else {
+                    hasNoBody = true;
+                }
+            }
+            if (hasBody && hasNoBody) {
+                hasMixedShapes = true;
+            }
+        }
+
+        if (!hasMixedShapes) {
+            return; // all success responses share the same body shape
+        }
+
+        // Build the union struct name: capitalize the operationId + "Response"
+        String operationId = operation.operationIdCamelCase != null
+                ? operation.operationIdCamelCase
+                : operation.operationId;
+        if (operationId == null || operationId.isEmpty()) {
+            return;
+        }
+        String unionName = Character.toUpperCase(operationId.charAt(0))
+                + operationId.substring(1) + "Response";
+
+        operation.vendorExtensions.put(X_CODEGEN_RESPONSE_UNION, unionName);
+
+        // Tag each successful response with its body type for the variant.
+        // Use the response dataType directly (may be std::shared_ptr<Foo> etc.)
+        // or std::monostate for no-body responses.
+        for (CodegenResponse response : successResponses) {
+            String bodyType = response.dataType != null
+                    ? response.dataType
+                    : "std::monostate";
+            response.vendorExtensions.put(X_CODEGEN_RESPONSE_UNION_BODY_TYPE, bodyType);
         }
     }
 

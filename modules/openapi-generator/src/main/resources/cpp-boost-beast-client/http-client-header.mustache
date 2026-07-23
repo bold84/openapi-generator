@@ -13,6 +13,14 @@
 {{#apiNamespaceDeclarations}}
 namespace {{this}} {
 {{/apiNamespaceDeclarations}}
+
+/// Rich HTTP response containing status, body, and response headers.
+struct HttpResponseData {
+    boost::beast::http::status status;
+    std::string body;
+    std::map<std::string, std::string> headers;
+};
+
 class HttpClient {
 
 public:
@@ -24,6 +32,19 @@ public:
             const std::string &target,
             const std::string &body,
             const std::map<std::string, std::string> &headers) = 0;
+
+    /// Execute an HTTP request and return status, body, and response headers.
+    /// Default implementation wraps execute() with empty headers to preserve
+    /// compatibility with custom HttpClient implementations that do not
+    /// override executeWithMetadata.
+    virtual HttpResponseData
+    executeWithMetadata(const std::string &verb,
+                        const std::string &target,
+                        const std::string &body,
+                        const std::map<std::string, std::string> &headers) {
+        auto [status, responseBody] = execute(verb, target, body, headers);
+        return HttpResponseData{status, std::move(responseBody), {}};
+    }
 
     /// Execute an HTTP request and yield complete SSE events incrementally
     /// via callback. Used by text/event-stream endpoints.

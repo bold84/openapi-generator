@@ -1,4 +1,4 @@
-{{#vendorExtensions.x-codegen-streaming-response}}std::vector<{{#vendorExtensions.x-codegen-stream-element-type}}{{{.}}}{{/vendorExtensions.x-codegen-stream-element-type}}{{^vendorExtensions.x-codegen-stream-element-type}}{{#returnType}}{{{.}}}{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-stream-element-type}}>{{/vendorExtensions.x-codegen-streaming-response}}{{^vendorExtensions.x-codegen-streaming-response}}{{#returnType}}{{{.}}}{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-streaming-response}}
+{{#vendorExtensions.x-codegen-response-union}}{{vendorExtensions.x-codegen-response-union}}{{/vendorExtensions.x-codegen-response-union}}{{^vendorExtensions.x-codegen-response-union}}{{#vendorExtensions.x-codegen-streaming-response}}std::vector<{{#vendorExtensions.x-codegen-stream-element-type}}{{{.}}}{{/vendorExtensions.x-codegen-stream-element-type}}{{^vendorExtensions.x-codegen-stream-element-type}}{{#returnType}}{{{.}}}{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-stream-element-type}}>{{/vendorExtensions.x-codegen-streaming-response}}{{^vendorExtensions.x-codegen-streaming-response}}{{#returnType}}{{{.}}}{{/returnType}}{{^returnType}}void{{/returnType}}{{/vendorExtensions.x-codegen-streaming-response}}{{/vendorExtensions.x-codegen-response-union}}
 {{classname}}::{{#operationId}}{{{.}}}{{/operationId}}{{^operationId}}{{httpMethod}}_{{vendorExtensions.x-codegen-resource-name}}{{/operationId}}(
     {{#allParams}}const {{#vendorExtensions.x-codegen-is-optional-query-parameter}}boost::optional<{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{dataType}}}{{#vendorExtensions.x-codegen-is-optional-query-parameter}}>{{/vendorExtensions.x-codegen-is-optional-query-parameter}}& {{{paramName}}}{{^-last}}, {{/-last}}{{/allParams}}) {
     std::string serializedRequestBody;
@@ -192,14 +192,52 @@
         handleUncaughtException();
     }
 
+{{#vendorExtensions.x-codegen-response-union}}
+    {{vendorExtensions.x-codegen-response-union}} deserializedResponse;
+    deserializedResponse.status = statusCode;
+    deserializedResponse.contentType = responseContentType;
+{{/vendorExtensions.x-codegen-response-union}}
+{{^vendorExtensions.x-codegen-response-union}}
 {{#returnType}}
     {{{.}}} deserializedResponse = {{{defaultResponse}}};
 {{/returnType}}
+{{/vendorExtensions.x-codegen-response-union}}
 {{/vendorExtensions.x-codegen-streaming-response}}
 {{#responses}}
 {{^isDefault}}
     if ({{#isRange}}static_cast<unsigned int>(statusCode) / 100U == {{vendorExtensions.x-codegen-response-range}}U{{/isRange}}{{^isRange}}statusCode == boost::beast::http::status({{code}}){{/isRange}}) {
 {{#is2xx}}
+{{#operation.vendorExtensions.x-codegen-response-union}}
+{{#dataType}}
+        {{{dataType}}} parsedBody;
+        {{#vendorExtensions.x-codegen-response-is-oneof}}
+        {{#vendorExtensions.x-cpp-use-model-from-json-value}}
+        parsedBody = fromJsonValue_{{dataType}}(boost::json::parse(responseBody));
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{^vendorExtensions.x-cpp-use-model-from-json-value}}
+        OneOfResponseBodyDeserializer<{{{dataType}}}>::deserialize(
+            parsedBody, responseBody, responseContentType,
+            {{#vendorExtensions.x-codegen-empty-body-tolerant}}true{{/vendorExtensions.x-codegen-empty-body-tolerant}}{{^vendorExtensions.x-codegen-empty-body-tolerant}}false{{/vendorExtensions.x-codegen-empty-body-tolerant}});
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{/vendorExtensions.x-codegen-response-is-oneof}}
+        {{^vendorExtensions.x-codegen-response-is-oneof}}
+        {{#vendorExtensions.x-cpp-use-model-from-json-value}}
+        parsedBody = fromJsonValue_{{dataType}}(boost::json::parse(responseBody));
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{^vendorExtensions.x-cpp-use-model-from-json-value}}
+        ResponseBodyDeserializer<{{{dataType}}}>::deserialize(
+            parsedBody, responseBody, responseContentType,
+            {{#vendorExtensions.x-codegen-empty-body-tolerant}}true{{/vendorExtensions.x-codegen-empty-body-tolerant}}{{^vendorExtensions.x-codegen-empty-body-tolerant}}false{{/vendorExtensions.x-codegen-empty-body-tolerant}});
+        {{/vendorExtensions.x-cpp-use-model-from-json-value}}
+        {{/vendorExtensions.x-codegen-response-is-oneof}}
+        deserializedResponse.body = std::move(parsedBody);
+{{/dataType}}
+{{^dataType}}
+        deserializedResponse.body = std::monostate{};
+{{/dataType}}
+        return deserializedResponse;
+{{/operation.vendorExtensions.x-codegen-response-union}}
+{{^operation.vendorExtensions.x-codegen-response-union}}
 {{#vendorExtensions.x-codegen-return-compatible}}
 {{#vendorExtensions.x-codegen-streaming-response}}
 {{#returnType}}
@@ -244,6 +282,7 @@
 {{/returnType}}
 {{/vendorExtensions.x-codegen-streaming-response}}
 {{/vendorExtensions.x-codegen-return-compatible}}
+{{/operation.vendorExtensions.x-codegen-response-union}}
 {{/is2xx}}
 {{^is2xx}}
         throw {{classname}}Exception(statusCode, "{{{message}}}");

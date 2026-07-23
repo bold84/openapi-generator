@@ -12,6 +12,8 @@
 #ifndef CPP_BOOST_BEAST_OPENAPI_CLIENT_VALIDATION_TYPES_H_
 #define CPP_BOOST_BEAST_OPENAPI_CLIENT_VALIDATION_TYPES_H_
 
+#include <boost/beast/http/status.hpp>
+
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -338,5 +340,24 @@ struct IsCompositionBranchValue : std::false_type {};
 
 template <std::size_t Idx, typename Val>
 struct IsCompositionBranchValue<CompositionBranchValue<Idx, Val>> : std::true_type {};
+
+// ============================================================================
+// StatusTaggedValue — tagged response wrapper for status-distinct bodies.
+//
+// When two operation response statuses share the same C++ body type (e.g.,
+// both 200 and 201 return FullResource), status-tagged wrappers preserve
+// the distinct status identity in the response variant.
+// ============================================================================
+
+template <boost::beast::http::status StatusCode, typename ValueType>
+struct StatusTaggedValue {
+    static constexpr auto status_code = StatusCode;
+    ValueType value;
+
+    StatusTaggedValue() = default;
+
+    explicit StatusTaggedValue(ValueType v)
+        : value(std::move(v)) {}
+};
 
 #endif /* CPP_BOOST_BEAST_OPENAPI_CLIENT_VALIDATION_TYPES_H_ */
