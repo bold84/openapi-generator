@@ -35,9 +35,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public class CppBoostBeastClientCodegenTest {
 
@@ -2967,7 +2969,7 @@ public class CppBoostBeastClientCodegenTest {
 
         ComposedSchema schema = new ComposedSchema();
         NumberSchema multBranch = new NumberSchema();
-        multBranch.setMultipleOf(3.0);
+        multBranch.setMultipleOf(java.math.BigDecimal.valueOf(3.0));
         schema.addOneOfItem(multBranch);
 
         NumberSchema noMultBranch = new NumberSchema();
@@ -2987,7 +2989,7 @@ public class CppBoostBeastClientCodegenTest {
                 "Branch with multipleOf must have numeric-range assertion");
         Assert.assertNotNull(multBranchDesc.getValidateParams().get("validation-multiple-of"),
                 "Branch with multipleOf must have validation-multiple-of param");
-        Assert.assertEquals(multBranchDesc.getValidateParams().get("validation-multiple-of"), 3.0,
+        Assert.assertEquals(multBranchDesc.getValidateParams().get("validation-multiple-of"), java.math.BigDecimal.valueOf(3.0),
                 "Branch with multipleOf must have validation-multiple-of = 3.0");
 
         // Second branch without multipleOf: numeric-range must NOT be present
@@ -3012,12 +3014,12 @@ public class CppBoostBeastClientCodegenTest {
         exclMinBranch.setExclusiveMinimum(true);
         // OAS 3.0 exclusiveMinimum with minimum: the combined effect must produce
         // validation-exclusive-min in the descriptor.
-        exclMinBranch.setMinimum(10);
+        exclMinBranch.setMinimum(java.math.BigDecimal.valueOf(10));
         schema.addOneOfItem(exclMinBranch);
 
         IntegerSchema exclMaxBranch = new IntegerSchema();
         exclMaxBranch.setExclusiveMaximum(true);
-        exclMaxBranch.setMaximum(100);
+        exclMaxBranch.setMaximum(java.math.BigDecimal.valueOf(100));
         schema.addOneOfItem(exclMaxBranch);
 
         // OAS 3.1 numeric exclusive bounds
@@ -3104,8 +3106,8 @@ public class CppBoostBeastClientCodegenTest {
 
         // Float enum branch (number kind)
         NumberSchema floatEnumBranch = new NumberSchema();
-        floatEnumBranch.addEnumItem(1.5);
-        floatEnumBranch.addEnumItem(2.5);
+        floatEnumBranch.addEnumItem(java.math.BigDecimal.valueOf(1.5));
+        floatEnumBranch.addEnumItem(java.math.BigDecimal.valueOf(2.5));
         schema.addOneOfItem(floatEnumBranch);
 
         // Boolean enum branch
@@ -3476,7 +3478,7 @@ public class CppBoostBeastClientCodegenTest {
         stringBranch.setMinLength(1);
         schema.addOneOfItem(stringBranch);
         IntegerSchema intBranch = new IntegerSchema();
-        intBranch.setMinimum(0);
+        intBranch.setMinimum(java.math.BigDecimal.valueOf(0));
         schema.addOneOfItem(intBranch);
         schemas.put("ValidatorBranchTest", schema);
         components.setSchemas(schemas);
@@ -3680,10 +3682,10 @@ public class CppBoostBeastClientCodegenTest {
 
         ComposedSchema schema = new ComposedSchema();
         IntegerSchema highBranch = new IntegerSchema();
-        highBranch.setMinimum(100);
+        highBranch.setMinimum(java.math.BigDecimal.valueOf(100));
         schema.addAnyOfItem(highBranch);
         IntegerSchema lowBranch = new IntegerSchema();
-        lowBranch.setMaximum(0);
+        lowBranch.setMaximum(java.math.BigDecimal.valueOf(0));
         schema.addAnyOfItem(lowBranch);
         schemas.put("AnyOfConstrained", schema);
         components.setSchemas(schemas);
