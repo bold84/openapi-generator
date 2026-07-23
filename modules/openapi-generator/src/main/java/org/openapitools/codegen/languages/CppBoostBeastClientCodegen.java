@@ -1247,6 +1247,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                 "CompositionBranchValue<" + bi + ", std::nullptr_t>");
                         branchMap.put("inner-cpp-type", "std::nullptr_t");
                         branchMap.put("null-capability", "always");
+                        // Add validator so the template generates
+                        // validate_<name>_branch_<N> for null type branches,
+                        // enabling correct oneOf match counting.
+                        branchMap.put("validator-id",
+                                toValidIdentifier(cm.classname) + "_branch_" + bi);
+                        branchMap.put("validation-type", "null");
+                        List<String> nullSupported = new ArrayList<>();
+                        nullSupported.add("type");
+                        branchMap.put("supported-assertions", nullSupported);
                         branchMaps.add(branchMap);
                     }
                     templateMap.put("branches", branchMaps);
@@ -1389,6 +1398,21 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             resolvedAliasTypes.put(cm.classname, resolvedType);
             cm.vendorExtensions.put("x-cpp-composed-keyword", "allOf");
             composedKeywordsByModel.put(cm.classname, "allOf");
+            // Propagate intersected enum values to vendor extensions so the
+            // alias fromJsonValue template can generate enum validation.
+            // Enum values are stored as List<String> for Mustache iteration.
+            if (intersection.getRootEnumValues() != null
+                    && !intersection.getRootEnumValues().isEmpty()) {
+                List<String> intersectedEnum = new ArrayList<>();
+                for (Object ev : intersection.getRootEnumValues()) {
+                    if (ev != null) {
+                        intersectedEnum.add(escapeCppStringContent(ev.toString()));
+                    }
+                }
+                cm.vendorExtensions.put("x-cpp-allof-intersected-enum-values",
+                        intersectedEnum);
+                cm.vendorExtensions.put("x-cpp-allof-intersected-enum", true);
+            }
         }
 
         return result;

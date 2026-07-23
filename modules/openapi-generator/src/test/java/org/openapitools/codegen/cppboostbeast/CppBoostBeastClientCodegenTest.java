@@ -992,14 +992,18 @@ public class CppBoostBeastClientCodegenTest {
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
         files.forEach(File::deleteOnExit);
 
-        // Verify the generated header exists and has NO writable m_value member
+        // Verify the generated header exists and has BOTH getValue() and setValue()
         Path generatedHeader = output.toPath().resolve("model/AllOfPropConflict.h");
         TestUtils.assertFileExists(generatedHeader);
         String headerContent = java.nio.file.Files.readString(generatedHeader);
         // Phase 0-9: optional-impossible conflicting property now gets a writable
         // member (first-contributor type wins) so the model is not an empty shell.
-        Assert.assertTrue(headerContent.contains("m_Value") || headerContent.contains("setValue"),
-                "AllOfPropConflict must have a writable `value` member — "
+        Assert.assertTrue(headerContent.contains("getValue()"),
+                "AllOfPropConflict must have a getValue() accessor — "
+                + "optional-impossible selects first contributor type. "
+                + "Header content: " + headerContent);
+        Assert.assertTrue(headerContent.contains("setValue("),
+                "AllOfPropConflict must have a setValue() accessor — "
                 + "optional-impossible selects first contributor type. "
                 + "Header content: " + headerContent);
 
@@ -1010,6 +1014,18 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(sourceContent.contains("'value' in AllOfPropConflict"),
                 "AllOfPropConflict source must contain the reject-if-present diagnostic "
                 + "for the optional-impossible 'value' property. "
+                + "Source: " + sourceContent);
+
+        // Verify the accept path (property absent → no throw):
+        // m_ValueIsSet is reset to false before checking, and the
+        // object.find guard skips decode when the property is absent.
+        Assert.assertTrue(sourceContent.contains("m_ValueIsSet = false"),
+                "AllOfPropConflict source must reset m_ValueIsSet at start of decode "
+                + "(accept path when value is absent). "
+                + "Source: " + sourceContent);
+        Assert.assertTrue(sourceContent.contains("ValueIt != object.end()"),
+                "AllOfPropConflict source must check ValueIt != object.end() "
+                + "(accept path — no throw when value absent). "
                 + "Source: " + sourceContent);
     }
 
@@ -1061,10 +1077,33 @@ public class CppBoostBeastClientCodegenTest {
 
         // Phase 0-9: optional-impossible conflicting property now gets a writable
         // member (first-contributor type wins) so the model is not an empty shell.
-        Assert.assertTrue(headerContent.contains("m_Value") || headerContent.contains("setValue"),
-                "OptionalImpossibleAllOf must have a writable concrete `value` member — "
+        Assert.assertTrue(headerContent.contains("getValue()"),
+                "OptionalImpossibleAllOf must have a getValue() accessor — "
                 + "optional-impossible selects first contributor type. "
                 + "Header content: " + headerContent);
+        Assert.assertTrue(headerContent.contains("setValue("),
+                "OptionalImpossibleAllOf must have a setValue() accessor — "
+                + "optional-impossible selects first contributor type. "
+                + "Header content: " + headerContent);
+
+        // Verify the source has the reject diagnostic
+        Path generatedSource = output.toPath().resolve("model/OptionalImpossibleAllOf.cpp");
+        TestUtils.assertFileExists(generatedSource);
+        String sourceContent = java.nio.file.Files.readString(generatedSource);
+        Assert.assertTrue(sourceContent.contains("'value' in OptionalImpossibleAllOf"),
+                "OptionalImpossibleAllOf source must contain the reject-if-present diagnostic "
+                + "for the optional-impossible 'value' property. "
+                + "Source: " + sourceContent);
+
+        // Verify the accept path (property absent → no throw)
+        Assert.assertTrue(sourceContent.contains("m_ValueIsSet = false"),
+                "OptionalImpossibleAllOf source must reset m_ValueIsSet at start of decode "
+                + "(accept path when value is absent). "
+                + "Source: " + sourceContent);
+        Assert.assertTrue(sourceContent.contains("ValueIt != object.end()"),
+                "OptionalImpossibleAllOf source must check ValueIt != object.end() "
+                + "(accept path — no throw when value absent). "
+                + "Source: " + sourceContent);
     }
 
     @Test

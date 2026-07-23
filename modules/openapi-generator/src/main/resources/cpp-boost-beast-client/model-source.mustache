@@ -1505,7 +1505,23 @@ void writePrettyJson(std::ostream& output, boost::json::value const& value, std:
     return value;
     {{/vendorExtensions.x-cpp-type-erased-oneof}}
     {{^vendorExtensions.x-cpp-type-erased-oneof}}
+    {{#vendorExtensions.x-cpp-allof-intersected-enum}}
+    {
+        auto raw = JsonValueConverter<{{classname}}>::fromJsonValue(value);
+        bool found = false;
+        {{#vendorExtensions.x-cpp-allof-intersected-enum-values}}
+        if (raw == "{{.}}") { found = true; }
+        {{/vendorExtensions.x-cpp-allof-intersected-enum-values}}
+        if (!found) {
+            throw std::invalid_argument(
+                "Value for {{classname}} must be one of the intersected enum values");
+        }
+        return raw;
+    }
+    {{/vendorExtensions.x-cpp-allof-intersected-enum}}
+    {{^vendorExtensions.x-cpp-allof-intersected-enum}}
     return JsonValueConverter<{{classname}}>::fromJsonValue(value);
+    {{/vendorExtensions.x-cpp-allof-intersected-enum}}
     {{/vendorExtensions.x-cpp-type-erased-oneof}}
 }
 

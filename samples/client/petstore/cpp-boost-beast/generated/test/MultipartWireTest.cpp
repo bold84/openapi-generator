@@ -205,6 +205,7 @@ static void testWireFormatStructure() {
 } // namespace api
 
 int main() {
+    using namespace org::openapitools::client::api;
     testExplicitEncoding();
     testTextPlainDefault();
     testTextPlainArrayDefault();

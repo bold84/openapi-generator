@@ -203,6 +203,7 @@ static void testWireFormatStructure() {
 {{/apiNamespaceDeclarations}}
 
 int main() {
+    using namespace {{apiNamespace}};
     testExplicitEncoding();
     testTextPlainDefault();
     testTextPlainArrayDefault();
