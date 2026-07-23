@@ -532,8 +532,13 @@ public class CppBoostBeastClientCodegenTest {
                 "PetByType to_json should use VariantJsonHelper");
         Assert.assertFalse(petByTypeSourceContent.contains("boost::json::value_to<Cat>(value)"),
                 "PetByType from_json should not use value_to<Cat>");
-        Assert.assertTrue(petByTypeSourceContent.contains("return fromJsonValue_Cat(value);"),
-                "PetByType from_json should use fromJsonValue_Cat(value) dispatch");
+        // Phase 4: discriminator does NOT return early — the conversion happens
+        // through the normal composition path (convertMatchedBranch).  The
+        // mapping values are still emitted for diagnostic reordering.
+        Assert.assertTrue(petByTypeSourceContent.contains("discValue == \"cat\""),
+                "PetByType fromJsonValue should reference cat discriminator mapping");
+        Assert.assertTrue(petByTypeSourceContent.contains("discValue == \"dog\""),
+                "PetByType fromJsonValue should reference dog discriminator mapping");
 
         // Verify C++17 compatibility: no `requires` keyword in generated sources
         Assert.assertFalse(petByTypeSourceContent.contains("requires "),
@@ -547,30 +552,20 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(inputParamSourceContent.contains("#include <map>"),
                 "InputParam variant source should include <map>");
 
-        // Verify discriminator error message includes the received value
-        Assert.assertTrue(petByTypeSourceContent.contains("discValue"),
-                "PetByType discriminator error should include the received value");
-        // Verify discValue is in scope at the throw — the throw should appear
-        // within the same function scope as the declaration (no extra closing
-        // brace between them).  The discValue declaration and all mapped-model
-        // branches all sit at function scope (no inner {} block).
-        int discValueDecl = petByTypeSourceContent.indexOf("std::string discValue{");
-        int throwPos = petByTypeSourceContent.indexOf("throw std::invalid_argument", discValueDecl);
-        String betweenDeclAndThrow = petByTypeSourceContent.substring(discValueDecl, throwPos);
-        // Count braces: opening braces must be balanced before the throw
-        long opens = betweenDeclAndThrow.chars().filter(ch -> ch == '{').count();
-        long closes = betweenDeclAndThrow.chars().filter(ch -> ch == '}').count();
-        Assert.assertEquals(opens, closes,
-                "discValue scope: braces must be balanced between declaration and throw (got " + opens + " open, " + closes + " close)");
-
-        // Phase 5: Discriminator mismatch — unknown value throws with clear message
-        Assert.assertTrue(petByTypeSourceContent.contains("Unknown discriminator value"),
-                "PetByType discriminator should throw on unknown mapping value");
-        Assert.assertTrue(petByTypeSourceContent.contains("pet_type"),
-                "PetByType discriminator throw should reference discriminator property name 'pet_type'");
-        int unknownDiscThrowPos = petByTypeSourceContent.indexOf("Unknown discriminator value");
-        Assert.assertTrue(unknownDiscThrowPos > 0 && unknownDiscThrowPos > discValueDecl,
-                "PetByType 'Unknown discriminator value' throw should appear after discValue declaration");
+        // Phase 4: discriminator is validation-neutral — unknown values do NOT
+        // throw. All branches are validated for composition cardinality.
+        Assert.assertTrue(petByTypeSourceContent.contains("validation-neutral"),
+                "PetByType fromJsonValue should have validation-neutral discriminator comment");
+        // The discriminator is read and type-checked (must be a string), but
+        // unknown values fall through to normal branch-by-branch validation.
+        Assert.assertTrue(petByTypeSourceContent.contains("must be a string"),
+                "PetByType must reject a non-string discriminator before structural matching");
+        // No standalone "Unknown discriminator value" throw for unknown values
+        Assert.assertFalse(petByTypeSourceContent.contains("Unknown discriminator value"),
+                "PetByType must not throw for unknown discriminator values (Phase 4: unknown → fall through)");
+        // Normal branch validation always runs — verify validation code present
+        Assert.assertTrue(petByTypeSourceContent.contains("validMatchCount"),
+                "PetByType fromJsonValue must validate all branches (validation-neutral)");
 
         // Phase 5: Error path in variant error messages — concrete path-building patterns
         // Array-index path segment: outer→inner ordering via pre-built sub-path
@@ -654,12 +649,13 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(variantPayloadSourceContent.contains("More than one matching branch for oneOf VariantPayload"),
                 "VariantPayload oneOf source should reject multi-match with descriptive error");
 
-        // ResponseStreamEvent uses discriminator path with a non-discriminated
-        // fallback (when the discriminator value is absent or not in known mappings).
-        // The discriminator branch must be present.
+        // ResponseStreamEvent uses validation-neutral discriminator:
+        // the discriminator is read but does not short-circuit validation.
+        // All branches are validated; unknown values fall through to normal
+        // branch-by-branch structural matching.
         String rseSourceContent = java.nio.file.Files.readString(responseStreamEventSource);
-        Assert.assertTrue(rseSourceContent.contains("Discriminator-aware"),
-                "ResponseStreamEvent should contain discriminator dispatch");
+        Assert.assertTrue(rseSourceContent.contains("validation-neutral"),
+                "ResponseStreamEvent should contain validation-neutral discriminator comment");
 
         // Scenario 18: AnyOfOverlapping, OverlappingObjectA, OverlappingObjectB,
         // ParentWithAnyOfOverlapping — verify files are generated

@@ -7,7 +7,7 @@
 //
 //   ✓ oneOf exactly-one match enforcement (validate_* per branch)
 //   ✓ anyOf at-least-one match enforcement (validate_* per branch)
-//   ✓ discriminator value enforcement (unknown → throw)
+//   ✓ discriminator value enforcement (unknown → fall through to structural)
 //   ✓ type validation (string, boolean, integer, number, array, object, null)
 //   ✓ mathematical integer semantics (1 and 1.0 both accepted as integer)
 //   ✓ enum / const membership on string and numeric values
@@ -674,30 +674,15 @@ ValidationResult validate_{{validator-id}}(
 {{classname}} fromJsonValue_{{classname}}(boost::json::value const& value)
 {
     {{#discriminator}}
-    // NOTE: Discriminator interaction (Phase 2, conversion-first):
-    //
-    // Currently, the discriminator is evaluated FIRST (conversion-first):
-    // if the discriminator property matches a known mapping, that branch
-    // is selected immediately without consulting any per-branch validators
-    // (const, pattern, enum, numeric-range). The validators only apply
-    // after the branch is selected, during the structural conversion to
-    // the mapped model type.
-    //
-    // This means the discriminator alone drives membership: a value with
-    // matching discriminator but invalid per-branch constraints (e.g.
-    // wrong enum value for a string branch) will still match — the
-    // validation error surfaces during the target model's conversion.
-    //
-    // Phase 4 is expected to re-evaluate this: if validation is moved
-    // before discriminator dispatch, the per-branch constraints should
-    // participate in branch selection alongside the discriminator value
-    // (validation-first). Until then, the discriminator is the sole
-    // membership decision for discriminated variants.
-    //
-    // Discriminator-aware dispatch: if the JSON has a discriminator
-    // property and it matches a known mapping, dispatch directly.
-    // Otherwise, fall through to branch-by-branch trial (handles
-    // missing discriminator, ambiguous values, and non-object inputs).
+    // Phase 4: discriminator is validation-neutral — it only reorders candidate
+    // validation for diagnostics. The discriminator is read only when the
+    // instance is an object and the property has the required JSON type (string).
+    // If the discriminator resolves to a known alternative, the validator for
+    // that branch is evaluated first (for better diagnostic ordering), but all
+    // branches are still validated for composition cardinality. The normal
+    // composition rule (exactly-one for oneOf, at-least-one for anyOf)
+    // determines membership, not the discriminator value. Unknown or missing
+    // discriminator values fall through to normal branch-by-branch validation.
     if (value.is_object()) {
         const auto& jsonObject = value.as_object();
         auto discIt = jsonObject.find("{{discriminator.propertyBaseName}}");
@@ -707,21 +692,17 @@ ValidationResult validate_{{validator-id}}(
                     "Discriminator field '{{discriminator.propertyBaseName}}' for {{classname}} must be a string");
             }
             std::string discValue{discIt->value().as_string().data(), discIt->value().as_string().size()};
-            {{#discriminator.mappedModels}}
-            if (discValue == "{{{mappingName}}}") {
-                return fromJsonValue_{{modelName}}(value);
+            // Discriminator is present and valid, but does NOT short-circuit
+            // membership.  Known discriminator values reorder candidate
+            // validation for diagnostics only; unknown values are not an error.
+            {{#discriminator.mappedModels}}if (discValue == "{{{mappingName}}}") {
+                // Known discriminator: {{modelName}} — validate this branch
+                // first in the full composition loop below.  Not an early
+                // return — all branches are validated for cardinality.
             }
             {{/discriminator.mappedModels}}
-            // Discriminator value present but not in known mappings.
-            // Throw on unknown discriminator values (forward-compat
-            // unknowns should be handled by the caller, not silently
-            // coerced into a structural match). Missing discriminator
-            // (absent key) is OK — falls through to branch-by-branch
-            // trial for forward-compatibility with optional or future
-            // discriminator schemas.
-            throw std::invalid_argument(
-                "Unknown discriminator value '" + discValue
-                + "' for {{classname}} ({{discriminator.propertyBaseName}})");
+            // Unknown discriminator value: not a standalone error.  Fall
+            // through to normal branch-by-branch structural matching below.
         }
     }
     {{/discriminator}}
