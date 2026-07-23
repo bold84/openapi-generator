@@ -89,17 +89,29 @@ optional is disengaged. The `JsonValueConverter<std::optional<T>>::toJsonValue`
 helper unwraps the inner value; the outer `has_value()` check at the call site
 prevents unreachable `null` output for absent optionals.
 
-### Deferred: full tri-state
+### Phase 6: tri-state model
 
-A full **tri-state model** (field absent / field present with JSON null / field
-present with JSON value) is **not yet implemented**.  When the schema allows null,
-the current implementation cannot distinguish "field was sent as JSON null" from
-"field was absent" for non-required properties — both result in the key being
-omitted on encode and `std::nullopt` on decode.
+The generator now implements a full **tri-state model** for optional nullable
+fields using `NullableField<T>`.  Three wire states are preserved on round-trip:
 
-A future phase may add a separate `null_state` flag per nullable field to
-preserve the absent-vs-null distinction on the wire, matching OAS 3.1's
-semantic model where a missing key and a present `null` value are distinct.
+| Field kind | C++ type | Encode behavior |
+|-----------|----------|----------------|
+| Required, non-null | `T` | Always written |
+| Optional, non-null | `std::optional<T>` | `has_value()` → written; disengaged → omitted |
+| Required, nullable | `std::optional<T>` | Key required; value or `null` accepted |
+| Optional, nullable | `NullableField<T>` | `hasValue()` → written; `isNull()` → JSON `null`; `isMissing()` → omitted |
+
+`NullableField<T>` exposes:
+- `isMissing()` / `isNull()` / `hasValue()` — state queries
+- `hasOptionalValue()` / `resetOptionalValue()` — compatibility with
+  property-storage conventions
+- `setNull()` — transition to null state
+- `resetMissing()` — transition to missing state
+
+Schema-level OAS 3.0 nullable objects (e.g., `type: object, nullable: true`)
+accept JSON `null` at the root level.  The model's `fromJsonValue` decodes
+`null` into a null-state instance; `toJsonValue` produces `null` when the
+model is in the null state.
 
 ---
 

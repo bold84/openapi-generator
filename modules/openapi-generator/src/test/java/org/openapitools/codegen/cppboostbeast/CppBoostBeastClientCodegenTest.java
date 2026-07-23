@@ -219,14 +219,16 @@ public class CppBoostBeastClientCodegenTest {
         Path derivedHeader = output.toPath().resolve("model/NullablePropertyDerived.h");
         TestUtils.assertFileContains(derivedHeader,
                 "NullablePropertyDerivedNullableValuePropertyIsInherited<NullablePropertyBase>::value",
+                "NullableField<double>",
                 "bool hasOptionalValue() const",
                 "void resetOptionalValue()");
 
         Path derivedSource = output.toPath().resolve("model/NullablePropertyDerived.cpp");
         TestUtils.assertFileContains(derivedSource,
                 "if constexpr (!NullablePropertyDerivedNullableValuePropertyIsInherited<NullablePropertyBase>::value)",
-                "m_NullableValue.hasOptionalValue()",
-                "m_NullableValue.resetOptionalValue()");
+                "m_NullableValue.hasValue()",
+                "m_NullableValue.isNull()",
+                "m_NullableValue.resetMissing()");
         TestUtils.assertFileNotContains(derivedSource,
                 "m_NullableValue.value.has_value()",
                 "m_NullableValue.value.reset()");
@@ -1604,31 +1606,25 @@ public class CppBoostBeastClientCodegenTest {
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
         files.forEach(File::deleteOnExit);
 
-        // The nullable root object must exist and be a null-capable wrapper type.
-        // Require std::optional<NullableObjectRoot> or a hasOptionalValue() type,
-        // not just a bare class.
+        // The nullable root object must exist and expose hasOptionalValue/isNull for
+        // JSON null root-level round trip (x-cpp-is-optional class).
         Path nullableRootHeader = output.toPath().resolve("model/NullableObjectRoot.h");
         TestUtils.assertFileExists(nullableRootHeader);
         String nullableRootContent = java.nio.file.Files.readString(nullableRootHeader);
-        // The schema is nullable:true on an object. The generator MUST produce a type
-        // that wraps the object so it can represent JSON null at root level.
-        // Acceptable: "using NullableObjectRoot = std::optional<NullableObjectRootImpl>"
-        // or a class with hasOptionalValue()/resetOptionalValue().
-        Assert.assertTrue(nullableRootContent.contains("std::optional<") || nullableRootContent.contains("hasOptionalValue()"),
-                "NullableObjectRoot must wrap in std::optional or expose hasOptionalValue() " +
-                "(nullable root object). Got: " + nullableRootContent);
+        // The schema is nullable:true on an object. The class must expose
+        // hasOptionalValue() so the root null state can be queried.
+        Assert.assertTrue(nullableRootContent.contains("hasOptionalValue()"),
+                "NullableObjectRoot must expose hasOptionalValue() for null root state. Got: "
+                + nullableRootContent);
 
-        // The nullable property container must distinguish value vs null via Nullable<T> wrapper
+        // The nullable property container must use NullableField<T> for optional nullable props
         Path nullablePropHeader = output.toPath().resolve("model/NullablePropertyContainer.h");
         TestUtils.assertFileExists(nullablePropHeader);
         String nullablePropContent = java.nio.file.Files.readString(nullablePropHeader);
-        // Must use an explicit Nullable<T> field or hasOptionalValue().  A bare IsSet alone
-        // is NOT sufficient — the type must also carry null-vs-missing distinction.
-        boolean hasNullableWrapper = nullablePropContent.contains("NullableValue") && nullablePropContent.contains("hasOptionalValue");
-        boolean hasOptionalNullable = nullablePropContent.contains("std::optional<std::string>");
-        Assert.assertTrue(hasNullableWrapper || hasOptionalNullable,
-                "NullablePropertyContainer must use Nullable<T> wrapper or optional<optional<string>> " +
-                "for nullable property, not IsSet alone. Got: " + nullablePropContent);
+        // Must use NullableField<T> wrapper for tri-state (missing|null|value).
+        Assert.assertTrue(nullablePropContent.contains("NullableField<"),
+                "NullablePropertyContainer must use NullableField<T> for nullable property. Got: "
+                + nullablePropContent);
     }
 
     @Test
@@ -1653,29 +1649,44 @@ public class CppBoostBeastClientCodegenTest {
         String triStateContent = java.nio.file.Files.readString(triStateHeader);
 
         // The tri-state needs three observable values: missing, null, present.
-        // This requires at minimum two bits of state.  A single IsSet bool cannot
-        // distinguish missing from explicit null.
-        //
-        // Acceptable API surfaces (sufficient for tri-state):
-        //   1. Nullable<std::string> wrapper (hasOptionalValue + getValue + resetOptionalValue)
-        //   2. std::optional<std::optional<std::string>>
-        //   3. Separate bool isNull flag alongside IsSet
-        //
-        // Currently the generator emits only IsSet — this test FAILS on current HEAD
-        // because the tri-state gap is real.
-        boolean hasTriStateWrapper =
-            triStateContent.contains("hasOptionalValue") ||
-            triStateContent.contains("resetOptionalValue") ||
-            triStateContent.contains("std::optional<std::optional<std::string>>") ||
-            (triStateContent.contains("m_NullableValueIsSet") && triStateContent.contains("m_NullableValueIsNull")) ||
-            (triStateContent.contains("m_NullableValueIsSet") && triStateContent.contains("setNullableValueNull"));
+        // NullableField<T> must be used for optional nullable properties.
+        Assert.assertTrue(triStateContent.contains("NullableField<std::string>"),
+                "TriStateContainer: optional nullable must use NullableField<T> wrapper. "
+                + "Current header excerpt: " + triStateContent);
 
-        Assert.assertTrue(hasTriStateWrapper,
-                "TriStateContainer: optional nullable must distinguish missing|null|value via "
-                + "hasOptionalValue/resetOptionalValue or Nullable<T> wrapper or "
-                + "optional<optional<string>> or explicit is-null flag.  A bare IsSet bool in "
-                + "isolation does NOT encode tri-state.  Current header excerpt: "
-                + triStateContent);
+        // Verify NullableField-specific state methods exist on the property accessor
+        Assert.assertTrue(triStateContent.contains("getNullableValue()"),
+                "TriStateContainer must declare getNullableValue accessor. "
+                + "Current header excerpt: " + triStateContent);
+    }
+
+    @Test
+    public void generatesRequiredNullableField() throws IOException {
+        // Required nullable property must use std::optional<T> (not NullableField)
+        // because there is no "missing" state — only null and value are valid.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-required-nullable").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_0/cpp-boost-beast-client/required-nullable-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path requiredHeader = output.toPath().resolve("model/RequiredNullableContainer.h");
+        TestUtils.assertFileExists(requiredHeader);
+        String requiredContent = java.nio.file.Files.readString(requiredHeader);
+
+        // Required nullable property must use std::optional<std::string>, not NullableField
+        Assert.assertTrue(requiredContent.contains("std::optional<std::string>"),
+                "RequiredNullableContainer nullableValue must be std::optional<std::string> "
+                + "(not NullableField) for required nullable. Got: " + requiredContent);
+        // Verify that NullableField is NOT used for required nullable properties
+        Assert.assertFalse(requiredContent.contains("NullableField<"),
+                "RequiredNullableContainer must NOT use NullableField for required nullable. "
+                + "Got: " + requiredContent);
     }
 
     @Test

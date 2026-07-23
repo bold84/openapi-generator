@@ -1536,11 +1536,23 @@ void {{classname}}::fromJsonString(std::string const& jsonString)
 
 boost::json::value {{classname}}::toJsonValue() const
 {
+    {{#vendorExtensions.x-cpp-is-optional}}
+    if (m_{{classname}}IsNull) {
+        return nullptr;
+    }
+    {{/vendorExtensions.x-cpp-is-optional}}
     return boost::json::value(toJsonObject_internal());
 }
 
 void {{classname}}::fromJsonValue(boost::json::value const& value)
 {
+    {{#vendorExtensions.x-cpp-is-optional}}
+    if (value.is_null()) {
+        m_{{classname}}IsNull = true;
+        return;
+    }
+    m_{{classname}}IsNull = false;
+    {{/vendorExtensions.x-cpp-is-optional}}
     if (!value.is_object()) {
         throw std::invalid_argument("Expected a JSON object for {{classname}}");
     }
@@ -1585,7 +1597,7 @@ boost::json::object {{classname}}::toJsonObject_internal() const
         {{#vendorExtensions.x-cpp-nullable-field}}
         // NullableField tri-state: hasValue → JSON value, isNull → null, isMissing → omit
         if (m_{{name}}.hasValue()) {
-            {{#vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = toJsonValue_{{vendorExtensions.x-cpp-variant-alias-name}}(m_{{name}}.value());{{/vendorExtensions.x-cpp-variant-alias}}{{^vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = JsonValueConverter<{{{vendorExtensions.x-cpp-nullable-field-inner-type}}}>::toJsonValue(m_{{name}}.value());{{/vendorExtensions.x-cpp-variant-alias}}
+            {{#vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = toJsonValue_{{vendorExtensions.x-cpp-variant-alias-name}}({{#parent}}m_{{name}}.value.{{/parent}}value());{{/vendorExtensions.x-cpp-variant-alias}}{{^vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = JsonValueConverter<{{{vendorExtensions.x-cpp-nullable-field-inner-type}}}>::toJsonValue({{#parent}}m_{{name}}.value.{{/parent}}value());{{/vendorExtensions.x-cpp-variant-alias}}
         } else if (m_{{name}}.isNull()) {
             object["{{baseName}}"] = nullptr;
         }
@@ -1660,7 +1672,7 @@ void {{classname}}::fromJsonObject_internal(boost::json::object const& object)
                 if ({{name}}It->value().is_null()) {
                     m_{{name}}.setNull();
                 } else {
-                    {{#vendorExtensions.x-cpp-variant-alias}}m_{{name}} = NullableField<{{vendorExtensions.x-cpp-nullable-field-inner-type}}>(fromJsonValue_{{vendorExtensions.x-cpp-variant-alias-name}}({{name}}It->value()));{{/vendorExtensions.x-cpp-variant-alias}}{{^vendorExtensions.x-cpp-variant-alias}}m_{{name}} = NullableField<{{vendorExtensions.x-cpp-nullable-field-inner-type}}>(JsonValueConverter<{{vendorExtensions.x-cpp-nullable-field-inner-type}}>::fromJsonValue({{name}}It->value()));{{/vendorExtensions.x-cpp-variant-alias}}
+                    {{#vendorExtensions.x-cpp-variant-alias}}{{#parent}}m_{{name}}.value{{/parent}}{{^parent}}m_{{name}}{{/parent}} = NullableField<{{vendorExtensions.x-cpp-nullable-field-inner-type}}>(fromJsonValue_{{vendorExtensions.x-cpp-variant-alias-name}}({{name}}It->value()));{{/vendorExtensions.x-cpp-variant-alias}}{{^vendorExtensions.x-cpp-variant-alias}}{{#parent}}m_{{name}}.value{{/parent}}{{^parent}}m_{{name}}{{/parent}} = NullableField<{{vendorExtensions.x-cpp-nullable-field-inner-type}}>(JsonValueConverter<{{vendorExtensions.x-cpp-nullable-field-inner-type}}>::fromJsonValue({{name}}It->value()));{{/vendorExtensions.x-cpp-variant-alias}}
                 }
                 {{/vendorExtensions.x-cpp-nullable-field}}
                 {{^vendorExtensions.x-cpp-nullable-field}}
