@@ -1110,26 +1110,30 @@ public class CppBoostBeastClientCodegenTest {
         // Expected intersection: [a,b] ∩ [b,c] = {b} — only b, not a, not c.
         // Current generator does NOT compute intersection (uses last-wins from the
         // allOf merge).  Lock the actual current behaviour: assert that the generated
-        // code contains "b" and does NOT contain "a" (strictly {b}-only).
+        // code contains "b", does NOT contain "a", and does NOT contain "c" (strictly
+        // {b}-only).  The .cpp file MUST exist — no silent skip if missing.
         Path intersectSource = output.toPath().resolve("model/AllOfEnumIntersection.cpp");
-        if (java.nio.file.Files.exists(intersectSource)) {
-            String intersectSourceContent = java.nio.file.Files.readString(intersectSource);
-            // The source may contain allowedValues or enum validation
-            boolean containsB = intersectSourceContent.contains("\"b\"")
-                || intersectSourceContent.contains("\\\"b\\\"");
-            boolean containsA = intersectSourceContent.contains("\"a\"")
-                || intersectSourceContent.contains("\\\"a\\\"");
-            Assert.assertTrue(containsB,
-                    "AllOfEnumIntersection source must contain enum value \"b\" (intersection). "
-                    + "Current source: " + intersectSourceContent);
-            // Intersection {b} must NOT include "a" — only branch [b,c] contributor.
-            // Current generator (last-wins from second branch [b,c]) may or may not
-            // include "a" depending on merge strategy.
-            Assert.assertFalse(containsA,
-                    "AllOfEnumIntersection source must NOT contain enum value \"a\" "
-                    + "(intersection [a,b] ∩ [b,c] = {b}). "
-                    + "Current source: " + intersectSourceContent);
-        }
+        TestUtils.assertFileExists(intersectSource,
+                "AllOfEnumIntersection.cpp must exist to verify allowed values");
+        String intersectSourceContent = java.nio.file.Files.readString(intersectSource);
+        // The source may contain allowedValues or enum validation
+        boolean containsB = intersectSourceContent.contains("\"b\"")
+            || intersectSourceContent.contains("\\\"b\\\"");
+        boolean containsA = intersectSourceContent.contains("\"a\"")
+            || intersectSourceContent.contains("\\\"a\\\"");
+        boolean containsC = intersectSourceContent.contains("\"c\"")
+            || intersectSourceContent.contains("\\\"c\\\"");
+        Assert.assertTrue(containsB,
+                "AllOfEnumIntersection source must contain enum value \"b\" (intersection). "
+                + "Current source: " + intersectSourceContent);
+        Assert.assertFalse(containsA,
+                "AllOfEnumIntersection source must NOT contain enum value \"a\" "
+                + "(intersection [a,b] ∩ [b,c] = {b}). "
+                + "Current source: " + intersectSourceContent);
+        Assert.assertFalse(containsC,
+                "AllOfEnumIntersection source must NOT contain enum value \"c\" "
+                + "(intersection [a,b] ∩ [b,c] = {b}, not [b,c]). "
+                + "Current source: " + intersectSourceContent);
     }
 
     @Test
@@ -1384,19 +1388,22 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(apiContent.contains("204") || apiContent.contains("status_code_204"),
                 "Generated API must reference 204 status branch");
 
-        // Phase 0: strengthen to verify response-union dispatch patterns.
-        // The generator should emit status-aware response decoders that distinguish
-        // FullResource (200), SummaryResource (201), and void/204 responses.
-        // Currently the generator may only emit plain status string matching.
-        // Check for concrete dispatch traits tied to multiple statuses.
-        boolean hasStatusAwareDispatch =
-                (apiContent.contains("200") && apiContent.contains("FullResource")) ||
-                (apiContent.contains("201") && apiContent.contains("SummaryResource")) ||
-                apiContent.contains("ResponseBodyDeserializer") ||
-                apiContent.contains("ResponseJsonValueConverter");
-        Assert.assertTrue(hasStatusAwareDispatch,
-                "Generated API must contain status-aware response dispatch patterns "
-                + "(status-code + model type references, or response deserializer traits). "
+        // Phase 0: strengthen to verify the 200+201+204 response union shape.
+        // The generator must distinguish FullResource (200), SummaryResource (201),
+        // and void/204 across three distinct status branches.
+        // Require ALL THREE status+type pairs (not OR) OR a named response union.
+        boolean hasAllThreeStatusBranches =
+                (apiContent.contains("200") && apiContent.contains("FullResource"))
+                && (apiContent.contains("201") && apiContent.contains("SummaryResource"))
+                && (apiContent.contains("204") || apiContent.contains("status_code_204"));
+        boolean hasNamedResponseUnion =
+                apiContent.contains("ResponseBodyDeserializer")
+                || apiContent.contains("ResponseJsonValueConverter");
+        boolean hasStrongDispatch = hasAllThreeStatusBranches || hasNamedResponseUnion;
+        Assert.assertTrue(hasStrongDispatch,
+                "Generated API must distinguish all three response status branches: "
+                + "200+FullResource AND 201+SummaryResource AND 204, "
+                + "or expose a named response-union type. "
                 + "Current output excerpt: " + apiContent);
     }
 
