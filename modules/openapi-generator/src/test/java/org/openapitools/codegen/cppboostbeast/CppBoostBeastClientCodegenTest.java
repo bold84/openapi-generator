@@ -228,7 +228,9 @@ public class CppBoostBeastClientCodegenTest {
                 "if constexpr (!NullablePropertyDerivedNullableValuePropertyIsInherited<NullablePropertyBase>::value)",
                 "m_NullableValue.hasValue()",
                 "m_NullableValue.isNull()",
-                "m_NullableValue.resetMissing()");
+                "m_NullableValue.resetMissing()",
+                "getNullableValue().value()",
+                "nullptr");
         TestUtils.assertFileNotContains(derivedSource,
                 "m_NullableValue.value.has_value()",
                 "m_NullableValue.value.reset()");
@@ -1658,6 +1660,19 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(triStateContent.contains("getNullableValue()"),
                 "TriStateContainer must declare getNullableValue accessor. "
                 + "Current header excerpt: " + triStateContent);
+
+        // Assert encode snippets in the source file
+        Path triStateSource = output.toPath().resolve("model/TriStateContainer.cpp");
+        TestUtils.assertFileExists(triStateSource);
+        String triStateSrcContent = java.nio.file.Files.readString(triStateSource);
+        // Value encode: getNullableValue().value()
+        Assert.assertTrue(triStateSrcContent.contains("getNullableValue().value()"),
+                "TriStateContainer encode must use getNullableValue().value() for value branch. "
+                + "Got: " + triStateSrcContent);
+        // Null encode: nullptr
+        Assert.assertTrue(triStateSrcContent.contains("nullptr"),
+                "TriStateContainer encode must use nullptr for null branch. "
+                + "Got: " + triStateSrcContent);
     }
 
     @Test

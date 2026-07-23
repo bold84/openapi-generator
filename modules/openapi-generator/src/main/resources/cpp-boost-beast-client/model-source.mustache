@@ -1597,7 +1597,7 @@ boost::json::object {{classname}}::toJsonObject_internal() const
         {{#vendorExtensions.x-cpp-nullable-field}}
         // NullableField tri-state: hasValue → JSON value, isNull → null, isMissing → omit
         if (m_{{name}}.hasValue()) {
-            {{#vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = toJsonValue_{{vendorExtensions.x-cpp-variant-alias-name}}({{#parent}}m_{{name}}.value.{{/parent}}value());{{/vendorExtensions.x-cpp-variant-alias}}{{^vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = JsonValueConverter<{{{vendorExtensions.x-cpp-nullable-field-inner-type}}}>::toJsonValue({{#parent}}m_{{name}}.value.{{/parent}}value());{{/vendorExtensions.x-cpp-variant-alias}}
+            {{#vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = toJsonValue_{{vendorExtensions.x-cpp-variant-alias-name}}({{getter}}().value());{{/vendorExtensions.x-cpp-variant-alias}}{{^vendorExtensions.x-cpp-variant-alias}}object["{{baseName}}"] = JsonValueConverter<{{{vendorExtensions.x-cpp-nullable-field-inner-type}}}>::toJsonValue({{getter}}().value());{{/vendorExtensions.x-cpp-variant-alias}}
         } else if (m_{{name}}.isNull()) {
             object["{{baseName}}"] = nullptr;
         }
