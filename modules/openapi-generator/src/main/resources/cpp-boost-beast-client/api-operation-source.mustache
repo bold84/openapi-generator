@@ -241,7 +241,6 @@
         handleUncaughtException();
     }
 {{/vendorExtensions.x-codegen-response-union}}
-{{/vendorExtensions.x-codegen-streaming-response}}
 
 {{#vendorExtensions.x-codegen-response-union}}
     {{{vendorExtensions.x-codegen-response-union}}} deserializedResponse;
@@ -284,7 +283,7 @@
         deserializedResponse.body = {{{vendorExtensions.x-codegen-response-union-body-type}}}{std::move(parsedBody)};
 {{/dataType}}
 {{^dataType}}
-        deserializedResponse.body = std::monostate{};
+        deserializedResponse.body = {{{vendorExtensions.x-codegen-response-union-body-type}}}{};
 {{/dataType}}
         return deserializedResponse;
 {{/vendorExtensions.x-codegen-response-union-body-type}}
