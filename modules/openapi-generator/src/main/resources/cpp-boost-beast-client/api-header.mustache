@@ -73,9 +73,9 @@ public:
         std::string contentType;
         std::variant<
         {{#responses}}
-        {{#is2xx}}{{^isDefault}}
-            {{vendorExtensions.x-codegen-response-union-body-type}}{{^-last}},{{/-last}}
-        {{/isDefault}}{{/is2xx}}
+        {{#vendorExtensions.x-codegen-response-union}}
+            {{{vendorExtensions.x-codegen-response-union-body-type}}}{{^-last}},{{/-last}}
+        {{/vendorExtensions.x-codegen-response-union}}
         {{/responses}}
         > body;
     };
@@ -108,9 +108,9 @@ public:
         std::string contentType;
         std::variant<
         {{#responses}}
-        {{#is2xx}}{{^isDefault}}
-            {{vendorExtensions.x-codegen-response-union-body-type}}{{^-last}},{{/-last}}
-        {{/isDefault}}{{/is2xx}}
+        {{#vendorExtensions.x-codegen-response-union}}
+            {{{vendorExtensions.x-codegen-response-union-body-type}}}{{^-last}},{{/-last}}
+        {{/vendorExtensions.x-codegen-response-union}}
         {{/responses}}
         > body;
     };

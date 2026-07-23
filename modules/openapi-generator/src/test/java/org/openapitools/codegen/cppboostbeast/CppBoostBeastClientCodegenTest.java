@@ -1754,6 +1754,106 @@ public class CppBoostBeastClientCodegenTest {
                 "Generated API must distinguish all three response status branches: "
                 + "200+FullResource AND 201+SummaryResource AND 204. "
                 + "Current output excerpt: " + apiContent);
+
+        // Phase 7: verify the response union TYPE is generated in the header.
+        Path apiHeader = output.toPath().resolve("api/DefaultApi.h");
+        TestUtils.assertFileExists(apiHeader);
+        String headerContent = java.nio.file.Files.readString(apiHeader);
+
+        // The response union struct must be declared in the header.
+        Assert.assertTrue(headerContent.contains("PostResponseUnionResponse"),
+                "Generated header must declare the response union struct. "
+                + "Current header excerpt: " + apiContent);
+
+        // The response union struct must have status, contentType, and body members.
+        Assert.assertTrue(headerContent.contains("boost::beast::http::status status"),
+                "Response union must contain status member");
+        Assert.assertTrue(headerContent.contains("std::string contentType"),
+                "Response union must contain contentType member");
+        Assert.assertTrue(headerContent.contains("std::variant<"),
+                "Response union body must be a variant");
+
+        // The variant must contain all three body types.
+        Assert.assertTrue(headerContent.contains("std::shared_ptr<FullResource>"),
+                "Response union must contain FullResource variant alternative");
+        Assert.assertTrue(headerContent.contains("std::shared_ptr<SummaryResource>"),
+                "Response union must contain SummaryResource variant alternative");
+        Assert.assertTrue(headerContent.contains("std::monostate"),
+                "Response union must contain std::monostate for 204 no-content");
+
+        // The method return type must be the response union.
+        Assert.assertTrue(headerContent.contains("PostResponseUnionResponse postResponseUnion("),
+                "Method must return PostResponseUnionResponse");
+
+        // No duplicate struct definitions (each struct name appears exactly once).
+        // Each operation with a response union generates a unique struct name.
+        int unionStructDeclCount = headerContent.split("PostResponseUnionResponse", -1).length - 1;
+        Assert.assertEquals("PostResponseUnionResponse must be defined exactly once",
+                2, unionStructDeclCount); // 1 for struct name, 1 for return type
+        // Note: the struct name appears in its own definition and in the return type.
+
+        // Phase 7: verify the API SOURCE contains the expected dispatch patterns.
+        // The source must NOT fall through to "Unexpected HTTP status code".
+        Assert.assertFalse(apiContent.contains("Unexpected HTTP status code"),
+                "Response-union operation must not fall through to unexpected status. "
+                + "Current output: " + apiContent);
+
+        // The source must use executeWithMetadata for response-union operations.
+        Assert.assertTrue(apiContent.contains("executeWithMetadata"),
+                "Response-union operation must use executeWithMetadata");
+
+        // Since all body types are distinct, StatusTaggedValue must NOT appear.
+        Assert.assertFalse(apiContent.contains("StatusTaggedValue"),
+                "StatusTaggedValue must not appear when all body types are distinct");
+    }
+
+    @Test
+    public void generatesStatusTaggedValueForDuplicateBodyTypes() throws IOException {
+        // When two statuses share the same C++ body type, the variant must
+        // use StatusTaggedValue<status(N), T> to preserve distinct identity.
+        File output = java.nio.file.Files.createTempDirectory(
+                "cpp-boost-beast-status-tagged").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(
+                    "src/test/resources/3_0/cpp-boost-beast-client/response-union-duplicate-types.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(
+                configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path apiHeader = output.toPath().resolve("api/DefaultApi.h");
+        TestUtils.assertFileExists(apiHeader);
+        String headerContent = java.nio.file.Files.readString(apiHeader);
+
+        // The response union should use StatusTaggedValue because both
+        // 200 and 201 return FullResource.
+        Assert.assertTrue(headerContent.contains("StatusTaggedValue"),
+                "Header must use StatusTaggedValue for duplicate body types. "
+                + "Current header: " + headerContent);
+
+        // Both status codes must appear in StatusTaggedValue wrappers.
+        Assert.assertTrue(headerContent.contains("StatusTaggedValue<boost::beast::http::status(200),")
+                || headerContent.contains("StatusTaggedValue<boost::beast::http::status( 200 ),"),
+                "StatusTaggedValue for 200 must reference boost::beast::http::status(200)");
+        Assert.assertTrue(headerContent.contains("StatusTaggedValue<boost::beast::http::status(201),")
+                || headerContent.contains("StatusTaggedValue<boost::beast::http::status( 201 ),"),
+                "StatusTaggedValue for 201 must reference boost::beast::http::status(201)");
+
+        Path apiSource = output.toPath().resolve("api/DefaultApi.cpp");
+        TestUtils.assertFileExists(apiSource);
+        String apiContent = java.nio.file.Files.readString(apiSource);
+
+        // Both status codes must have dispatch branches.
+        // (For duplicate body types, the dispatch uses the shared dataType
+        // with different StatusTaggedValue wrappers.)
+        Assert.assertTrue(apiContent.contains("status(200)") || apiContent.contains("status_code_200"),
+                "Source must reference 200");
+        Assert.assertTrue(apiContent.contains("status(201)") || apiContent.contains("status_code_201"),
+                "Source must reference 201");
     }
 
     @Test

@@ -177,6 +177,34 @@
     }
 {{/vendorExtensions.x-codegen-streaming-response}}
 {{^vendorExtensions.x-codegen-streaming-response}}
+{{#vendorExtensions.x-codegen-response-union}}
+    // Response-union path: use executeWithMetadata to capture actual
+    // Content-Type from response headers.
+    std::string responseBody;
+    auto responseData = m_client->executeWithMetadata(
+        "{{httpMethod}}", path, serializedRequestBody, headers);
+    statusCode = responseData.status;
+    responseBody = std::move(responseData.body);
+    // Use actual Content-Type from response headers; fall back to
+    // the requested Accept type for legacy adapters.
+    {
+        std::string responseContentTypeLower = responseContentType;
+        for (auto& c : responseContentTypeLower) {
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        }
+        for (const auto& [hdrKey, hdrVal] : responseData.headers) {
+            std::string keyLower = hdrKey;
+            for (auto& c : keyLower) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            if (keyLower == "content-type") {
+                responseContentType = hdrVal;
+                break;
+            }
+        }
+    }
+{{/vendorExtensions.x-codegen-response-union}}
+{{^vendorExtensions.x-codegen-response-union}}
     std::string responseBody;
     try {
         std::tie(statusCode, responseBody) =
@@ -191,9 +219,10 @@
     catch(...) {
         handleUncaughtException();
     }
+{{/vendorExtensions.x-codegen-response-union}}
 
 {{#vendorExtensions.x-codegen-response-union}}
-    {{vendorExtensions.x-codegen-response-union}} deserializedResponse;
+    {{{vendorExtensions.x-codegen-response-union}}} deserializedResponse;
     deserializedResponse.status = statusCode;
     deserializedResponse.contentType = responseContentType;
 {{/vendorExtensions.x-codegen-response-union}}
@@ -207,7 +236,7 @@
 {{^isDefault}}
     if ({{#isRange}}static_cast<unsigned int>(statusCode) / 100U == {{vendorExtensions.x-codegen-response-range}}U{{/isRange}}{{^isRange}}statusCode == boost::beast::http::status({{code}}){{/isRange}}) {
 {{#is2xx}}
-{{#operation.vendorExtensions.x-codegen-response-union}}
+{{#vendorExtensions.x-codegen-response-union-body-type}}
 {{#dataType}}
         {{{dataType}}} parsedBody;
         {{#vendorExtensions.x-codegen-response-is-oneof}}
@@ -236,8 +265,8 @@
         deserializedResponse.body = std::monostate{};
 {{/dataType}}
         return deserializedResponse;
-{{/operation.vendorExtensions.x-codegen-response-union}}
-{{^operation.vendorExtensions.x-codegen-response-union}}
+{{/vendorExtensions.x-codegen-response-union-body-type}}
+{{^vendorExtensions.x-codegen-response-union-body-type}}
 {{#vendorExtensions.x-codegen-return-compatible}}
 {{#vendorExtensions.x-codegen-streaming-response}}
 {{#returnType}}
@@ -282,7 +311,7 @@
 {{/returnType}}
 {{/vendorExtensions.x-codegen-streaming-response}}
 {{/vendorExtensions.x-codegen-return-compatible}}
-{{/operation.vendorExtensions.x-codegen-response-union}}
+{{/vendorExtensions.x-codegen-response-union-body-type}}
 {{/is2xx}}
 {{^is2xx}}
         throw {{classname}}Exception(statusCode, "{{{message}}}");

@@ -4116,40 +4116,46 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      *
      * Sets on the operation:
      *   x-codegen-response-union: the generated union struct name
-     * Sets on each 2xx non-default response:
+     * Sets on each response used in the union:
+     *   x-codegen-response-union: the union struct name (same as operation-level)
      *   x-codegen-response-union-body-type: the variant alternative body type
-     *     (e.g., "std::shared_ptr<FullResource>" or "std::monostate")
+     *     (e.g., "std::shared_ptr<FullResource>" or "std::monostate").
+     *     Duplicate C++ body types are wrapped in
+     *     StatusTaggedValue<boost::beast::http::status(N), T>.
      *
      * Single-shape operations (one success type) are left unchanged so the
      * existing simple-signature path is used.
      */
     private void addResponseUnionMetadata(CodegenOperation operation) {
-        // Collect successful (2xx, non-default) responses.
-        List<CodegenResponse> successResponses = new ArrayList<>();
+        // Collect union-eligible responses: exact 2xx, range 2xx, or default
+        // responses with a body type.  At least two distinct body shapes are
+        // required for union generation.
+        List<CodegenResponse> unionEligible = new ArrayList<>();
         for (CodegenResponse response : operation.responses) {
-            if (response.is2xx && !response.isDefault) {
-                successResponses.add(response);
+            boolean isSuccessWithBody = response.is2xx
+                    || (response.isDefault && response.dataType != null);
+            if (isSuccessWithBody) {
+                unionEligible.add(response);
             }
         }
-        if (successResponses.size() < 2) {
-            return; // single-shape or zero: no union needed
+        if (unionEligible.size() < 2) {
+            return;
         }
 
-        // Detect whether the success responses have distinct shapes.
+        // Detect whether eligible responses have distinct body shapes.
         // "Distinct" means different dataType, or mixed body/no-body.
         boolean hasMixedShapes = false;
-        String firstDataType = successResponses.get(0).dataType;
-        for (int idx = 1; idx < successResponses.size(); ++idx) {
-            if (!Objects.equals(firstDataType, successResponses.get(idx).dataType)) {
+        String firstDataType = unionEligible.get(0).dataType;
+        for (int idx = 1; idx < unionEligible.size(); ++idx) {
+            if (!Objects.equals(firstDataType, unionEligible.get(idx).dataType)) {
                 hasMixedShapes = true;
                 break;
             }
         }
-        // Also detect body/no-body mix (same dataType string but one null).
         if (!hasMixedShapes) {
             boolean hasBody = false;
             boolean hasNoBody = false;
-            for (CodegenResponse r : successResponses) {
+            for (CodegenResponse r : unionEligible) {
                 if (r.dataType != null) {
                     hasBody = true;
                 } else {
@@ -4160,9 +4166,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 hasMixedShapes = true;
             }
         }
-
         if (!hasMixedShapes) {
-            return; // all success responses share the same body shape
+            return;
         }
 
         // Build the union struct name: capitalize the operationId + "Response"
@@ -4177,14 +4182,61 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
         operation.vendorExtensions.put(X_CODEGEN_RESPONSE_UNION, unionName);
 
-        // Tag each successful response with its body type for the variant.
-        // Use the response dataType directly (may be std::shared_ptr<Foo> etc.)
-        // or std::monostate for no-body responses.
-        for (CodegenResponse response : successResponses) {
-            String bodyType = response.dataType != null
-                    ? response.dataType
-                    : "std::monostate";
-            response.vendorExtensions.put(X_CODEGEN_RESPONSE_UNION_BODY_TYPE, bodyType);
+        // Detect duplicate raw body types and build StatusTaggedValue wrappers.
+        // Key = raw C++ type string, value = list of responses using it.
+        Map<String, List<CodegenResponse>> rawTypeToResponses = new LinkedHashMap<>();
+        for (CodegenResponse response : unionEligible) {
+            String rawType = response.dataType != null
+                    ? response.dataType : "std::monostate";
+            rawTypeToResponses.computeIfAbsent(rawType,
+                    k -> new ArrayList<>()).add(response);
+        }
+
+        // Assign the final body type to each response.
+        for (CodegenResponse response : unionEligible) {
+            // Propagate union name to per-response scope so templates can
+            // access x-codegen-response-union directly without parent lookup.
+            response.vendorExtensions.put(X_CODEGEN_RESPONSE_UNION, unionName);
+
+            String rawType = response.dataType != null
+                    ? response.dataType : "std::monostate";
+            List<CodegenResponse> sharingResponses = rawTypeToResponses.get(rawType);
+            String finalBodyType;
+            if (sharingResponses != null && sharingResponses.size() > 1) {
+                // Two or more statuses share the same C++ body type.
+                // Wrap in StatusTaggedValue<status(N), T> to preserve
+                // distinct status identity in the variant.
+                String statusCodeStr = response.code;
+                int statusCodeInt;
+                try {
+                    statusCodeInt = Integer.parseInt(
+                            statusCodeStr.replaceAll("[^0-9]", ""));
+                } catch (NumberFormatException e) {
+                    // Range or default code; use 0 as placeholder.
+                    statusCodeInt = 0;
+                }
+                finalBodyType = "StatusTaggedValue<boost::beast::http::status("
+                        + statusCodeInt + "), " + rawType + ">";
+            } else {
+                finalBodyType = rawType;
+            }
+            response.vendorExtensions.put(
+                    X_CODEGEN_RESPONSE_UNION_BODY_TYPE, finalBodyType);
+        }
+
+        // Also set the default response body type for template dispatch
+        // when a default response is eligible.
+        if (operation.vendorExtensions.containsKey(X_CODEGEN_HAS_DEFAULT_RESPONSE)
+                && Boolean.TRUE.equals(operation.vendorExtensions.get(
+                        X_CODEGEN_HAS_DEFAULT_RESPONSE))) {
+            for (CodegenResponse response : operation.responses) {
+                if (response.isDefault && response.dataType != null) {
+                    response.vendorExtensions.put(X_CODEGEN_RESPONSE_UNION, unionName);
+                    String rawType = response.dataType;
+                    response.vendorExtensions.put(
+                            X_CODEGEN_RESPONSE_UNION_BODY_TYPE, rawType);
+                }
+            }
         }
     }
 
