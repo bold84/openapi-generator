@@ -1607,14 +1607,25 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // Build discriminator-value → branch-index lookup for template reorder.
             // Uses the full MappedModel set (explicit URI + implicit component-name)
             // so the template can reorder candidate validation for diagnostics.
+            // Self-referential mappings (modelName == cm.classname) are skipped
+            // rather than failing the whole model per §8 / Phase 4b policy.
             if (cm.discriminator != null && cm.discriminator.getMappedModels() != null
-                    && !cm.discriminator.getMappedModels().isEmpty()) {
-                List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
-                        cm.discriminator.getMappedModels(),
-                        descriptor.getBranches());
-                if (!discBranchIndex.isEmpty()) {
-                    cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
-                    cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
+                    && !cm.discriminator.getMappedModels().isEmpty()
+                    && descriptor != null) {
+                // Filter out self-referential MappedModel entries
+                Set<CodegenDiscriminator.MappedModel> filtered = new LinkedHashSet<>();
+                for (CodegenDiscriminator.MappedModel mm : cm.discriminator.getMappedModels()) {
+                    if (mm.getModelName() == null || !mm.getModelName().equals(cm.classname)) {
+                        filtered.add(mm);
+                    }
+                }
+                if (!filtered.isEmpty()) {
+                    List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
+                            filtered, descriptor.getBranches());
+                    if (!discBranchIndex.isEmpty()) {
+                        cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                        cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
+                    }
                 }
             } else if (descriptor != null && descriptor.hasDiscriminator()) {
                 // Fallback: use explicit descriptor mapping when MappedModel unavailable
@@ -1744,14 +1755,23 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // Build discriminator-value → branch-index lookup for template reorder.
             // Uses the full MappedModel set (explicit URI + implicit component-name)
             // when available, falling back to the descriptor's explicit mapping.
+            // Self-referential mappings are skipped per §8 / Phase 4b policy.
             if (cm.discriminator != null && cm.discriminator.getMappedModels() != null
                     && !cm.discriminator.getMappedModels().isEmpty()) {
-                List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
-                        cm.discriminator.getMappedModels(),
-                        descBranches);
-                if (!discBranchIndex.isEmpty()) {
-                    cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
-                    cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
+                // Filter out self-referential MappedModel entries
+                Set<CodegenDiscriminator.MappedModel> filtered = new LinkedHashSet<>();
+                for (CodegenDiscriminator.MappedModel mm : cm.discriminator.getMappedModels()) {
+                    if (mm.getModelName() == null || !mm.getModelName().equals(cm.classname)) {
+                        filtered.add(mm);
+                    }
+                }
+                if (!filtered.isEmpty()) {
+                    List<Map<String, Object>> discBranchIndex = buildDiscriminatorBranchIndex(
+                            filtered, descBranches);
+                    if (!discBranchIndex.isEmpty()) {
+                        cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                        cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
+                    }
                 }
             } else if (desc.hasDiscriminator()) {
                 // Fallback: use explicit descriptor mapping when MappedModel unavailable
@@ -1808,11 +1828,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         List<Map<String, Object>> indexList = new ArrayList<>();
         if (mappedModels == null || mappedModels.isEmpty()) return indexList;
         for (CodegenDiscriminator.MappedModel mm : mappedModels) {
-            String modelName = mm.getModelName();
-            if (modelName == null) continue;
+            if (mm == null) continue;
             int branchIndex = -1;
             for (int bi = 0; bi < branches.size(); bi++) {
-                if (modelName.equals(branches.get(bi).getResolvedSchemaName())) {
+                String resolvedName = branches.get(bi).getResolvedSchemaName();
+                if (resolvedName == null) continue;
+                // Match on raw schemaName first (handles lowercase/raw names),
+                // then on sanitized modelName (handles normalised names).
+                if (resolvedName.equals(mm.getSchemaName())
+                        || resolvedName.equals(mm.getModelName())) {
                     branchIndex = bi;
                     break;
                 }
@@ -1827,9 +1851,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 throw new RuntimeException(
                     "Discriminator mapping value '"
                     + escapeCppStringContent(mm.getMappingName())
-                    + "' (model: " + modelName
+                    + "' (schema: " + mm.getSchemaName()
+                    + ", model: " + mm.getModelName()
                     + ") does not match any composition branch for schema '"
-                    + (modelName != null ? modelName : "(unknown)")
+                    + (mm.getModelName() != null ? mm.getModelName() : "(unknown)")
                     + "'. Valid branches: "
                     + branches.stream()
                         .map(CompositionBranchDescriptor::getResolvedSchemaName)

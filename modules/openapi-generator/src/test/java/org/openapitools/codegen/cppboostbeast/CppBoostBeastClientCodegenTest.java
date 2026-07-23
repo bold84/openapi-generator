@@ -2713,6 +2713,9 @@ public class CppBoostBeastClientCodegenTest {
         // names as a List<{key, value}> for Mustache iteration.
         // URI-style and plain-name mappings both work; unresolvable mappings
         // cause a generation diagnostic (RuntimeException).
+        //
+        // MappedModel overload: resolves via schemaName (raw, handles lowercase)
+        // AND modelName (sanitized) against branch resolvedSchemaName.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -2792,6 +2795,55 @@ public class CppBoostBeastClientCodegenTest {
         }
         Assert.assertTrue(threwExpected,
                 "buildDiscriminatorBranchIndex must throw for unresolvable mappings");
+
+        // Test MappedModel overload: must resolve via schemaName (raw name) AND
+        // modelName (sanitized name) to handle lowercase/raw schema names.
+        Set<org.openapitools.codegen.CodegenDiscriminator.MappedModel> mappedModels =
+                new java.util.LinkedHashSet<>();
+        // MappedModel with lowercase schemaName "cat" matching resolvedSchemaName "cat"
+        mappedModels.add(new org.openapitools.codegen.CodegenDiscriminator.MappedModel(
+                "feline", "Cat", "cat", false));
+        // MappedModel with uppercase schemaName that matches modelName
+        mappedModels.add(new org.openapitools.codegen.CodegenDiscriminator.MappedModel(
+                "canine", "Dog", null, false));
+
+        List<CppBoostBeastClientCodegen.CompositionBranchDescriptor> testBranches =
+                new java.util.ArrayList<>();
+        // Branch 0: resolvedSchemaName = "cat" (lowercase, matches schemaName)
+        testBranches.add(new CppBoostBeastClientCodegen.CompositionBranchDescriptor(
+                0, "#/components/schemas/cat", "cat", "Cat",
+                "validate_cat_branch_0",
+                CppBoostBeastClientCodegen.NullCapability.NEVER,
+                java.util.Collections.emptyList(),
+                java.util.Collections.emptyList(),
+                java.util.Collections.emptyMap()));
+        // Branch 1: resolvedSchemaName = "Dog" (uppercase, matches modelName)
+        testBranches.add(new CppBoostBeastClientCodegen.CompositionBranchDescriptor(
+                1, "#/components/schemas/Dog", "Dog", "Dog",
+                "validate_dog_branch_1",
+                CppBoostBeastClientCodegen.NullCapability.NEVER,
+                java.util.Collections.emptyList(),
+                java.util.Collections.emptyList(),
+                java.util.Collections.emptyMap()));
+
+        // Build via MappedModel overload
+        List<Map<String, Object>> mmIndex =
+                CppBoostBeastClientCodegen.buildDiscriminatorBranchIndex(
+                        mappedModels, testBranches);
+        Assert.assertNotNull(mmIndex,
+                "buildDiscriminatorBranchIndex(MappedModel) must return non-null list");
+        Assert.assertEquals(mmIndex.size(), 2,
+                "Both MappedModel entries must resolve to branches");
+        // First entry: feline → cat (resolved via schemaName)
+        Assert.assertEquals(mmIndex.get(0).get("key"), "feline",
+                "First entry key must be 'feline'");
+        Assert.assertEquals(mmIndex.get(0).get("value"), 0,
+                "feline mapping must resolve to branch 0 via schemaName match");
+        // Second entry: canine → Dog (resolved via modelName)
+        Assert.assertEquals(mmIndex.get(1).get("key"), "canine",
+                "Second entry key must be 'canine'");
+        Assert.assertEquals(mmIndex.get(1).get("value"), 1,
+                "canine mapping must resolve to branch 1 via modelName match");
     }
 
     @Test
