@@ -1611,6 +1611,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         descriptor.getBranches());
                 if (!discBranchIndex.isEmpty()) {
                     cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                    cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
                 }
             }
         }
@@ -1735,6 +1736,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         descBranches);
                 if (!discBranchIndex.isEmpty()) {
                     cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                    cm.vendorExtensions.put("x-has-discriminator-branch-index", true);
                 }
             }
         }
