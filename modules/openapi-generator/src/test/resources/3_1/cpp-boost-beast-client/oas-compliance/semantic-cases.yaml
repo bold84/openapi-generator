@@ -56,6 +56,7 @@
 
 - id: number-only-accept-int
   note: "type: number, value 1 — accept (integer is valid number)"
+  spec: nullable-object-regression.yaml
   cases:
     - payload: 1
       expected: decode_accept
@@ -231,6 +232,7 @@
 
 - id: multipart-encoding-explicit-content-type
   note: "multipart with explicit image/png encoding"
+  spec: multipart-encoding-regression.yaml
   expected: decode_accept
   # Current generator loses encoding metadata; compiled C++ compiles but
   # does not emit the expected Content-Type header on the wire.  This is
@@ -239,6 +241,7 @@
 
 - id: multipart-default-binary-no-encoding
   note: "multipart binary without encoding metadata — emit specification default"
+  spec: multipart-encoding-regression.yaml
   expected: decode_accept
   # Same generator gap as explicit-content-type.
 
@@ -316,6 +319,4 @@
     - payload: '{"label":"test","nullableValue":"hello"}'
       expected: round_trip
 
-- id: oas30-sse-mode-lock
-  note: "OAS 3.0 SSE mode — no dedicated OAS 3.0 SSE regression spec (3.1 pure-sse-object.yaml exercises framed pattern)"
-  expected: decode_accept
+
