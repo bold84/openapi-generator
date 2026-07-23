@@ -20,8 +20,9 @@
 //   ✓ array uniqueItems validation
 //   ✓ object property count constraints (minProperties, maxProperties)
 //   ✓ boolean schema true/false validation
-//   ✓ nested composition ($ref, oneOf, anyOf, allOf, not)
+//   ✓ nested composition ($ref, oneOf, anyOf, allOf)
 //   ✓ nested error-path diagnostics (e.g. ".field[0].nested")
+//   ✗ `not` schema (fails generation with schema-path diagnostic)
 //
 //   ✗ String format validation (email, date-time, uri, etc.)
 //   ✗ if/then/else conditional validation
@@ -173,24 +174,23 @@ bool tryParseBranch(boost::json::value const& value, T& result, std::string* err
             result = boost::json::value_to<bool>(value);
             return true;
         } else if constexpr (std::is_same_v<T, std::int32_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < (std::numeric_limits<std::int32_t>::min)() || raw > (std::numeric_limits<std::int32_t>::max)()) return false;
             result = static_cast<std::int32_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::uint8_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < 0 || raw > 255) return false;
             result = static_cast<std::uint8_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::int64_t>) {
-            if (!value.is_int64()) return false;
-            result = value.as_int64();
-            return true;
+            return tryGetMathematicalInteger(value, result);
         } else if constexpr (std::is_same_v<T, double>) {
             if (value.is_double()) { result = value.as_double(); return true; }
             if (value.is_int64()) { result = static_cast<double>(value.as_int64()); return true; }
+            if (value.is_uint64()) { result = static_cast<double>(value.as_uint64()); return true; }
             return false;
         } else if constexpr (std::is_same_v<T, boost::json::value>) {
             result = value;
@@ -372,66 +372,156 @@ ValidationResult validate_{{validator-id}}(
 
     // Type validation
     {{#validation-type}}
-    if (!checkJsonType(instance, "{{.}}")) {
-        return ValidationResult::invalidAt(path,
-            "expected type {{.}}");
+    {{! type-array means OAS 3.1 type: [string, integer, ...] }}
+    {{#validation-type-array}}
+    {
+        bool typeMatch = false;
+        {{#validation-type-array}}
+        if (checkJsonType(instance, "{{.}}")) { typeMatch = true; }
+        {{/validation-type-array}}
+        if (!typeMatch) {
+            return ValidationResult::invalidAt(path, "no matching type in type array");
+        }
     }
+    {{/validation-type-array}}
+    {{^validation-type-array}}
+    if (!checkJsonType(instance, "{{.}}")) {
+        return ValidationResult::invalidAt(path, "expected type {{.}}");
+    }
+    {{/validation-type-array}}
     {{/validation-type}}
 
     // Mathematical integer validation for integer-typed branches
     {{#validation-type}}
+    {{#validation-type-array}}
+    {{! Skip per-type mathematical-int check for type arrays — handled above }}
+    {{/validation-type-array}}
+    {{^validation-type-array}}
     if (std::string("{{.}}") == "integer" && instance.is_double()) {
         if (!isJsonInteger(instance)) {
             return ValidationResult::invalidAt(path,
                 "expected mathematical integer, got non-integral double");
         }
     }
+    {{/validation-type-array}}
     {{/validation-type}}
 
-    // Enum validation (string enum)
+    // Enum validation (all JSON kinds: string, integer, number, bool)
     {{#has-validation-enum}}
-    if (instance.is_string()) {
+    {{! validation-enum-kind tells the template what predominant kind the
+        enum values are: "string", "integer", "number", or "bool". }}
+    {{#validation-enum-kind}}
+    if (std::string("{{.}}") == "string") {
+        if (instance.is_string()) {
+            bool found = false;
+            {{#validation-enum-values}}
+            if (instance.as_string() == "{{.}}") found = true;
+            {{/validation-enum-values}}
+            if (!found) {
+                return ValidationResult::invalidAt(path,
+                    "string value not in allowed enum set");
+            }
+        } else {
+            return ValidationResult::invalidAt(path, "expected string enum value");
+        }
+    } else if (std::string("{{.}}") == "integer") {
+        if (instance.is_int64() || instance.is_uint64()) {
+            bool found = false;
+            std::int64_t rawInt = instance.is_int64()
+                ? instance.as_int64() : static_cast<std::int64_t>(instance.as_uint64());
+            {{#validation-enum-values}}
+            if (rawInt == static_cast<std::int64_t>({{.}})) found = true;
+            {{/validation-enum-values}}
+            if (!found) {
+                return ValidationResult::invalidAt(path,
+                    "integer value not in allowed enum set");
+            }
+        } else if (isJsonInteger(instance)) {
+            // Accept integral doubles as enum matches via mathematical integer
+            double rawDbl = instance.as_double();
+            bool found = false;
+            {{#validation-enum-values}}
+            if (rawDbl == static_cast<double>({{.}})) found = true;
+            {{/validation-enum-values}}
+            if (!found) {
+                return ValidationResult::invalidAt(path,
+                    "numeric value not in allowed enum set");
+            }
+        } else {
+            return ValidationResult::invalidAt(path, "expected integer enum value");
+        }
+    } else if (std::string("{{.}}") == "number") {
+        if (isJsonNumber(instance)) {
+            double rawNum = instance.is_double()
+                ? instance.as_double()
+                : static_cast<double>(instance.is_int64()
+                    ? instance.as_int64()
+                    : static_cast<std::int64_t>(instance.as_uint64()));
+            bool found = false;
+            {{#validation-enum-values}}
+            if (std::abs(rawNum - static_cast<double>({{.}})) < 1e-12) found = true;
+            {{/validation-enum-values}}
+            if (!found) {
+                return ValidationResult::invalidAt(path,
+                    "number value not in allowed enum set");
+            }
+        } else {
+            return ValidationResult::invalidAt(path, "expected number enum value");
+        }
+    } else if (std::string("{{.}}") == "bool") {
+        if (!instance.is_bool()) {
+            return ValidationResult::invalidAt(path, "expected boolean enum value");
+        }
+        bool rawBool = instance.as_bool();
         bool found = false;
-        // enum values
         {{#validation-enum-values}}
-        if (instance.as_string() == "{{.}}") found = true;
+        if (rawBool == static_cast<bool>({{.}})) found = true;
         {{/validation-enum-values}}
         if (!found) {
             return ValidationResult::invalidAt(path,
-                "value not in allowed enum set");
+                "bool value not in allowed enum set");
         }
     }
+    {{/validation-enum-kind}}
     {{/has-validation-enum}}
 
     // Const validation (OAS const — exact value must match)
     {{#has-validation-const}}
     {
-        bool constMatch = true;
-        {{! Inside the iteration over validation-const-value, {{.}} is the
-            const-value string from the schema. }}
-        {{#validation-const-value}}
-        if (instance.is_string()) {
-            if (instance.as_string() != "{{.}}") {
-                constMatch = false;
+        bool constMatch = false;
+        {{#validation-const-type}}
+        {{! validation-const-type tells us the JSON kind: "string", "number", "boolean" }}
+        if (std::string("{{.}}") == "string") {
+            {{#validation-const-value}}
+            if (instance.is_string() && instance.as_string() == "{{.}}") {
+                constMatch = true;
             }
-        } else if (isJsonNumber(instance)) {
-            double expected = static_cast<double>(std::stod("{{.}}"));
-            double actual = instance.is_double() ? instance.as_double()
-                          : static_cast<double>(instance.as_int64());
-            if (actual != expected) {
-                constMatch = false;
+            {{/validation-const-value}}
+        } else if (std::string("{{.}}") == "number") {
+            {{#validation-const-value}}
+            if (isJsonNumber(instance)) {
+                double expected = std::stod("{{.}}");
+                double actual = instance.is_double()
+                    ? instance.as_double()
+                    : static_cast<double>(instance.is_int64()
+                        ? instance.as_int64()
+                        : static_cast<std::int64_t>(instance.as_uint64()));
+                if (std::abs(actual - expected) < 1e-12) {
+                    constMatch = true;
+                }
             }
-        } else if (instance.is_bool()) {
-            // Boolean const handled via type check only — value comparison
-            // would require the template to know the boolean representation.
-            constMatch = false;
-        } else {
-            constMatch = false;
+            {{/validation-const-value}}
+        } else if (std::string("{{.}}") == "boolean") {
+            {{#validation-const-value}}
+            if (instance.is_bool()) {
+                bool rawBool = instance.as_bool();
+                constMatch = (rawBool == (std::string("{{.}}") == "true"));
+            }
+            {{/validation-const-value}}
         }
-        {{/validation-const-value}}
+        {{/validation-const-type}}
         if (!constMatch) {
-            return ValidationResult::invalidAt(path,
-                "const value mismatch");
+            return ValidationResult::invalidAt(path, "const value mismatch");
         }
     }
     {{/has-validation-const}}
@@ -481,6 +571,16 @@ ValidationResult validate_{{validator-id}}(
                 "at or above exclusive maximum " + std::to_string({{validation-exclusive-max}}));
         }
         {{/validation-exclusive-max}}
+        {{#validation-multiple-of}}
+        if (std::fmod(numericVal, static_cast<double>({{validation-multiple-of}})) != 0.0) {
+            // Guard against floating-point precision: accept very small remainder
+            double remainder = std::fmod(numericVal, static_cast<double>({{validation-multiple-of}}));
+            if (remainder > 1e-12 && std::abs(remainder - static_cast<double>({{validation-multiple-of}})) > 1e-12) {
+                return ValidationResult::invalidAt(path,
+                    "not a multiple of " + std::to_string({{validation-multiple-of}}));
+            }
+        }
+        {{/validation-multiple-of}}
     }
     {{/has-validation-numeric}}
 
@@ -561,6 +661,26 @@ ValidationResult validate_{{validator-id}}(
 {{classname}} fromJsonValue_{{classname}}(boost::json::value const& value)
 {
     {{#discriminator}}
+    // NOTE: Discriminator interaction (Phase 2, conversion-first):
+    //
+    // Currently, the discriminator is evaluated FIRST (conversion-first):
+    // if the discriminator property matches a known mapping, that branch
+    // is selected immediately without consulting any per-branch validators
+    // (const, pattern, enum, numeric-range). The validators only apply
+    // after the branch is selected, during the structural conversion to
+    // the mapped model type.
+    //
+    // This means the discriminator alone drives membership: a value with
+    // matching discriminator but invalid per-branch constraints (e.g.
+    // wrong enum value for a string branch) will still match — the
+    // validation error surfaces during the target model's conversion.
+    //
+    // Phase 4 is expected to re-evaluate this: if validation is moved
+    // before discriminator dispatch, the per-branch constraints should
+    // participate in branch selection alongside the discriminator value
+    // (validation-first). Until then, the discriminator is the sole
+    // membership decision for discriminated variants.
+    //
     // Discriminator-aware dispatch: if the JSON has a discriminator
     // property and it matches a known mapping, dispatch directly.
     // Otherwise, fall through to branch-by-branch trial (handles
@@ -820,24 +940,23 @@ bool tryParseBranch(boost::json::value const& value, T& result, std::string* err
             result = boost::json::value_to<bool>(value);
             return true;
         } else if constexpr (std::is_same_v<T, std::int32_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < (std::numeric_limits<std::int32_t>::min)() || raw > (std::numeric_limits<std::int32_t>::max)()) return false;
             result = static_cast<std::int32_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::uint8_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < 0 || raw > 255) return false;
             result = static_cast<std::uint8_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::int64_t>) {
-            if (!value.is_int64()) return false;
-            result = value.as_int64();
-            return true;
+            return tryGetMathematicalInteger(value, result);
         } else if constexpr (std::is_same_v<T, double>) {
             if (value.is_double()) { result = value.as_double(); return true; }
             if (value.is_int64()) { result = static_cast<double>(value.as_int64()); return true; }
+            if (value.is_uint64()) { result = static_cast<double>(value.as_uint64()); return true; }
             return false;
         } else if constexpr (std::is_same_v<T, boost::json::value>) {
             result = value;

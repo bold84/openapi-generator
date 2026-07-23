@@ -403,37 +403,61 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (targetForAssertions.getEnum() != null && !targetForAssertions.getEnum().isEmpty()) {
                     supported.add("enum");
                     List<String> enumStrs = new ArrayList<>();
+                    String predominantKind = "string";
                     for (Object e : targetForAssertions.getEnum()) {
-                        enumStrs.add(e != null ? e.toString() : "null");
+                        String es = e != null ? e.toString() : "null";
+                        if ("string".equals(predominantKind)) {
+                            es = escapeCppStringContent(es);
+                        }
+                        enumStrs.add(es);
+                        if (e instanceof Integer || e instanceof Long || e instanceof Short || e instanceof Byte) {
+                            predominantKind = "integer";
+                        } else if (e instanceof Double || e instanceof Float || e instanceof java.math.BigDecimal) {
+                            if (!"integer".equals(predominantKind)) predominantKind = "number";
+                        } else if (e instanceof Boolean) {
+                            if (!"integer".equals(predominantKind) && !"number".equals(predominantKind)) predominantKind = "bool";
+                        }
                     }
                     validateParams.put("validation-enum-values", enumStrs);
+                    validateParams.put("validation-enum-kind", predominantKind);
                     validateParams.put("has-validation-enum", true);
                 }
+                // Const: detect JSON kind for the validator template
                 if (targetForAssertions.getConst() != null) {
                     supported.add("const");
-                    validateParams.put("validation-const-value",
-                            targetForAssertions.getConst().toString());
+                    Object constVal = targetForAssertions.getConst();
+                    if (constVal instanceof Number) {
+                        validateParams.put("validation-const-type", "number");
+                        validateParams.put("validation-const-value", constVal.toString());
+                    } else if (constVal instanceof Boolean) {
+                        validateParams.put("validation-const-type", "boolean");
+                        validateParams.put("validation-const-value", constVal.toString());
+                    } else {
+                        validateParams.put("validation-const-type", "string");
+                        validateParams.put("validation-const-value",
+                                escapeCppStringContent(constVal.toString()));
+                    }
                     validateParams.put("has-validation-const", true);
                 }
-                if (targetForAssertions.getMinimum() != null
-                        || targetForAssertions.getMaximum() != null
-                        || targetForAssertions.getExclusiveMinimum() != null
-                        || targetForAssertions.getExclusiveMaximum() != null
+                // Use ModelUtils.resolveMinimumBound / resolveMaximumBound for
+                // proper OAS 3.0→3.1 resolution (boolean → numeric conversion,
+                // allOf intersection, $ref traversal).
+                ModelUtils.ResolvedMinBound resolvedMin = ModelUtils.resolveMinimumBound(openAPI, targetForAssertions);
+                ModelUtils.ResolvedMaxBound resolvedMax = ModelUtils.resolveMaximumBound(openAPI, targetForAssertions);
+                if (resolvedMin != null || resolvedMax != null
                         || targetForAssertions.getMultipleOf() != null) {
                     supported.add("numeric-range");
-                    if (targetForAssertions.getMinimum() != null) {
-                        validateParams.put("validation-min", targetForAssertions.getMinimum());
+                    if (resolvedMin != null) {
+                        validateParams.put("validation-min", resolvedMin.minBound);
+                        if (resolvedMin.exclusive) {
+                            validateParams.put("validation-exclusive-min", resolvedMin.minBound);
+                        }
                     }
-                    if (targetForAssertions.getMaximum() != null) {
-                        validateParams.put("validation-max", targetForAssertions.getMaximum());
-                    }
-                    if (targetForAssertions.getExclusiveMinimum() != null) {
-                        validateParams.put("validation-exclusive-min",
-                                targetForAssertions.getExclusiveMinimum());
-                    }
-                    if (targetForAssertions.getExclusiveMaximum() != null) {
-                        validateParams.put("validation-exclusive-max",
-                                targetForAssertions.getExclusiveMaximum());
+                    if (resolvedMax != null) {
+                        validateParams.put("validation-max", resolvedMax.maxBound);
+                        if (resolvedMax.exclusive) {
+                            validateParams.put("validation-exclusive-max", resolvedMax.maxBound);
+                        }
                     }
                     if (targetForAssertions.getMultipleOf() != null) {
                         validateParams.put("validation-multiple-of",
@@ -457,7 +481,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (targetForAssertions.getPattern() != null) {
                     supported.add("pattern");
                     validateParams.put("validation-pattern",
-                            targetForAssertions.getPattern());
+                            escapeCppStringContent(targetForAssertions.getPattern()));
                     validateParams.put("has-validation-pattern", true);
                 }
                 if (targetForAssertions.getItems() != null
@@ -512,10 +536,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
                 if (targetForAssertions.getOneOf() != null
                         || targetForAssertions.getAnyOf() != null
-                        || targetForAssertions.getAllOf() != null
-                        || targetForAssertions.getNot() != null) {
+                        || targetForAssertions.getAllOf() != null) {
                     supported.add("composition");
                     validateParams.put("has-validation-composition", true);
+                }
+                // `not` is always unsupported: it can flip any membership decision
+                // and no generated validator currently implements it.
+                if (targetForAssertions.getNot() != null) {
+                    unsupported.add("not");
                 }
 
                 // Detect unsupported assertion keywords
@@ -611,12 +639,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 this.modelPackage);
         addOption(CodegenConstants.API_PACKAGE, "C++ namespace for apis (convention: name.space.api).",
                 this.apiPackage);
-        addOption(new CliOption("formatAssertionPolicy",
+        CliOption formatAssertionOption = new CliOption("formatAssertionPolicy",
                 "Policy for format-assertion validation in composition branch matching."
                 + " 'annotation' (default): format ranges affect destination conversion only,"
                 + " never match counts. 'strict': documented format assertions participate"
-                + " in branch validation.")
-                .defaultValue(FORMAT_ASSERTION_POLICY_ANNOTATION));
+                + " in branch validation.");
+        formatAssertionOption.defaultValue(FORMAT_ASSERTION_POLICY_ANNOTATION);
+        cliOptions.add(formatAssertionOption);
 
 
         supportingFiles.add(new SupportingFile("validation-types.mustache", "model", "ValidationTypes.h"));
@@ -1788,16 +1817,21 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (desc == null) return;
         for (CompositionBranchDescriptor branch : desc.getBranches()) {
             for (String unsupported : branch.getUnsupportedAssertions()) {
-                // All unsupported assertion categories currently stop generation
-                // when they appear on a oneOf/anyOf branch, because they can
-                // change membership without a generated validator.
-                // allOf models are exempted from this check because the use of
-                // unsupported assertions in allOf does not affect membership
-                // count (all branches must match).
-                if (!"allOf".equals(desc.getKeyword())) {
-                    throw new UnsupportedSchemaAssertionException(
-                            desc.getSchemaLocation(), unsupported);
+                // `not` is always fail-closed: it flips membership, so every
+                // composition keyword must have explicit support.
+                // All other unsupported assertion categories stop generation
+                // for oneOf/anyOf only, since they can change membership count
+                // without a generated validator.
+                // allOf models are exempted from the non-not check because allOf
+                // membership means "all branches must match" — unsupported
+                // assertions don't change match count.
+                if ("not".equals(unsupported)) {
+                    // `not` always fails generation regardless of keyword
+                } else if ("allOf".equals(desc.getKeyword())) {
+                    continue; // non-not unsupported assertions exempted for allOf
                 }
+                throw new UnsupportedSchemaAssertionException(
+                        desc.getSchemaLocation(), unsupported);
             }
         }
     }
@@ -2176,7 +2210,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         additionalProperties.put("apiNamespaceDeclarations", apiPackage.split("\\."));
         additionalProperties.put("apiNamespace", apiPackage.replaceAll("\\.", "::"));
 
-        // Phase 2: format assertion policy
+        // Phase 2: format assertion policy.
+        // Currently only "annotation" is supported: format meta-data is passed
+        // through to destination types but does NOT participate in branch
+        // validation. "strict" mode (format assertions count toward branch
+        // match decisions) is deferred — it requires implementing format
+        // validators (email, date-time, uri, etc.) which are in the scope
+        // checklist as deferred items.
         if (additionalProperties.containsKey("formatAssertionPolicy")) {
             String policy = additionalProperties.get("formatAssertionPolicy").toString().trim().toLowerCase(Locale.ROOT);
             if (FORMAT_ASSERTION_POLICY_STRICT.equals(policy)) {

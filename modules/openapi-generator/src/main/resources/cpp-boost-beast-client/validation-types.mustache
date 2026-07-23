@@ -101,91 +101,106 @@ inline ValidationResult ValidationResult::invalidAt(ValidationPath const& path, 
 
 /// Returns true if the value is any JSON number (int64, uint64, or double).
 inline bool isJsonNumber(boost::json::value const& v) {
-    return v.is_int64() || v.is_uint64() || v.is_double();
+    switch (v.kind()) {
+        case boost::json::kind::int64:
+        case boost::json::kind::uint64:
+        case boost::json::kind::double_:
+            return true;
+        default:
+            return false;
+    }
 }
 
 /// Returns true if the value is a mathematical integer.
 /// 1 and 1.0 both satisfy; non-integral doubles do not.
 /// Standalone NaN/infinity are rejected as not integers.
 inline bool isJsonInteger(boost::json::value const& v) {
-    if (v.is_int64() || v.is_uint64()) {
-        return true;
+    switch (v.kind()) {
+        case boost::json::kind::int64:
+        case boost::json::kind::uint64:
+            return true;
+        case boost::json::kind::double_: {
+            double d = v.as_double();
+            if (!std::isfinite(d)) return false;
+            double integralPart;
+            return std::modf(d, &integralPart) == 0.0;
+        }
+        default:
+            return false;
     }
-    if (v.is_double()) {
-        double d = v.as_double();
-        // Reject NaN, infinity
-        if (!std::isfinite(d)) return false;
-        double integralPart;
-        return std::modf(d, &integralPart) == 0.0;
-    }
-    return false;
 }
 
 /// Attempts to extract a mathematical integer into a checked destination.
 /// Returns false when the value is not integral or exceeds destination bounds.
 template <typename T>
 bool tryGetMathematicalInteger(boost::json::value const& v, T& out) {
-    if (v.is_int64()) {
-        auto raw = v.as_int64();
-        if (raw < (std::numeric_limits<T>::min)() || raw > (std::numeric_limits<T>::max)()) {
-            return false;
+    switch (v.kind()) {
+        case boost::json::kind::int64: {
+            auto raw = v.as_int64();
+            if (raw < (std::numeric_limits<T>::min)() || raw > (std::numeric_limits<T>::max)()) {
+                return false;
+            }
+            out = static_cast<T>(raw);
+            return true;
         }
-        out = static_cast<T>(raw);
-        return true;
-    }
-    if (v.is_uint64()) {
-        auto raw = v.as_uint64();
-        if (raw > static_cast<std::uint64_t>((std::numeric_limits<T>::max)())) {
-            return false;
+        case boost::json::kind::uint64: {
+            auto raw = v.as_uint64();
+            if (raw > static_cast<std::uint64_t>((std::numeric_limits<T>::max)())) {
+                return false;
+            }
+            out = static_cast<T>(raw);
+            return true;
         }
-        out = static_cast<T>(raw);
-        return true;
-    }
-    if (v.is_double()) {
-        double d = v.as_double();
-        if (!std::isfinite(d)) return false;
-        double integralPart;
-        if (std::modf(d, &integralPart) != 0.0) return false;
-        if (integralPart < static_cast<double>((std::numeric_limits<T>::min)())
-            || integralPart > static_cast<double>((std::numeric_limits<T>::max)())) {
-            return false;
+        case boost::json::kind::double_: {
+            double d = v.as_double();
+            if (!std::isfinite(d)) return false;
+            double integralPart;
+            if (std::modf(d, &integralPart) != 0.0) return false;
+            if (integralPart < static_cast<double>((std::numeric_limits<T>::min)())
+                || integralPart > static_cast<double>((std::numeric_limits<T>::max)())) {
+                return false;
+            }
+            out = static_cast<T>(integralPart);
+            return true;
         }
-        out = static_cast<T>(integralPart);
-        return true;
+        default:
+            return false;
     }
-    return false;
 }
 
 /// Converts a JSON number to the requested C++ type.
 /// Destination bounds are checked; throw on out-of-range or non-finite double.
 template <typename T>
 T convertJsonNumber(boost::json::value const& v) {
-    if (v.is_int64()) {
-        auto raw = v.as_int64();
-        if (raw < (std::numeric_limits<T>::min)() || raw > (std::numeric_limits<T>::max)()) {
-            throw std::overflow_error("convertJsonNumber: int64 out of destination range");
+    switch (v.kind()) {
+        case boost::json::kind::int64: {
+            auto raw = v.as_int64();
+            if (raw < (std::numeric_limits<T>::min)() || raw > (std::numeric_limits<T>::max)()) {
+                throw std::overflow_error("convertJsonNumber: int64 out of destination range");
+            }
+            return static_cast<T>(raw);
         }
-        return static_cast<T>(raw);
+        case boost::json::kind::uint64: {
+            auto raw = v.as_uint64();
+            if (raw > static_cast<std::uint64_t>((std::numeric_limits<T>::max)())) {
+                throw std::overflow_error("convertJsonNumber: uint64 out of destination range");
+            }
+            return static_cast<T>(raw);
+        }
+        case boost::json::kind::double_: {
+            double d = v.as_double();
+            if (!std::isfinite(d)) {
+                throw std::overflow_error("convertJsonNumber: non-finite double");
+            }
+            if (d < static_cast<double>((std::numeric_limits<T>::min)())
+                || d > static_cast<double>((std::numeric_limits<T>::max)())) {
+                throw std::overflow_error("convertJsonNumber: double out of destination range");
+            }
+            return static_cast<T>(d);
+        }
+        default:
+            throw std::invalid_argument("convertJsonNumber: value is not a JSON number");
     }
-    if (v.is_uint64()) {
-        auto raw = v.as_uint64();
-        if (raw > static_cast<std::uint64_t>((std::numeric_limits<T>::max)())) {
-            throw std::overflow_error("convertJsonNumber: uint64 out of destination range");
-        }
-        return static_cast<T>(raw);
-    }
-    if (v.is_double()) {
-        double d = v.as_double();
-        if (!std::isfinite(d)) {
-            throw std::overflow_error("convertJsonNumber: non-finite double");
-        }
-        if (d < static_cast<double>((std::numeric_limits<T>::min)())
-            || d > static_cast<double>((std::numeric_limits<T>::max)())) {
-            throw std::overflow_error("convertJsonNumber: double out of destination range");
-        }
-        return static_cast<T>(d);
-    }
-    throw std::invalid_argument("convertJsonNumber: value is not a JSON number");
 }
 
 // ============================================================================

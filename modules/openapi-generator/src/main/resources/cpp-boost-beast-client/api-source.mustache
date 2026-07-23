@@ -636,24 +636,23 @@ bool tryParseBranch(const boost::json::value& value, T& result) {
             result = boost::json::value_to<bool>(value);
             return true;
         } else if constexpr (std::is_same_v<T, std::uint8_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < 0 || raw > 255) return false;
             result = static_cast<std::uint8_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::int32_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < (std::numeric_limits<std::int32_t>::min)() || raw > (std::numeric_limits<std::int32_t>::max)()) return false;
             result = static_cast<std::int32_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::int64_t>) {
-            if (!value.is_int64()) return false;
-            result = value.as_int64();
-            return true;
+            return tryGetMathematicalInteger(value, result);
         } else if constexpr (std::is_same_v<T, double>) {
             if (value.is_double()) { result = value.as_double(); return true; }
             if (value.is_int64()) { result = static_cast<double>(value.as_int64()); return true; }
+            if (value.is_uint64()) { result = static_cast<double>(value.as_uint64()); return true; }
             return false;
         } else if constexpr (std::is_same_v<T, boost::json::value>) {
             result = value;

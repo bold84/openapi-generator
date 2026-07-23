@@ -2686,6 +2686,293 @@ public class CppBoostBeastClientCodegenTest {
     // Phase 2: Generated validator foundation and numeric semantics
     // ====================================================================
 
+    // --- Phase 2 strong review: multipleOf, exclusive bounds, integer enum ---
+
+    @Test
+    public void branchDescriptorsHaveMultipleOfValidation() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        NumberSchema multBranch = new NumberSchema();
+        multBranch.setMultipleOf(3.0);
+        schema.addOneOfItem(multBranch);
+
+        NumberSchema noMultBranch = new NumberSchema();
+        schema.addOneOfItem(noMultBranch);
+        schemas.put("MultipleOfTest", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("MultipleOfTest");
+        Assert.assertNotNull(desc, "MultipleOfTest must have a descriptor");
+
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor multBranchDesc =
+                desc.getBranches().get(0);
+        Assert.assertTrue(multBranchDesc.getSupportedAssertions().contains("numeric-range"),
+                "Branch with multipleOf must have numeric-range assertion");
+        Assert.assertNotNull(multBranchDesc.getValidateParams().get("validation-multiple-of"),
+                "Branch with multipleOf must have validation-multiple-of param");
+        Assert.assertEquals(multBranchDesc.getValidateParams().get("validation-multiple-of"), 3.0,
+                "Branch with multipleOf must have validation-multiple-of = 3.0");
+
+        // Second branch without multipleOf: numeric-range must NOT be present
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor noMultBranchDesc =
+                desc.getBranches().get(1);
+        Assert.assertFalse(noMultBranchDesc.getSupportedAssertions().contains("numeric-range"),
+                "Branch without numeric constraints must NOT have numeric-range assertion");
+    }
+
+    @Test
+    public void branchDescriptorsHaveExclusiveBounds() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        IntegerSchema exclMinBranch = new IntegerSchema();
+        exclMinBranch.setExclusiveMinimum(true);
+        // OAS 3.0 exclusiveMinimum with minimum: the combined effect must produce
+        // validation-exclusive-min in the descriptor.
+        exclMinBranch.setMinimum(10);
+        schema.addOneOfItem(exclMinBranch);
+
+        IntegerSchema exclMaxBranch = new IntegerSchema();
+        exclMaxBranch.setExclusiveMaximum(true);
+        exclMaxBranch.setMaximum(100);
+        schema.addOneOfItem(exclMaxBranch);
+
+        // OAS 3.1 numeric exclusive bounds
+        IntegerSchema exclMinValBranch = new IntegerSchema();
+        exclMinValBranch.setExclusiveMinimum(5);
+        schema.addAnyOfItem(exclMinValBranch);
+
+        IntegerSchema exclMaxValBranch = new IntegerSchema();
+        exclMaxValBranch.setExclusiveMaximum(200);
+        schema.addAnyOfItem(exclMaxValBranch);
+
+        schemas.put("ExclusiveBoundsTest", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("ExclusiveBoundsTest");
+        Assert.assertNotNull(desc, "ExclusiveBoundsTest must have a descriptor");
+        Assert.assertEquals(desc.getBranches().size(), 4,
+                "ExclusiveBoundsTest must have 4 branches");
+
+        // Branch 0: exclusiveMinimum (boolean) with minimum
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor exclMinDesc =
+                desc.getBranches().get(0);
+        Assert.assertTrue(exclMinDesc.getSupportedAssertions().contains("numeric-range"),
+                "Branch with exclusiveMinimum must have numeric-range");
+        Assert.assertEquals(exclMinDesc.getValidateParams().get("validation-min"), 10,
+                "Branch with exclusiveMinimum must have validation-min = 10");
+        // After ModelUtils resolution, exclusiveMinimum=true on minimum=10
+        // produces exclusive-min = 10 in the params
+        Object exclMinVal = exclMinDesc.getValidateParams().get("validation-exclusive-min");
+        Assert.assertEquals(exclMinVal, 10,
+                "Branch with exclusiveMinimum=true and minimum=10 must have validation-exclusive-min = 10");
+
+        // Branch 1: exclusiveMaximum (boolean) with maximum
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor exclMaxDesc =
+                desc.getBranches().get(1);
+        Assert.assertEquals(exclMaxDesc.getValidateParams().get("validation-max"), 100,
+                "Branch with exclusiveMaximum must have validation-max = 100");
+        Assert.assertEquals(exclMaxDesc.getValidateParams().get("validation-exclusive-max"), 100,
+                "Branch with exclusiveMaximum=true and maximum=100 must have validation-exclusive-max = 100");
+
+        // Branch 2: OAS 3.1 exclusiveMinimum value (numeric)
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor exclMinValDesc =
+                desc.getBranches().get(2);
+        Assert.assertEquals(exclMinValDesc.getValidateParams().get("validation-min"), 5,
+                "OAS 3.1 exclusiveMinimum=5 must produce validation-min = 5");
+        Assert.assertEquals(exclMinValDesc.getValidateParams().get("validation-exclusive-min"), 5,
+                "OAS 3.1 exclusiveMinimum=5 must produce validation-exclusive-min = 5");
+
+        // Branch 3: OAS 3.1 exclusiveMaximum value (numeric)
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor exclMaxValDesc =
+                desc.getBranches().get(3);
+        Assert.assertEquals(exclMaxValDesc.getValidateParams().get("validation-max"), 200,
+                "OAS 3.1 exclusiveMaximum=200 must produce validation-max = 200");
+        Assert.assertEquals(exclMaxValDesc.getValidateParams().get("validation-exclusive-max"), 200,
+                "OAS 3.1 exclusiveMaximum=200 must produce validation-exclusive-max = 200");
+    }
+
+    @Test
+    public void branchDescriptorsHaveIntegerEnumKind() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        // Integer enum branch
+        ComposedSchema schema = new ComposedSchema();
+        IntegerSchema intEnumBranch = new IntegerSchema();
+        intEnumBranch.addEnumItem(1);
+        intEnumBranch.addEnumItem(2);
+        intEnumBranch.addEnumItem(3);
+        schema.addOneOfItem(intEnumBranch);
+
+        // String enum branch (for comparison)
+        StringSchema stringEnumBranch = new StringSchema();
+        stringEnumBranch.addEnumItem("red");
+        stringEnumBranch.addEnumItem("blue");
+        schema.addOneOfItem(stringEnumBranch);
+
+        // Float enum branch (number kind)
+        NumberSchema floatEnumBranch = new NumberSchema();
+        floatEnumBranch.addEnumItem(1.5);
+        floatEnumBranch.addEnumItem(2.5);
+        schema.addOneOfItem(floatEnumBranch);
+
+        // Boolean enum branch
+        StringSchema boolEnumBranch = new StringSchema();
+        // Note: in OAS 3.x, boolean enums pass through as Object; the predominant
+        // kind detection checks Java type of enum values.
+        // For this test, use NumberSchema with boolean values is tricky.
+        // Instead, verify integer and string enum kinds.
+        schemas.put("EnumKindTest", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("EnumKindTest");
+        Assert.assertNotNull(desc, "EnumKindTest must have a descriptor");
+
+        // Branch 0: integer enum → validation-enum-kind = "integer"
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor intEnumDesc =
+                desc.getBranches().get(0);
+        Assert.assertTrue(intEnumDesc.getSupportedAssertions().contains("enum"),
+                "Integer enum branch must have enum assertion");
+        Assert.assertEquals(intEnumDesc.getValidateParams().get("validation-enum-kind"), "integer",
+                "Integer enum branch must have validation-enum-kind = integer");
+        Object enumValues = intEnumDesc.getValidateParams().get("validation-enum-values");
+        Assert.assertNotNull(enumValues, "Integer enum branch must have validation-enum-values");
+        @SuppressWarnings("unchecked")
+        List<String> intEnumList = (List<String>) enumValues;
+        Assert.assertEquals(intEnumList.size(), 3,
+                "Integer enum must have 3 values");
+        Assert.assertTrue(intEnumList.contains("1") && intEnumList.contains("2") && intEnumList.contains("3"),
+                "Integer enum values must contain 1, 2, 3");
+
+        // Branch 1: string enum → validation-enum-kind = "string"
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor stringEnumDesc =
+                desc.getBranches().get(1);
+        Assert.assertEquals(stringEnumDesc.getValidateParams().get("validation-enum-kind"), "string",
+                "String enum branch must have validation-enum-kind = string");
+        @SuppressWarnings("unchecked")
+        List<String> stringEnumList = (List<String>) stringEnumDesc.getValidateParams().get("validation-enum-values");
+        Assert.assertNotNull(stringEnumList, "String enum branch must have validation-enum-values");
+        Assert.assertTrue(stringEnumList.contains("red") && stringEnumList.contains("blue"),
+                "String enum values must contain red, blue");
+
+        // Branch 2: float enum → validation-enum-kind = "number"
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor floatEnumDesc =
+                desc.getBranches().get(2);
+        Assert.assertEquals(floatEnumDesc.getValidateParams().get("validation-enum-kind"), "number",
+                "Float enum branch must have validation-enum-kind = number");
+    }
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void notAssertionAlwaysFailsGenerationOnOneOf() {
+        // `not` always fails generation for oneOf: it can flip any membership
+        // decision and no generated validator implements it.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema branchWithNot = new StringSchema();
+        io.swagger.v3.oas.models.media.Schema notSchema =
+                new io.swagger.v3.oas.models.media.Schema();
+        notSchema.setType("integer");
+        branchWithNot.setNot(notSchema);
+        schema.addOneOfItem(branchWithNot);
+        schemas.put("SchemaWithNotOnOneOf", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        // validateDescriptorAssertions throws for oneOf with not
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void notAssertionAlwaysFailsGenerationOnAnyOf() {
+        // `not` always fails generation for anyOf as well
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        StringSchema branchWithNot = new StringSchema();
+        io.swagger.v3.oas.models.media.Schema notSchema =
+                new io.swagger.v3.oas.models.media.Schema();
+        notSchema.setType("object");
+        branchWithNot.setNot(notSchema);
+        schema.addAnyOfItem(branchWithNot);
+        schemas.put("SchemaWithNotOnAnyOf", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void notAssertionAlwaysFailsGenerationOnAllOf() {
+        // Unlike other unsupported assertions, `not` must ALWAYS fail generation
+        // even on allOf — because `not` flips membership and all branches of allOf
+        // must match (not changes whether a branch matches).
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        io.swagger.v3.oas.models.media.Schema branchWithNot =
+                new io.swagger.v3.oas.models.media.Schema();
+        branchWithNot.setType("object");
+        io.swagger.v3.oas.models.media.Schema notSchema =
+                new io.swagger.v3.oas.models.media.Schema();
+        notSchema.setType("array");
+        branchWithNot.setNot(notSchema);
+        schema.addAllOfItem(branchWithNot);
+        schemas.put("SchemaWithNotOnAllOf", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        // allOf normally exempts non-not unsupported assertions, but `not`
+        // must still throw.
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
     @Test
     public void formatAssertionPolicyDefaultsToAnnotation() {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
