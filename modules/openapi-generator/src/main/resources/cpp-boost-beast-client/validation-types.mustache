@@ -302,4 +302,36 @@ inline bool validatePattern(boost::json::value const& instance,
     }
 }
 
+// ============================================================================
+// CompositionBranchValue — tagged wrapper for duplicate C++ branch types.
+//
+// When multiple oneOf/anyOf branches resolve to the same C++ type (e.g., two
+// double branches with different numeric constraints), std::variant deduplicates
+// them, losing schema identity. CompositionBranchValue<BranchIndex, ValueType>
+// preserves distinct branches by wrapping each in a unique C++ tag.
+//
+// Struct is trivially constructible/convertible for simplicity. BranchIndex
+// matches the descriptor branch-index in the OAS composition structure.
+// ============================================================================
+
+template <std::size_t BranchIndex, typename ValueType>
+struct CompositionBranchValue {
+    ValueType value;
+};
+
+// ============================================================================
+// Hash support for CompositionBranchValue wrapping (required by some containers).
+// ============================================================================
+
+template <std::size_t BranchIndex, typename ValueType>
+struct CompositionBranchHash;
+
+// SFINAE: enable CompositionBranchValue unwrapping for VariantJsonHelper.
+// Used by template specializations to detect CompositionBranchValue types.
+template <typename T>
+struct IsCompositionBranchValue : std::false_type {};
+
+template <std::size_t Idx, typename Val>
+struct IsCompositionBranchValue<CompositionBranchValue<Idx, Val>> : std::true_type {};
+
 #endif /* CPP_BOOST_BEAST_OPENAPI_CLIENT_VALIDATION_TYPES_H_ */

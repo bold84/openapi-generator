@@ -124,6 +124,14 @@ struct VariantJsonHelper<std::variant<Ts...>> {
         }, v);
     }
 };
+
+// Specialization for CompositionBranchValue — unwrap and convert inner value.
+template <std::size_t Idx, typename Val>
+struct VariantJsonHelper<CompositionBranchValue<Idx, Val>> {
+    static boost::json::value toJsonValue(const CompositionBranchValue<Idx, Val>& v) {
+        return VariantJsonHelper<Val>::toJsonValue(v.value);
+    }
+};
 }
 
 boost::json::value toJsonValue_{{classname}}({{classname}} const& value)
@@ -264,6 +272,13 @@ bool tryParseBranch(boost::json::value const& value, T& result, std::string* err
                 m.emplace(std::string(entry.key()), std::move(converted));
             }
             result = std::move(m);
+            return true;
+        } else if constexpr (IsCompositionBranchValue<T>{}) {
+            // CompositionBranchValue<Idx, Inner> — unwrap, parse inner, rewrap.
+            using InnerType = decltype(T::value);
+            InnerType inner;
+            if (!tryParseBranch(value, inner, errorPath)) return false;
+            result.value = std::move(inner);
             return true;
         } else {
             // Model type — try fromJsonValue member.
@@ -789,7 +804,35 @@ ValidationResult validate_{{validator-id}}(
     return result;
 }
 
+{{#vendorExtensions.x-cpp-has-duplicate-types}}
+// ============================================================================
+// Branch accessors — isBranchN, getBranchN, makeBranchN helpers.
+// These provide type-safe access to individual variant branches when multiple
+// branches share the same C++ type (CompositionBranchValue wrapper).
+// ============================================================================
 
+{{#vendorExtensions.x-cpp-composition-branches}}
+{{#branches}}
+{{#storage-cpp-type}}
+/// Returns true if the variant holds branch {{branch-index}}.
+inline bool isBranch{{branch-index}}({{classname}} const& v) {
+    return std::holds_alternative<{{{storage-cpp-type}}}>(v);
+}
+
+/// Returns the value of branch {{branch-index}}.
+inline {{{inner-cpp-type}}} getBranch{{branch-index}}({{classname}} const& v) {
+    return std::get<{{{storage-cpp-type}}}>(v).value;
+}
+
+/// Creates a {{classname}} holding branch {{branch-index}}.
+inline {{classname}} makeBranch{{branch-index}}({{{inner-cpp-type}}} const& val) {
+    return {{classname}}(std::in_place_type<{{{storage-cpp-type}}}>, val);
+}
+
+{{/storage-cpp-type}}
+{{/branches}}
+{{/vendorExtensions.x-cpp-composition-branches}}
+{{/vendorExtensions.x-cpp-has-duplicate-types}}
 
 {{#modelNamespaceDeclarations}}
 }
@@ -1023,6 +1066,13 @@ bool tryParseBranch(boost::json::value const& value, T& result, std::string* err
                 m.emplace(std::string(entry.key()), std::move(converted));
             }
             result = std::move(m);
+            return true;
+        } else if constexpr (IsCompositionBranchValue<T>{}) {
+            // CompositionBranchValue<Idx, Inner> — unwrap, parse inner, rewrap.
+            using InnerType = decltype(T::value);
+            InnerType inner;
+            if (!tryParseBranch(value, inner, errorPath)) return false;
+            result.value = std::move(inner);
             return true;
         } else {
             // Model type — try fromJsonValue member.

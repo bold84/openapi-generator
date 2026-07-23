@@ -1510,12 +1510,36 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         cm.vendorExtensions.put("x-cpp-composed-keyword", composedKeyword);
         composedKeywordsByModel.put(cm.classname, composedKeyword);
 
-        // Phase 1: Populate x-cpp-composition-branches alongside existing
-        // x-cpp-branches. These are template-safe Maps that preserve original
-        // branch order, schema references, null capabilities, and assertion
-        // metadata. Phase 3 switches templates to use this new extension.
+        // Phase 3: Build per-branch storage types and detect duplicate types.
+        // Populate storage-cpp-type on each branch descriptor from the resolved
+        // lowering result, and emit has-duplicate-types flag so templates can
+        // generate CompositionBranchValue-aware accessors (isBranchN, getBranchN).
+        boolean hasDuplicateTypes = resolvedType.contains("CompositionBranchValue<");
         if (descriptor != null) {
-            cm.vendorExtensions.put("x-cpp-composition-branches", descriptor.toTemplateMap());
+            Map<String, Object> templateMap = descriptor.toTemplateMap();
+            @SuppressWarnings("unchecked")
+            var templateBranches = (List<Map<String, Object>>) templateMap.get("branches");
+            for (int bi = 0; bi < composedBranches.size(); bi++) {
+                ComposedBranch cb = composedBranches.get(bi);
+                int descIdx = cb.originalBranchIndex;
+                if (descIdx >= 0 && descIdx < templateBranches.size()) {
+                    Map<String, Object> tBranch = templateBranches.get(descIdx);
+                    String storageType;
+                    if (hasDuplicateTypes) {
+                        storageType = "CompositionBranchValue<" + descIdx
+                                + ", " + cb.cppType + ">";
+                        tBranch.put("inner-cpp-type", cb.cppType);
+                    } else {
+                        storageType = cb.cppType;
+                    }
+                    tBranch.put("storage-cpp-type", storageType);
+                }
+            }
+            templateMap.put("has-duplicate-types", hasDuplicateTypes);
+            cm.vendorExtensions.put("x-cpp-composition-branches", templateMap);
+            if (hasDuplicateTypes) {
+                cm.vendorExtensions.put("x-cpp-has-duplicate-types", true);
+            }
         } else {
             // Fallback: build branch maps from the composed branches when no
             // precomputed descriptor exists (e.g., inline schemas not in the
@@ -1527,7 +1551,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 branchMap.put("branch-index", bi);
                 branchMap.put("source-schema-ref", null);
                 branchMap.put("resolved-schema-name", cb.cppType);
-                branchMap.put("storage-cpp-type", cb.cppType);
+                String storageType = hasDuplicateTypes
+                        ? "CompositionBranchValue<" + bi + ", " + cb.cppType + ">"
+                        : cb.cppType;
+                branchMap.put("storage-cpp-type", storageType);
+                if (hasDuplicateTypes) {
+                    branchMap.put("inner-cpp-type", cb.cppType);
+                }
                 branchMap.put("validator-id", null);
                 branchMap.put("null-capability",
                         "std::nullptr_t".equals(cb.cppType) ? "always" : "never");
@@ -1538,7 +1568,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             fallbackMap.put("schema-location", null);
             fallbackMap.put("keyword", composedKeyword);
             fallbackMap.put("branches", fallbackBranches);
+            fallbackMap.put("has-duplicate-types", hasDuplicateTypes);
             cm.vendorExtensions.put("x-cpp-composition-branches", fallbackMap);
+            if (hasDuplicateTypes) {
+                cm.vendorExtensions.put("x-cpp-has-duplicate-types", true);
+            }
         }
 
         // Store per-branch metadata for Phase 1b re-lowering.
@@ -1624,12 +1658,41 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         resolvedAliasTypes.put(cm.classname, resolvedType);
         variantModels.add(cm.classname);
 
+        // Phase 3: Detect duplicate types and populate per-branch storage
+        // types on the descriptor template map.
+        boolean hasDuplicateTypes = resolvedType.contains("CompositionBranchValue<");
+        Map<String, Object> descTemplateMap = desc.toTemplateMap();
+        {
+            @SuppressWarnings("unchecked")
+            var templateBranches = (List<Map<String, Object>>) descTemplateMap.get("branches");
+            for (int bi = 0; bi < composedBranches.size(); bi++) {
+                ComposedBranch cb = composedBranches.get(bi);
+                int descIdx = cb.originalBranchIndex;
+                if (descIdx >= 0 && descIdx < templateBranches.size()) {
+                    Map<String, Object> tBranch = templateBranches.get(descIdx);
+                    String storageType;
+                    if (hasDuplicateTypes) {
+                        storageType = "CompositionBranchValue<" + descIdx
+                                + ", " + cb.cppType + ">";
+                        tBranch.put("inner-cpp-type", cb.cppType);
+                    } else {
+                        storageType = cb.cppType;
+                    }
+                    tBranch.put("storage-cpp-type", storageType);
+                }
+            }
+        }
+        descTemplateMap.put("has-duplicate-types", hasDuplicateTypes);
+
         // Emit vendor extensions
         cm.vendorExtensions.put("x-cpp-type", resolvedType);
         cm.vendorExtensions.put("x-cpp-branches", branchTypes);
         cm.vendorExtensions.put("x-cpp-composed-keyword", desc.getKeyword());
         composedKeywordsByModel.put(cm.classname, desc.getKeyword());
-        cm.vendorExtensions.put("x-cpp-composition-branches", desc.toTemplateMap());
+        cm.vendorExtensions.put("x-cpp-composition-branches", descTemplateMap);
+        if (hasDuplicateTypes) {
+            cm.vendorExtensions.put("x-cpp-has-duplicate-types", true);
+        }
 
         // Store per-branch metadata for Phase 1b re-lowering
         List<Boolean> branchIsEnumFlags = composedBranches.stream()
@@ -1983,12 +2046,76 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             return "boost::json::value";
         }
 
-        // Rule 5: Deduplicate identical branch types.
+        // Rule 5: Detect duplicate branch types that would lose schema
+        // identity after C++ dedup. When multiple branches lower to the
+        // same C++ type (e.g., two double branches with different numeric
+        // constraints, or a string + string-enum both becoming std::string),
+        // wrap each in CompositionBranchValue<originalBranchIndex, Type>
+        // to preserve distinct branch identity.
+        boolean hasDuplicateTypes = false;
+        outer:
+        for (int i = 0; i < nonNullBranches.size(); i++) {
+            for (int j = i + 1; j < nonNullBranches.size(); j++) {
+                if (nonNullBranches.get(i).equals(nonNullBranches.get(j))) {
+                    hasDuplicateTypes = true;
+                    break outer;
+                }
+            }
+        }
+
+        if (hasDuplicateTypes) {
+            // Shortcut: wrap all branches in CompositionBranchValue to
+            // preserve identity. Skip flattening (nested variants only
+            // appear once in nonNullBranches so they won't collide here).
+            // Also skip Rule 6 (string exclusivity) since tagged branches
+            // already preserve distinct membership.
+            List<String> tagged = new ArrayList<>();
+            for (int i = 0; i < nonNullBranches.size(); i++) {
+                String rawType = nonNullBranches.get(i);
+                int origIdx = nonNullMeta.get(i).originalBranchIndex;
+                if (origIdx >= 0) {
+                    // Flatten nested variant types within tagged branches
+                    if (rawType.startsWith("std::variant<") && rawType.endsWith(">")) {
+                        String inner = rawType.substring(13, rawType.length() - 1);
+                        int depth = 0;
+                        int start = 0;
+                        for (int ci = 0; ci < inner.length(); ci++) {
+                            char c = inner.charAt(ci);
+                            if (c == '<') depth++;
+                            else if (c == '>') depth--;
+                            else if (c == ',' && depth == 0) {
+                                String innerType = inner.substring(start, ci).trim();
+                                tagged.add("CompositionBranchValue<" + origIdx
+                                        + ", " + innerType + ">");
+                                start = ci + 1;
+                            }
+                        }
+                        if (start < inner.length()) {
+                            String innerType = inner.substring(start).trim();
+                            tagged.add("CompositionBranchValue<" + origIdx
+                                    + ", " + innerType + ">");
+                        }
+                    } else {
+                        tagged.add("CompositionBranchValue<" + origIdx
+                                + ", " + rawType + ">");
+                    }
+                } else {
+                    tagged.add(rawType);
+                }
+            }
+            boolean hasNull = branchTypes.stream().anyMatch("std::nullptr_t"::equals);
+            if (hasNull && tagged.size() > 1) {
+                tagged.add("std::nullptr_t");
+            }
+            return "std::variant<" + String.join(", ", tagged) + ">";
+        }
+
+        // Rule 6: Deduplicate identical branch types (safe when no duplicates).
         List<String> deduped = flattened.stream()
                 .distinct()
                 .collect(Collectors.toList());
 
-        // Rule 6: oneOf string branches that lose exclusivity after type lowering.
+        // Rule 7: oneOf string branches that lose exclusivity after type lowering.
         // Branches [open-string, string-enum] or [string-enum-A, string-enum-B] all
         // collapse to std::string after type lowering, so every string value matches
         // every original string-like branch. Under JSON Schema oneOf, this means
