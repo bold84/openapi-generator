@@ -1388,22 +1388,16 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(apiContent.contains("204") || apiContent.contains("status_code_204"),
                 "Generated API must reference 204 status branch");
 
-        // Phase 0: strengthen to verify the 200+201+204 response union shape.
-        // The generator must distinguish FullResource (200), SummaryResource (201),
-        // and void/204 across three distinct status branches.
-        // Require ALL THREE status+type pairs (not OR) OR a named response union.
+        // Phase 0: require the full 200+201+204 response-union shape.
+        // ALL THREE status+type pairs are mandatory — a lone ResponseBodyDeserializer
+        // / ResponseJsonValueConverter mention must not pass this lock.
         boolean hasAllThreeStatusBranches =
                 (apiContent.contains("200") && apiContent.contains("FullResource"))
                 && (apiContent.contains("201") && apiContent.contains("SummaryResource"))
                 && (apiContent.contains("204") || apiContent.contains("status_code_204"));
-        boolean hasNamedResponseUnion =
-                apiContent.contains("ResponseBodyDeserializer")
-                || apiContent.contains("ResponseJsonValueConverter");
-        boolean hasStrongDispatch = hasAllThreeStatusBranches || hasNamedResponseUnion;
-        Assert.assertTrue(hasStrongDispatch,
+        Assert.assertTrue(hasAllThreeStatusBranches,
                 "Generated API must distinguish all three response status branches: "
-                + "200+FullResource AND 201+SummaryResource AND 204, "
-                + "or expose a named response-union type. "
+                + "200+FullResource AND 201+SummaryResource AND 204. "
                 + "Current output excerpt: " + apiContent);
     }
 
