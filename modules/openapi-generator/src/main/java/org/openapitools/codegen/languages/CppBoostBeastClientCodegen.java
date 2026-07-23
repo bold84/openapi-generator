@@ -1521,20 +1521,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             @SuppressWarnings("unchecked")
             var templateBranches = (List<Map<String, Object>>) templateMap.get("branches");
             // Count null branches to align storage with shortcut behavior.
-            // All-null: shortcut wraps all in CBV.  Mixed dupes + unique null:
-            // shortcut does NOT wrap the null branch — keep bare storage.
+            // When hasDuplicateTypes, the shortcut wraps ALL branches
+            // (including null) in CompositionBranchValue — no bare nullptr_t.
             long nullCount = composedBranches.stream()
                     .filter(b -> "std::nullptr_t".equals(b.cppType))
                     .count();
-            boolean allNull = nullCount == composedBranches.size();
             for (int bi = 0; bi < composedBranches.size(); bi++) {
                 ComposedBranch cb = composedBranches.get(bi);
                 int descIdx = cb.originalBranchIndex;
                 if (descIdx >= 0 && descIdx < templateBranches.size()) {
                     Map<String, Object> tBranch = templateBranches.get(descIdx);
                     String storageType;
-                    if (hasDuplicateTypes
-                            && (!"std::nullptr_t".equals(cb.cppType) || allNull)) {
+                    if (hasDuplicateTypes) {
                         storageType = "CompositionBranchValue<" + descIdx
                                 + ", " + cb.cppType + ">";
                         tBranch.put("inner-cpp-type", cb.cppType);
@@ -1555,23 +1553,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // precomputed descriptor exists (e.g., inline schemas not in the
             // component schema index).
             List<Map<String, Object>> fallbackBranches = new ArrayList<>();
-            long nullCount = composedBranches.stream()
-                    .filter(b -> "std::nullptr_t".equals(b.cppType))
-                    .count();
-            boolean allNull = nullCount == composedBranches.size();
             for (int bi = 0; bi < composedBranches.size(); bi++) {
                 ComposedBranch cb = composedBranches.get(bi);
                 Map<String, Object> branchMap = new LinkedHashMap<>();
                 branchMap.put("branch-index", bi);
                 branchMap.put("source-schema-ref", null);
                 branchMap.put("resolved-schema-name", cb.cppType);
-                String storageType;
-                if (hasDuplicateTypes
-                        && (!"std::nullptr_t".equals(cb.cppType) || allNull)) {
-                    storageType = "CompositionBranchValue<" + bi + ", " + cb.cppType + ">";
-                } else {
-                    storageType = cb.cppType;
-                }
+                String storageType = hasDuplicateTypes
+                        ? "CompositionBranchValue<" + bi + ", " + cb.cppType + ">"
+                        : cb.cppType;
                 branchMap.put("storage-cpp-type", storageType);
                 if (hasDuplicateTypes) {
                     branchMap.put("inner-cpp-type", cb.cppType);
@@ -1684,19 +1674,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         {
             @SuppressWarnings("unchecked")
             var templateBranches = (List<Map<String, Object>>) descTemplateMap.get("branches");
-            // Count null branches to align storage with shortcut behavior.
-            long nullCount = composedBranches.stream()
-                    .filter(b -> "std::nullptr_t".equals(b.cppType))
-                    .count();
-            boolean allNull = nullCount == composedBranches.size();
+            // When hasDuplicateTypes, all branches (including null) get
+            // CompositionBranchValue wrapping — match shortcut behavior.
             for (int bi = 0; bi < composedBranches.size(); bi++) {
                 ComposedBranch cb = composedBranches.get(bi);
                 int descIdx = cb.originalBranchIndex;
                 if (descIdx >= 0 && descIdx < templateBranches.size()) {
                     Map<String, Object> tBranch = templateBranches.get(descIdx);
                     String storageType;
-                    if (hasDuplicateTypes
-                            && (!"std::nullptr_t".equals(cb.cppType) || allNull)) {
+                    if (hasDuplicateTypes) {
                         storageType = "CompositionBranchValue<" + descIdx
                                 + ", " + cb.cppType + ">";
                         tBranch.put("inner-cpp-type", cb.cppType);
@@ -2167,16 +2153,23 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             + ", " + rawType + ">");
                 }
             }
-            // Re-append null when Rule 1 did not consume it. Rule 1 only
-            // consumes null for [T, null] (exactly one null + two total
-            // branches). All other null-containing compositions reach
-            // here with hasNull true; we must re-add unless the all-null
-            // preservation (Rule 3) already kept nullptr_t in tagged.
+            // When hasDuplicateTypes, null branches must be wrapped in
+            // CompositionBranchValue too — never bare std::nullptr_t.
+            // Find null branches that were filtered by Rule 3 and wrap
+            // them, skipping any that Rule 3 already preserved in tagged.
             boolean hasNull = branchTypes.stream().anyMatch("std::nullptr_t"::equals);
-            boolean nullsAlreadyPreserved = tagged.stream().anyMatch(
-                    t -> t.contains("std::nullptr_t"));
-            if (hasNull && !nullsAlreadyPreserved) {
-                tagged.add("std::nullptr_t");
+            if (hasNull) {
+                for (int ni = 0; ni < branches.size(); ni++) {
+                    if ("std::nullptr_t".equals(branches.get(ni).cppType)) {
+                        int origIdx = branches.get(ni).originalBranchIndex;
+                        int brIdx = origIdx >= 0 ? origIdx : tagged.size();
+                        String cbvNull = "CompositionBranchValue<" + brIdx
+                                + ", std::nullptr_t>";
+                        if (!tagged.contains(cbvNull)) {
+                            tagged.add(cbvNull);
+                        }
+                    }
+                }
             }
             return "std::variant<" + String.join(", ", tagged) + ">";
         }

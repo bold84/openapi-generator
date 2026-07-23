@@ -714,8 +714,8 @@ public class CppBoostBeastClientCodegenTest {
                 "StringOverlapHolder should declare getOverlap() returning OneOfWithStringOverlap");
         Assert.assertTrue(stringOverlapHolderContent.contains("void setOverlap(OneOfWithStringOverlap"),
                 "StringOverlapHolder should declare setOverlap(OneOfWithStringOverlap)");
-        // The property type is the alias name rather than boost::json::value directly.
-        // Either form is correct — the alias resolves to boost::json::value at compile time.
+        // The property type is the alias name rather than the CompositionBranchValue variant directly.
+        // Either form is correct — the alias resolves to the CBV variant at compile time.
         Assert.assertFalse(stringOverlapHolderContent.contains("std::string m_Overlap"),
                 "StringOverlapHolder overlap property must NOT be std::string");
     }
@@ -807,7 +807,6 @@ public class CppBoostBeastClientCodegenTest {
                 "Single string-enum branch should collapse to std::string");
     }
 
-    @Test
     @Test
     public void resolvesAllNullBranchesToCompositionBranchValueVariant() throws IOException {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
