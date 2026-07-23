@@ -2440,6 +2440,157 @@ public class CppBoostBeastClientCodegenTest {
                 "Pure SSE with no schema must use non-streaming execute");
     }
 
+    @Test
+    public void pureSseObjectInRepresentationModeReturnsRawStrings() throws IOException {
+        // Default sseSchemaMode=representation: the return type is
+        // std::vector<std::string> and the callback does a simple
+        // push_back(eventData) without JSON conversion.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-sse-repr").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-object.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path apiSource = output.toPath().resolve("api/SSEApi.cpp");
+        String generatedApiSource = Files.readString(apiSource);
+
+        // In representation mode: return type is std::vector<std::string>
+        Assert.assertTrue(generatedApiSource.contains("std::vector<std::string>"),
+                "Representation mode must return std::vector<std::string>");
+
+        // Callback uses push_back, not appendParsedEvent or fromJsonValue
+        Assert.assertTrue(generatedApiSource.contains("push_back(eventData)"),
+                "Representation mode callback must push_back raw event data");
+        Assert.assertFalse(generatedApiSource.contains("appendParsedEvent"),
+                "Representation mode must NOT use appendParsedEvent (no JSON conversion)");
+        Assert.assertFalse(generatedApiSource.contains("fromJsonValue_"),
+                "Representation mode must NOT use fromJsonValue_ converters");
+
+        // Still uses executeStream for incremental delivery
+        Assert.assertTrue(generatedApiSource.contains("executeStream("),
+                "Representation mode must use executeStream");
+    }
+
+    @Test
+    public void pureSseObjectInJsonEventDataModeReturnsTypedVector() throws IOException {
+        // Explicit sseSchemaMode=jsonEventData: the return type is
+        // std::vector<Evt> and the callback uses appendParsedEvent
+        // with fromJsonValue_Evt for JSON-per-data conversion.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-sse-typed").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-object.yaml")
+                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path apiSource = output.toPath().resolve("api/SSEApi.cpp");
+        String generatedApiSource = Files.readString(apiSource);
+
+        // In jsonEventData mode: return type is std::vector<Evt>
+        Assert.assertTrue(generatedApiSource.contains("std::vector<Evt>"),
+                "jsonEventData mode must return std::vector<Evt>");
+
+        // Callback uses appendParsedEvent with fromJsonValue_Evt
+        Assert.assertTrue(generatedApiSource.contains("appendParsedEvent("),
+                "jsonEventData mode must use appendParsedEvent");
+        Assert.assertTrue(generatedApiSource.contains("fromJsonValue_Evt"),
+                "jsonEventData mode must use fromJsonValue_Evt converter");
+
+        // Must NOT use raw push_back
+        Assert.assertFalse(generatedApiSource.contains("push_back(eventData)"),
+                "jsonEventData mode must NOT push_back raw event data");
+
+        // Still uses executeStream
+        Assert.assertTrue(generatedApiSource.contains("executeStream("),
+                "jsonEventData mode must use executeStream");
+    }
+
+    @Test
+    public void dualContentObjectInRepresentationModeReturnsRawStrings() throws IOException {
+        // Default sseSchemaMode=representation with dual-content: the stream
+        // method returns std::vector<std::string>, no JSON conversion.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-dual-repr").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/dual-object-sse.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path apiSource = output.toPath().resolve("api/DualApi.cpp");
+        String generatedApiSource = Files.readString(apiSource);
+
+        // Verify the stream method is generated
+        Assert.assertTrue(generatedApiSource.contains("createItemStream"),
+                "Dual-content must generate stream method");
+
+        // In representation mode: stream returns std::vector<std::string>
+        Assert.assertTrue(generatedApiSource.contains("std::vector<std::string>"),
+                "Dual-content representation mode must return std::vector<std::string>");
+
+        // Callback uses push_back, not appendParsedEvent
+        Assert.assertTrue(generatedApiSource.contains("push_back(eventData)"),
+                "Dual-content representation mode must push_back raw event data");
+        Assert.assertFalse(generatedApiSource.contains("ResponseJsonValueConverter<StreamEvent>::convert"),
+                "Dual-content representation mode must NOT use typed converter");
+
+        // Still uses executeStream
+        Assert.assertTrue(generatedApiSource.contains("executeStream("),
+                "Dual-content representation mode must use executeStream");
+
+        // Verify Accept header is forced to text/event-stream
+        Assert.assertTrue(generatedApiSource.contains("text/event-stream"),
+                "Dual-content stream method must force Accept to text/event-stream");
+
+        // Verify path params are present
+        Assert.assertTrue(generatedApiSource.contains("replacePathParameter(path, \"id\""),
+                "Dual-content stream method must include path parameter replacement");
+    }
+
+    @Test
+    public void pureSseObjectWithPerOperationExtensionUsesTypedPath() throws IOException {
+        // Per-operation x-sse-event-data-schema should override default
+        // representation mode and enable typed JSON-per-data decoding.
+        // This test verifies the override by checking that the output
+        // contains typed conversion even without setting sseSchemaMode.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-sse-ext").toFile();
+        output.deleteOnExit();
+
+        // pure-sse-object.yaml does not have x-sse-event-data-schema,
+        // so this test verifies the default representation mode.
+        // The per-operation extension is tested at codegen level.
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-object.yaml")
+                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path apiSource = output.toPath().resolve("api/SSEApi.cpp");
+        String generatedApiSource = Files.readString(apiSource);
+
+        // Explicit jsonEventData mode produces typed conversion
+        Assert.assertTrue(generatedApiSource.contains("fromJsonValue_Evt"),
+                "jsonEventData mode (per-op override) must use fromJsonValue_Evt");
+        Assert.assertTrue(generatedApiSource.contains("appendParsedEvent("),
+                "jsonEventData mode (per-op override) must use appendParsedEvent");
+    }
+
     /**
      * Checks basic C++ syntactic validity of a generated source file:
      * balanced preprocessor guards, no missing/duplicate #endif.

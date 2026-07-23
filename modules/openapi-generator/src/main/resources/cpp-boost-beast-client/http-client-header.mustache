@@ -49,12 +49,14 @@ public:
     /// Execute an HTTP request and yield complete SSE events incrementally
     /// via callback. Used by text/event-stream endpoints.
     ///
-    /// Each onEvent invocation receives one event's data payload (multi-line
-    /// data fields joined by LF), framed per the WHATWG SSE specification.
+    /// The SseEventFramer (in HttpClientImpl) is data-only — each onEvent
+    /// invocation receives one event's data payload (multi-line data fields
+    /// joined by LF), framed per the WHATWG SSE specification.
     ///
     /// WHATWG framing behavior:
     /// - BOM: Initial UTF-8 BOM (EF BB BF) is consumed silently.
-    /// - Field parsing: event, data, id, and retry fields are recognized.
+    /// - Field parsing: event, data, id, and retry fields are recognized;
+    ///   only data is accumulated (framer is data-only).
     /// - Comments: Lines starting with ':' are ignored.
     /// - Multi-line data: Consecutive data: fields are joined by LF.
     /// - Incomplete events at EOF are discarded.

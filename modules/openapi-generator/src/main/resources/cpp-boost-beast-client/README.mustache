@@ -71,9 +71,10 @@ validators, and which fail generation when they could affect a match.
 | `uniqueItems` | Array uniqueness | — | — |
 | `required` | Object required-property presence | — | — |
 | `properties` | Property-level validation | Properties beyond required on composition branches | Per-property validators are generated; `additionalProperties` constraints fail closed |
+| `minProperties` / `maxProperties` | — | Object property-count validation fails generation | — |
 | `format` | Annotation mode (default): format ranges affect destination conversion only | `formatAssertionPolicy=strict` requires format validators (deferred) | See `formatAssertionPolicy` option |
 | `if`/`then`/`else` | Conditional validation not generated | Fails generation if on a composition branch | — |
-| Boolean schemas (OAS 3.1) | `true`/`false` validation | OAS 3.0 boolean schemas fail parsing | OAS 3.1 `{"type": "boolean", "const": true}` is supported |
+| Boolean value schemas (OAS 3.1) | — (fail-closed) | `true`/`false` used as schema entries fail generation | OAS 3.1 `{"type": "boolean", "const": true}` (object schema) is supported; top-level `true`/`false` as schema values are fail-closed |
 | `discriminator` | Known/unknown/missing values do not alter match count | Mapping resolution errors fail generation | Discriminator is validation-neutral — it orders candidates for diagnostics only |
 
 See `model-source.mustache` for the complete validation scope comment in each
@@ -199,12 +200,14 @@ In `representation` mode, the typed event-data decoding is an explicit conventio
 
 ```sh
 openapi-generator generate -g cpp-boost-beast-client \
-  -o output --additional-options=sseSchemaMode=representation
+  -o output --additional-properties=sseSchemaMode=representation
 ```
 
 Each SSE event is framed per WHATWG and delivered as a raw string `data` payload.
-The `event`, `id`, and `retry` fields are not converted to JSON. The WHATWG
-framer (`SseEventFramer` in `HttpClientImpl.cpp`) is always independent of JSON
+The `event`, `id`, and `retry` fields are recognized during line parsing but are
+**not captured** by the SseEventFramer — the framer is data-only and delivers
+only concatenated `data:` content via the callback. The WHATWG framer
+(`SseEventFramer` in `HttpClientImpl.cpp`) is always independent of JSON
 conversion — it operates on raw bytes.
 
 WHATWG framing behavior:
@@ -216,6 +219,14 @@ WHATWG framing behavior:
   **discarded** (per WHATWG spec). This prevents partial event delivery.
 - **Body limits**: A configurable `responseBodyLimit` guards against
   memory exhaustion; the parser rejects oversize bodies with `HTTP 413` semantics.
+- **Event `type`/`id`/`retry`**: These fields are parsed but currently not
+  surfaced in the callback (framer is data-only). To capture full event metadata,
+  extend the `SseEventFramer` to accumulate `m_eventType`, `m_eventId`, and
+  `m_retry` members and include them in the dispatch payload.
+
+In `representation` mode the generated return type is
+`std::vector<std::string>` — one raw data string per complete event. No JSON
+conversion is applied.
 
 #### JsonEventData mode (typed convention)
 
@@ -225,7 +236,7 @@ a complete JSON value. Each event is parsed against the schema from the
 
 ```sh
 openapi-generator generate -g cpp-boost-beast-client \
-  -o output --additional-options=sseSchemaMode=jsonEventData
+  -o output --additional-properties=sseSchemaMode=jsonEventData
 ```
 
 For pure-SSE operations, the return type becomes `std::vector<EventType>` where
@@ -292,14 +303,14 @@ one complete event's data payload (multi-line `data:` fields joined by LF).
 Generated streaming operations parse each event as it is framed. Incomplete
 events at EOF are discarded.
 
-#### SSE framing reference (WHATWG)
+#### SSE framing reference (WHATWG — SseEventFramer data-only callback)
 
 | SSE field | Handling | Notes |
 |-----------|----------|-------|
-| `data:` | Concatenated with LF between consecutive lines | The sole payload field in representation mode |
-| `event:` | Available in the framed event | Not JSON-parsed in default mode |
-| `id:` | Available in the framed event | Used for Last-Event-ID tracking |
-| `retry:` | Available in the framed event | Reconnection time in milliseconds |
+| `data:` | Concatenated with LF between consecutive lines. Delivered via callback. | The **only** field captured by the framer |
+| `event:` | Parsed during line processing but **not captured** | framer is data-only; extend SseEventFramer to surface |
+| `id:` | Parsed during line processing but **not captured** | framer is data-only |
+| `retry:` | Parsed during line processing but **not captured** | framer is data-only |
 | `:` (comment) | Ignored | Per WHATWG |
 | BOM | Consumed at stream start | UTF-8 BOM silently skipped |
 
@@ -343,6 +354,13 @@ Reviewers should evaluate the PR against:
   represent the OpenAPI specification's composition rules?
 - **Fixture coverage** — does every lowering rule have dedicated unit/fixture
   coverage with green tests?
+
+> **Phase 10 note:** The file `docs/generators/cpp-boost-beast-client.md`
+> (auto-generated CONFIG OPTIONS, FEATURE SET) will be regenerated from the
+> generator metadata during the release gate. Options added in Phase 9
+> (`sseSchemaMode`, `formatAssertionPolicy`, `x-sse-event-data-schema`)
+> will appear automatically at that time.  Verify the generated doc does not
+> regress any corrected claims.
 
 ---
 
