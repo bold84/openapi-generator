@@ -17,8 +17,8 @@
 # --- anyOf string + string-enum → CompositionBranchValue alias (validators preserved) ---
 AnyOfStringStringEnum: std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>>
 
-# --- oneOf string + string-enum — do NOT blind-collapse; exclusivity unrepresentable as typed union ---
-OneOfStringStringEnum: boost::json::value
+# --- oneOf string + string-enum — Phase 3 preserves identity via CompositionBranchValue ---
+OneOfStringStringEnum: std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>>
 
 # --- oneOf string | array<ItemStruct> ---
 OneOfStringArray: std::variant<std::string, std::vector<ItemStruct>>

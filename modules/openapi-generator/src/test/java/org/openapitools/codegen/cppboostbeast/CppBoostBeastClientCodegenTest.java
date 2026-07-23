@@ -495,11 +495,11 @@ public class CppBoostBeastClientCodegenTest {
                 "DedupTest branch 2 must preserve string identity via CompositionBranchValue; "
                         + "content: " + dedupContent.substring(0, Math.min(500, dedupContent.length())));
  
-        // AllNullTest (anyOf null+null) should be an alias to boost::json::value
+        // AllNullTest (anyOf null+null) should use CompositionBranchValue variant
         Path allNullHeader = output.toPath().resolve("model/AllNullTest.h");
         String allNullContent = java.nio.file.Files.readString(allNullHeader);
-        Assert.assertTrue(allNullContent.contains("using AllNullTest = boost::json::value;"),
-                "AllNullTest should emit using alias to boost::json::value");
+        Assert.assertTrue(allNullContent.contains("CompositionBranchValue<0, std::nullptr_t>"),
+                "AllNullTest should emit CompositionBranchValue variant (not boost::json::value)");
         Assert.assertFalse(allNullContent.contains("class  AllNullTest"),
                 "AllNullTest should not contain class declaration");
 
@@ -691,16 +691,18 @@ public class CppBoostBeastClientCodegenTest {
                 "ParentWithAnyOfOverlapping serialization must use toJsonValue_AnyOfOverlapping");
 
         // Scenario 16a: OneOfWithStringOverlap (oneOf open-string + string-enum via $ref)
-        // must emit boost::json::value (not collapse to std::string).
+        // must emit CompositionBranchValue variant (not collapse to std::string).
         Path oneOfStringOverlapHeader = output.toPath().resolve("model/OneOfWithStringOverlap.h");
         TestUtils.assertFileExists(oneOfStringOverlapHeader);
         String oneOfStringOverlapContent = java.nio.file.Files.readString(oneOfStringOverlapHeader);
-        Assert.assertTrue(oneOfStringOverlapContent.contains("using OneOfWithStringOverlap = boost::json::value;"),
+        Assert.assertTrue(oneOfStringOverlapContent.contains("CompositionBranchValue<0, std::string>"),
                 "OneOfWithStringOverlap (oneOf open-string + string-enum via $ref) should emit "
-                + "boost::json::value");
+                + "CompositionBranchValue variant");
         Assert.assertFalse(oneOfStringOverlapContent.contains("using OneOfWithStringOverlap = std::string;"),
                 "OneOfWithStringOverlap must NOT collapse to std::string — oneOf overlap "
-                + "requires boost::json::value");
+                + "requires CompositionBranchValue");
+        Assert.assertFalse(oneOfStringOverlapContent.contains("using OneOfWithStringOverlap = boost::json::value;"),
+                "OneOfWithStringOverlap must NOT type-erase to boost::json::value");
 
         // Scenario 16b: StringOverlapHolder property references OneOfWithStringOverlap
         // which is a using-alias for boost::json::value. Verify the property uses the
@@ -805,18 +807,21 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
-    public void resolvesAllNullBranchesToJsonValue() throws IOException {
+    @Test
+    public void resolvesAllNullBranchesToCompositionBranchValueVariant() throws IOException {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
-        // anyOf: [null, null] → all branches null → boost::json::value
+        // anyOf: [null, null] → CompositionBranchValue variant preserves null identity
         ComposedSchema schema = new ComposedSchema();
         schema.addAnyOfItem(new Schema().type("null"));
         schema.addAnyOfItem(new Schema().type("null"));
 
         String resolved = codegen.getTypeDeclaration(schema);
-        Assert.assertEquals(resolved, "boost::json::value",
-                "All-null branches should produce boost::json::value");
+        Assert.assertEquals(
+                "std::variant<CompositionBranchValue<0, std::nullptr_t>, CompositionBranchValue<1, std::nullptr_t>>",
+                resolved,
+                "All-null branches should produce CompositionBranchValue variant");
     }
 
     @Test
@@ -825,8 +830,8 @@ public class CppBoostBeastClientCodegenTest {
         codegen.processOpts();
 
         // oneOf: [string, string-enum] must NOT collapse like anyOf.
-        // Under JSON Schema oneOf, enum members match both branches (invalid).
-        // Emitting std::string would hide that; prefer boost::json::value.
+        // Phase 3 preserves identity via CompositionBranchValue wrappers
+        // instead of type-erasing to boost::json::value.
         ComposedSchema schema = new ComposedSchema();
         schema.addOneOfItem(new StringSchema());
         StringSchema enumSchema = new StringSchema();
@@ -835,16 +840,19 @@ public class CppBoostBeastClientCodegenTest {
         schema.addOneOfItem(enumSchema);
 
         String resolved = codegen.getTypeDeclaration(schema);
-        Assert.assertEquals(resolved, "boost::json::value",
-                "oneOf [string, string-enum] must not blind-collapse to std::string");
+        Assert.assertEquals(
+                "std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>>",
+                resolved,
+                "oneOf [string, string-enum] should produce CompositionBranchValue variant");
     }
 
     @Test
-    public void anyOfStringStringEnumCollapsesToString() throws IOException {
+    public void anyOfStringStringEnumPreservesValidators() throws IOException {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
-        // anyOf: [string, string-enum] → std::string (anyOf-only collapse)
+        // anyOf: [string, string-enum] → CompositionBranchValue variant
+        // (Rule 2 no longer collapses to std::string when enum is present)
         ComposedSchema schema = new ComposedSchema();
         schema.addAnyOfItem(new StringSchema());
         StringSchema enumSchema = new StringSchema();
@@ -853,8 +861,10 @@ public class CppBoostBeastClientCodegenTest {
         schema.addAnyOfItem(enumSchema);
 
         String resolved = codegen.getTypeDeclaration(schema);
-        Assert.assertEquals(resolved, "std::string",
-                "AnyOfStringStringEnum should collapse to std::string");
+        Assert.assertEquals(
+                "std::variant<CompositionBranchValue<0, std::string>, CompositionBranchValue<1, std::string>>",
+                resolved,
+                "anyOf [string, string-enum] should produce CompositionBranchValue variant with validators");
     }
 
     @Test(expectedExceptions = RuntimeException.class)
@@ -1161,7 +1171,7 @@ public class CppBoostBeastClientCodegenTest {
         if (java.nio.file.Files.exists(apiSource)) {
             String apiSourceContent = java.nio.file.Files.readString(apiSource);
             Assert.assertTrue(
-                    apiSourceContent.contains("fromJsonValue_ConstrainedNumber(...)"),
+                    apiSourceContent.contains("fromJsonValue_ConstrainedNumber("),
                     "API response for ConstrainedNumber must use "
                             + "fromJsonValue_ConstrainedNumber (descriptor-guided) "
                             + "instead of generic ResponseBodyDeserializer; content: "
@@ -1283,7 +1293,7 @@ public class CppBoostBeastClientCodegenTest {
 
     @Test
     public void oneOfStringStringEnumViaGateFixtures() throws IOException {
-        // oneOf open-string + string-enum must not claim exclusive std::string.
+        // oneOf open-string + string-enum preserves identity via CompositionBranchValue.
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-oneof").toFile();
         output.deleteOnExit();
 
@@ -1299,16 +1309,18 @@ public class CppBoostBeastClientCodegenTest {
         Path oneOfHeader = output.toPath().resolve("model/OneOfStringStringEnum.h");
         TestUtils.assertFileExists(oneOfHeader);
         String oneOfContent = java.nio.file.Files.readString(oneOfHeader);
-        Assert.assertTrue(oneOfContent.contains("using OneOfStringStringEnum = boost::json::value;"),
-                "OneOfStringStringEnum should be boost::json::value (no false exclusive string union)");
+        Assert.assertTrue(oneOfContent.contains("CompositionBranchValue<0, std::string>"),
+                "OneOfStringStringEnum should use CompositionBranchValue to preserve branch identity");
         Assert.assertFalse(oneOfContent.contains("using OneOfStringStringEnum = std::string;"),
                 "OneOfStringStringEnum must not blind-collapse to std::string");
+        Assert.assertFalse(oneOfContent.contains("using OneOfStringStringEnum = boost::json::value;"),
+                "OneOfStringStringEnum must not type-erase to boost::json::value");
     }
 
     @Test
     public void allNullAnyOfViaGateFixtures() throws IOException {
         // Verify that AllNullAnyOf (anyOf [null, null]) in Gate A fixtures
-        // produces boost::json::value alias.
+        // produces CompositionBranchValue variant (not boost::json::value).
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-allnull").toFile();
         output.deleteOnExit();
 
@@ -1324,14 +1336,14 @@ public class CppBoostBeastClientCodegenTest {
         Path allNullHeader = output.toPath().resolve("model/AllNullAnyOf.h");
         TestUtils.assertFileExists(allNullHeader);
         String allNullContent = java.nio.file.Files.readString(allNullHeader);
-        Assert.assertTrue(allNullContent.contains("using AllNullAnyOf = boost::json::value;"),
-                "AllNullAnyOf should be a boost::json::value alias");
+        Assert.assertTrue(allNullContent.contains("CompositionBranchValue<0, std::nullptr_t>"),
+                "AllNullAnyOf should use CompositionBranchValue to preserve null identity");
     }
 
     @Test
     public void duplicateNullOneOfViaGateFixtures() throws IOException {
         // Verify that DuplicateNullOneOf (oneOf [null, null]) in Gate A fixtures
-        // produces boost::json::value alias (null matches both branches).
+        // produces CompositionBranchValue variant (not boost::json::value).
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-dupenull").toFile();
         output.deleteOnExit();
 
@@ -1347,8 +1359,8 @@ public class CppBoostBeastClientCodegenTest {
         Path dupNullHeader = output.toPath().resolve("model/DuplicateNullOneOf.h");
         TestUtils.assertFileExists(dupNullHeader);
         String dupNullContent = java.nio.file.Files.readString(dupNullHeader);
-        Assert.assertTrue(dupNullContent.contains("using DuplicateNullOneOf = boost::json::value;"),
-                "DuplicateNullOneOf should be a boost::json::value alias");
+        Assert.assertTrue(dupNullContent.contains("CompositionBranchValue<0, std::nullptr_t>"),
+                "DuplicateNullOneOf should use CompositionBranchValue to preserve null identity");
     }
 
     @Test
