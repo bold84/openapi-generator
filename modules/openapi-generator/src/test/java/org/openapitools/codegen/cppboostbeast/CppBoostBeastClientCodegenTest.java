@@ -3105,10 +3105,8 @@ public class CppBoostBeastClientCodegenTest {
     // --- Phase 2 strong review: boolean schema fail-closed ---
 
     @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void booleanSchemaOnOneOfBranchFailsGeneration() {
-        // OAS 3.1 boolean value schemas (true/false literals) on a composition
-        // branch must fail generation for oneOf. Use BooleanSchema which is the
-        // swagger-parser's representation of a boolean value schema.
+    public void booleanTrueSchemaOnOneOfBranchFailsGeneration() {
+        // OAS 3.1 true value schema (always-match) on a composition branch.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -3118,12 +3116,59 @@ public class CppBoostBeastClientCodegenTest {
         Map<String, Schema> schemas = new HashMap<>();
 
         ComposedSchema schema = new ComposedSchema();
-        // BooleanSchema represents OAS 3.1 boolean true/false schema values.
-        // The isBooleanSchema()/getBooleanSchemaValue() methods detect this.
-        io.swagger.v3.oas.models.media.BooleanSchema boolBranch =
-                new io.swagger.v3.oas.models.media.BooleanSchema();
-        schema.addOneOfItem(boolBranch);
-        schemas.put("SchemaWithBooleanBranch", schema);
+        // OAS 3.1 true schema — use generic Schema with booleanSchemaValue set
+        Schema boolTrueBranch = new Schema();
+        boolTrueBranch.booleanSchemaValue(true);
+        schema.addOneOfItem(boolTrueBranch);
+        schemas.put("SchemaWithBoolTrue", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void booleanFalseSchemaOnOneOfBranchFailsGeneration() {
+        // OAS 3.1 false value schema (never-match) on a composition branch.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.1.0");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        Schema boolFalseBranch = new Schema();
+        boolFalseBranch.booleanSchemaValue(false);
+        schema.addOneOfItem(boolFalseBranch);
+        schemas.put("SchemaWithBoolFalse", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    // --- Phase 2 strong review: additionalProperties false fail-closed ---
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void additionalPropertiesFalseOnOneOfBranchFailsGeneration() {
+        // additionalProperties: false on a composition branch rejects extra
+        // object properties and affects membership. Must fail generation.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        ObjectSchema objBranch = new ObjectSchema();
+        // OAS 3.0: additionalProperties: false via setAdditionalProperties(Boolean)
+        objBranch.setAdditionalProperties(Boolean.FALSE);
+        schema.addOneOfItem(objBranch);
+        schemas.put("SchemaWithAddPropsFalse", schema);
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 

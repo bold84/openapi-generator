@@ -530,13 +530,19 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     unsupported.add("properties");
                 }
                 // additionalProperties: fail-closed unless no-op (true or absent).
-                // Only non-empty typed schemas and false can affect membership.
-                if (targetForAssertions.getAdditionalProperties() != null
-                        && targetForAssertions.getAdditionalProperties() instanceof Schema) {
-                    Schema addProp = (Schema) targetForAssertions.getAdditionalProperties();
-                    boolean hasConstraint = Boolean.FALSE.equals(addProp.getBooleanSchemaValue())
-                            || addProp.getType() != null
-                            || (addProp.getEnum() != null && !addProp.getEnum().isEmpty());
+                // Handles both Schema (e.g. {type: string}) and Boolean (false).
+                if (targetForAssertions.getAdditionalProperties() != null) {
+                    boolean hasConstraint = false;
+                    if (targetForAssertions.getAdditionalProperties() instanceof Schema) {
+                        Schema addProp = (Schema) targetForAssertions.getAdditionalProperties();
+                        hasConstraint = Boolean.FALSE.equals(addProp.getBooleanSchemaValue())
+                                || addProp.getType() != null
+                                || (addProp.getEnum() != null && !addProp.getEnum().isEmpty());
+                    } else if (targetForAssertions.getAdditionalProperties() instanceof Boolean) {
+                        // OAS 3.0: additionalProperties: false rejects extra properties
+                        hasConstraint = Boolean.FALSE.equals(
+                                targetForAssertions.getAdditionalProperties());
+                    }
                     if (hasConstraint) {
                         unsupported.add("additional-properties");
                     }
