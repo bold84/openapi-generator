@@ -2813,7 +2813,7 @@ public class CppBoostBeastClientCodegenTest {
         testBranches.add(new CppBoostBeastClientCodegen.CompositionBranchDescriptor(
                 0, "#/components/schemas/cat", "cat", "Cat",
                 "validate_cat_branch_0",
-                CppBoostBeastClientCodegen.NullCapability.NEVER,
+                CppBoostBeastClientCodegen.CompositionBranchDescriptor.NullCapability.NEVER,
                 java.util.Collections.emptyList(),
                 java.util.Collections.emptyList(),
                 java.util.Collections.emptyMap()));
@@ -2821,7 +2821,7 @@ public class CppBoostBeastClientCodegenTest {
         testBranches.add(new CppBoostBeastClientCodegen.CompositionBranchDescriptor(
                 1, "#/components/schemas/Dog", "Dog", "Dog",
                 "validate_dog_branch_1",
-                CppBoostBeastClientCodegen.NullCapability.NEVER,
+                CppBoostBeastClientCodegen.CompositionBranchDescriptor.NullCapability.NEVER,
                 java.util.Collections.emptyList(),
                 java.util.Collections.emptyList(),
                 java.util.Collections.emptyMap()));
