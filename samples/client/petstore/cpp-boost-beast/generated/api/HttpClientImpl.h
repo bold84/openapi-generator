@@ -52,6 +52,11 @@ public:
             const std::string &body,
             const std::map<std::string, std::string> &headers) override;
 
+    HttpResponseData
+    executeWithMetadata(const std::string &verb, const std::string &target,
+                        const std::string &body,
+                        const std::map<std::string, std::string> &headers) override;
+
     boost::beast::http::status
     executeStream(const std::string &verb, const std::string &target,
                   const std::string &body,

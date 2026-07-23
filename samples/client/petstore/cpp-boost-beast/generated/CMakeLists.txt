@@ -79,6 +79,8 @@ target_sources(${PROJECT_NAME} PRIVATE
     api/HttpClientImpl.cpp
     api/HttpClientImpl.h
     model/AnyType.h
+    model/ValidationTypes.h
+    model/NullableField.h
 )
 
 
@@ -101,3 +103,22 @@ install(TARGETS ${PROJECT_NAME}
 install(DIRECTORY api model
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/${PROJECT_NAME}"
     FILES_MATCHING PATTERN "*.h")
+
+# ──────────────────────────────────────────────────────────────────────
+# Wire-level multipart encoding test executable.
+# Build and run:
+#   cmake -DMULTIPART_ENCODING_SELF_TEST=ON -B build
+#   cmake --build build --parallel
+#   ctest --test-dir build --output-on-failure
+# ──────────────────────────────────────────────────────────────────────
+option(MULTIPART_ENCODING_SELF_TEST "Enable multipart encoding wire-level self-test" OFF)
+if (MULTIPART_ENCODING_SELF_TEST)
+    add_executable(${PROJECT_NAME}_multipart_wire_test
+        test/MultipartWireTest.cpp)
+
+    set_property(TARGET ${PROJECT_NAME}_multipart_wire_test
+        PROPERTY CXX_STANDARD 17)
+
+    add_test(NAME multipart-encoding-wire-test
+        COMMAND ${PROJECT_NAME}_multipart_wire_test)
+endif ()

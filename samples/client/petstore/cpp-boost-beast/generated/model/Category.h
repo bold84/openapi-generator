@@ -23,6 +23,7 @@
 #include <vector>
 #include <memory>
 #include <boost/json.hpp>
+#include "NullableField.h"
 
 namespace org {
 namespace openapitools {

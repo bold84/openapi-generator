@@ -24,12 +24,14 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include <boost/beast/core.hpp>
 #include <boost/optional.hpp>
 
 #include "api/HttpClient.h"
+#include "ValidationTypes.h"
 
 #include "User.h"
 #include <string>

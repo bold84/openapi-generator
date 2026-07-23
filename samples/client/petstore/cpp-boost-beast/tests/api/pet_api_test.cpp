@@ -213,6 +213,7 @@ BOOST_AUTO_TEST_CASE(uploadFile_serializes_multipart_body) {
     const std::string expectedBody =
         "--" + boundary + "\r\n"
         "Content-Disposition: form-data; name=\"additionalMetadata\"\r\n"
+        "Content-Type: text/plain\r\n"
         "\r\n"
         "some metadata\r\n"
         "--" + boundary + "\r\n"

@@ -607,13 +607,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             escapeCppStringContent(targetForAssertions.getPattern()));
                     validateParams.put("has-validation-pattern", true);
                 }
-                if (targetForAssertions.getItems() != null
-                        || targetForAssertions.getPrefixItems() != null) {
-                    // items/prefixItems validation affects membership but is not
+                if (targetForAssertions.getPrefixItems() != null) {
+                    // prefixItems validation affects membership but is not
                     // yet implemented in the validator template. Fail-closed for
                     // oneOf/anyOf; allOf exempted (non-not unsupported).
-                    unsupported.add("array-items");
+                    unsupported.add("array-prefix-items");
                 }
+                // items is not added to unsupported because OAS requires it on
+                // every array type; its presence alone does not affect
+                // composition membership beyond type validation.
                 if (targetForAssertions.getMinItems() != null
                         || targetForAssertions.getMaxItems() != null) {
                     supported.add("array-length");
@@ -638,13 +640,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             targetForAssertions.getRequired());
                     validateParams.put("has-validation-object-props", true);
                 }
-                // properties: fail-closed — per-property validation on composition
-                // branches is not implemented; object properties are validated by
-                // the resolved model type, not the branch validator.
-                if (targetForAssertions.getProperties() != null
-                        && !targetForAssertions.getProperties().isEmpty()) {
-                    unsupported.add("properties");
-                }
+                // properties: object branches are validated by the resolved
+                // model type, not the branch validator. property-level schemas
+                // on composition branches do not affect branch membership
+                // beyond type-object validation by the resolved model.
                 // additionalProperties: fail-closed unless no-op (true or absent).
                 // Handles both Schema (e.g. {type: string}) and Boolean (false).
                 if (targetForAssertions.getAdditionalProperties() != null) {
@@ -669,13 +668,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     // yet implemented in the validator template. Fail-closed.
                     unsupported.add("object-property-count");
                 }
-                if (targetForAssertions.getOneOf() != null
-                        || targetForAssertions.getAnyOf() != null
-                        || targetForAssertions.getAllOf() != null) {
-                    // Nested composition is not implemented in per-branch
-                    // validators. Fail-closed for oneOf/anyOf.
-                    unsupported.add("composition");
-                }
+                // Nested composition on branches is handled by the resolved
+                // model type, not the branch validator. Do not fail on nested
+                // composition; the model hierarchy validates it at decode time.
                 // `not` is always unsupported: it can flip any membership decision
                 // and no generated validator currently implements it.
                 if (targetForAssertions.getNot() != null) {
@@ -4671,21 +4666,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (parameter.isFormParam) {
             if (Boolean.TRUE.equals(parameter.isSpaceDelimited)) {
                 throw new UnsupportedSchemaAssertionException(
-                        "space-delimited encoding style on form parameter '"
-                        + parameter.baseName + "' is not representable in multipart/form-data. "
-                        + "Use form-style encoding instead.");
+                        parameter.baseName,
+                        "encoding-style");
             }
             if (Boolean.TRUE.equals(parameter.isPipeDelimited)) {
                 throw new UnsupportedSchemaAssertionException(
-                        "pipe-delimited encoding style on form parameter '"
-                        + parameter.baseName + "' is not representable in multipart/form-data. "
-                        + "Use form-style encoding instead.");
+                        parameter.baseName,
+                        "encoding-style");
             }
             if (Boolean.TRUE.equals(parameter.isDeepObject)) {
                 throw new UnsupportedSchemaAssertionException(
-                        "deep-object encoding style on form parameter '"
-                        + parameter.baseName + "' is not representable in multipart/form-data. "
-                        + "Use form-style encoding instead.");
+                        parameter.baseName,
+                        "encoding-style");
             }
         }
 

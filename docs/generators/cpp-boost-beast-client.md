@@ -19,8 +19,10 @@ These options may be applied as additional-properties (cli) or configOptions (pl
 | Option | Description | Values | Default |
 | ------ | ----------- | ------ | ------- |
 |apiPackage|C++ namespace for apis (convention: name.space.api).| |org.openapitools.client.api|
+|formatAssertionPolicy|Policy for format-assertion validation in composition branch matching. 'annotation' (default): format ranges affect destination conversion only, never match counts. 'strict': documented format assertions participate in branch validation.| |annotation|
 |modelPackage|C++ namespace for models (convention: name.space.model).| |org.openapitools.client.model|
 |packageName|C++ package and library name.| |CppBoostBeastOpenAPIClient|
+|sseSchemaMode|SSE schema interpretation mode for text/event-stream responses. 'representation' (default): the response schema describes the text/event-stream media representation; generate framed events with raw data strings, event type, id, and retry fields. 'jsonEventData': the response schema describes each JSON data field; decode each event's data payload against the schema. Use the x-sse-event-data-schema vendor extension for per-operation opt-in to typed event-data decoding.|<dl><dt>**representation**</dt><dd>Strict mode &mdash; schema describes media representation</dd><dt>**jsonEventData**</dt><dd>Schema describes each JSON event data payload</dd></dl>|representation|
 
 ## IMPORT MAPPING
 

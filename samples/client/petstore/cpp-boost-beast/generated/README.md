@@ -34,7 +34,7 @@ hold union data).
 |--------|-------|
 | Empty struct `AnyOfStringArray {}` | `std::variant<std::string, std::vector<ItemStruct>>` |
 | Composed → `{}` on wire | Correct encode/decode via `toJsonValue`/`fromJsonValue` |
-| Polymorphism disabled | `oneOf`/`anyOf`/`allOf` fully supported |
+| Polymorphism disabled | `oneOf`/`anyOf`/`allOf` with generated composition validators (see support matrix) |
 
 ### Ordered composition lowering
 
@@ -48,6 +48,37 @@ The generator applies the following rules in order to every composed schema:
 5. **Deduplicate identical C++ branch types** inside variants.
 6. **Else emit `std::variant<Branches...>`**.
 7. **If still untyped/open**, emit `boost::json::value`.
+
+### Composition validation support
+
+The generator produces per-branch validators for composition membership.
+The table below shows which JSON Schema assertions are enforced by generated
+validators, and which fail generation when they could affect a match.
+
+| Keyword | Supported assertions | Fail-closed keywords (generation error) | Notes |
+|---------|---------------------|----------------------------------------|-------|
+| `oneOf` | Exactly-one branch match via generated per-branch validators | Do not set `not` or conditional on a branch — fail generation | Branch count is determined by generated validators, not by C++ type uniqueness |
+| `anyOf` | At-least-one branch match via generated per-branch validators | Do not set `not` or conditional on a branch — fail generation | First matching branch stored in source order |
+| `allOf` | Recursive property intersection, type/enum/numeric/string/array/object bound intersection | Unsatisfiable intersection fails generation | Object intersections produce synthetic schemas; scalar intersections use validated wrappers |
+| `not` | **Not generated** — membership requiring `not` fails generation | `not` — generates `UnsupportedSchemaAssertionException` | If a composition match depends on `not`, generation fails with schema-location diagnostic |
+| `type` | `string`, `boolean`, `integer`, `number`, `array`, `object`, `null` | Type arrays with unsupported entries | Mathematical integer semantics: `1` and `1.0` both satisfy `integer` |
+| `enum` / `const` | String and numeric membership | — | OAS 3.1 `const` is treated as single-value `enum` |
+| `minimum` / `maximum` / `exclusiveMin` / `exclusiveMax` | Numeric range | — | Applied per-schema during branch validation |
+| `multipleOf` | Numeric multiple-of constraint | — | — |
+| `minLength` / `maxLength` | String length | — | — |
+| `pattern` | ECMA-262 regex subset | ECMA-262 constructs outside the supported subset | Generated pattern matcher, not `std::regex` |
+| `minItems` / `maxItems` | Array length | — | — |
+| `uniqueItems` | Array uniqueness | — | — |
+| `required` | Object required-property presence | — | — |
+| `properties` | Property-level validation | Properties beyond required on composition branches | Per-property validators are generated; `additionalProperties` constraints fail closed |
+| `minProperties` / `maxProperties` | — | Object property-count validation fails generation | — |
+| `format` | Annotation mode (default): format ranges affect destination conversion only | `formatAssertionPolicy=strict` requires format validators (deferred) | See `formatAssertionPolicy` option |
+| `if`/`then`/`else` | Conditional validation not generated | Fails generation if on a composition branch | — |
+| Boolean value schemas (OAS 3.1) | — (fail-closed) | `true`/`false` used as schema entries fail generation | OAS 3.1 `{"type": "boolean", "const": true}` (object schema) is supported; top-level `true`/`false` as schema values are fail-closed |
+| `discriminator` | Known/unknown/missing values do not alter match count | Mapping resolution errors fail generation | Discriminator is validation-neutral — it orders candidates for diagnostics only |
+
+See `model-source.mustache` for the complete validation scope comment in each
+generated model.
 
 ### OpenAPI → C++ type mapping
 
@@ -89,17 +120,29 @@ optional is disengaged. The `JsonValueConverter<std::optional<T>>::toJsonValue`
 helper unwraps the inner value; the outer `has_value()` check at the call site
 prevents unreachable `null` output for absent optionals.
 
-### Deferred: full tri-state
+### Phase 6: tri-state model
 
-A full **tri-state model** (field absent / field present with JSON null / field
-present with JSON value) is **not yet implemented**.  When the schema allows null,
-the current implementation cannot distinguish "field was sent as JSON null" from
-"field was absent" for non-required properties — both result in the key being
-omitted on encode and `std::nullopt` on decode.
+The generator now implements a full **tri-state model** for optional nullable
+fields using `NullableField<T>`.  Three wire states are preserved on round-trip:
 
-A future phase may add a separate `null_state` flag per nullable field to
-preserve the absent-vs-null distinction on the wire, matching OAS 3.1's
-semantic model where a missing key and a present `null` value are distinct.
+| Field kind | C++ type | Encode behavior |
+|-----------|----------|----------------|
+| Required, non-null | `T` | Always written |
+| Optional, non-null | `std::optional<T>` | `has_value()` → written; disengaged → omitted |
+| Required, nullable | `std::optional<T>` | Key required; value or `null` accepted |
+| Optional, nullable | `NullableField<T>` | `hasValue()` → written; `isNull()` → JSON `null`; `isMissing()` → omitted |
+
+`NullableField<T>` exposes:
+- `isMissing()` / `isNull()` / `hasValue()` — state queries
+- `hasOptionalValue()` / `resetOptionalValue()` — compatibility with
+  property-storage conventions
+- `setNull()` — transition to null state
+- `resetMissing()` — transition to missing state
+
+Schema-level OAS 3.0 nullable objects (e.g., `type: object, nullable: true`)
+accept JSON `null` at the root level.  The model's `fromJsonValue` decodes
+`null` into a null-state instance; `toJsonValue` produces `null` when the
+model is in the null state.
 
 ---
 
@@ -141,14 +184,103 @@ The generator **discovers** media types and schemas from the `content` map. This
 includes same-status multi-content operations where one media type is
 `text/event-stream` and another is `application/json`.
 
+### SSE schema interpretation: two modes
+
+The generator option `sseSchemaMode` controls how `text/event-stream` response
+schemas are interpreted:
+
+| Mode | Behavior |
+|------|----------|
+| `representation` (default) | The response schema describes the `text/event-stream` media representation. Generate framed event types with raw `data` strings. Event fields (`event`, `id`, `retry`) are available but not JSON-decoded from `data` automatically. |
+| `jsonEventData` | The response schema describes each JSON `data:` field payload. Each event's data is decoded against the schema using generated `fromJsonValue_` converters. Supports `std::vector<EventType>` return and `oneOf` event unions. |
+
+#### Representation mode (strict, default)
+
+In `representation` mode, the typed event-data decoding is an explicit convention:
+
+```sh
+openapi-generator generate -g cpp-boost-beast-client \
+  -o output --additional-properties=sseSchemaMode=representation
+```
+
+Each SSE event is framed per WHATWG and delivered as a raw string `data` payload.
+The `event`, `id`, and `retry` fields are recognized during line parsing but are
+**not captured** by the SseEventFramer — the framer is data-only and delivers
+only concatenated `data:` content via the callback. The WHATWG framer
+(`SseEventFramer` in `HttpClientImpl.cpp`) is always independent of JSON
+conversion — it operates on raw bytes.
+
+WHATWG framing behavior:
+- **BOM**: Initial UTF-8 BOM (`EF BB BF`) is consumed silently.
+- **Field parsing**: `event`, `data`, `id`, and `retry` fields are recognized.
+- **Comments**: Lines starting with `:` are ignored.
+- **Multi-line data**: Consecutive `data:` fields are joined by LF.
+- **Incomplete events**: Events without a terminating blank line at EOF are
+  **discarded** (per WHATWG spec). This prevents partial event delivery.
+- **Body limits**: A configurable `responseBodyLimit` guards against
+  memory exhaustion; the parser rejects oversize bodies with `HTTP 413` semantics.
+- **Event `type`/`id`/`retry`**: These fields are parsed but currently not
+  surfaced in the callback (framer is data-only). To capture full event metadata,
+  extend the `SseEventFramer` to accumulate `m_eventType`, `m_eventId`, and
+  `m_retry` members and include them in the dispatch payload.
+
+In `representation` mode the generated return type is
+`std::vector<std::string>` — one raw data string per complete event. No JSON
+conversion is applied.
+
+#### JsonEventData mode (typed convention)
+
+In `jsonEventData` mode, the generator assumes each SSE `data:` line contains
+a complete JSON value. Each event is parsed against the schema from the
+`text/event-stream` media type entry:
+
+```sh
+openapi-generator generate -g cpp-boost-beast-client \
+  -o output --additional-properties=sseSchemaMode=jsonEventData
+```
+
+For pure-SSE operations, the return type becomes `std::vector<EventType>` where
+`EventType` is the C++ type derived from the response schema. For dual-content
+operations (both `application/json` and `text/event-stream`), a dedicated
+`{operationId}Stream` method is generated alongside the normal JSON method.
+
+#### Per-operation opt-in: `x-sse-event-data-schema`
+
+The vendor extension `x-sse-event-data-schema` on an operation overrides the
+global `sseSchemaMode` and enables typed JSON-per-data decoding for that
+operation only. This allows migrating individual endpoints to typed event data
+while the rest of the API uses the strict presentation mode:
+
+```yaml
+/events:
+  get:
+    x-sse-event-data-schema: true
+    responses:
+      '200':
+        content:
+          text/event-stream:
+            schema:
+              type: object
+              properties:
+                timestamp:
+                  type: integer
+                payload:
+                  type: string
+```
+
+Typed SSE (**`jsonEventData` mode**) is a **generator convention** — the OAS
+specification does not define JSON typing for each `text/event-stream` data
+field. The convention is documented and explicit. It is not implied by
+`text/event-stream` alone.
+
 ### Required behavior
 
 1. **Client selection** — The caller chooses representation via the `Accept` header.
    Non-streaming path sets `Accept: application/json`; streaming path sets
    `Accept: text/event-stream`.
-2. **SSE decoding** — When `text/event-stream` is selected, the generator emits
-   an event-stream parser that decodes each SSE `data:` line using the
-   schema from the `text/event-stream` media type entry (often a `oneOf` union).
+2. **SSE framing** — The WHATWG framer is always independent from JSON
+   conversion. It delivers string data payloads. JSON parsing happens
+   **only** in `jsonEventData` mode.
 3. **Transport** — Streaming operations use `HttpClient::executeStream`, which
    reads the response body incrementally and delivers complete SSE events
    (WHATWG-framed `data` payloads) via callback as they arrive.
@@ -158,6 +290,7 @@ includes same-status multi-content operations where one media type is
 - Hard-coding parameter name `stream` or operationId patterns from any single API.
 - Assuming event type names (`ResponseStreamEvent`, etc.) in the engine.
 - Treating dual media-type content as vendor-specific.
+- Assuming that `text/event-stream` alone implies typed JSON‑per-data decoding.
 
 Parameter properties named `stream` in the OpenAPI document are ordinary schema
 parameters — not OAS keywords. The generator does not special-case them.
@@ -169,6 +302,17 @@ frames Server-Sent Events per the WHATWG specification. Each callback receives
 one complete event's data payload (multi-line `data:` fields joined by LF).
 Generated streaming operations parse each event as it is framed. Incomplete
 events at EOF are discarded.
+
+#### SSE framing reference (WHATWG — SseEventFramer data-only callback)
+
+| SSE field | Handling | Notes |
+|-----------|----------|-------|
+| `data:` | Concatenated with LF between consecutive lines. Delivered via callback. | The **only** field captured by the framer |
+| `event:` | Parsed during line processing but **not captured** | framer is data-only; extend SseEventFramer to surface |
+| `id:` | Parsed during line processing but **not captured** | framer is data-only |
+| `retry:` | Parsed during line processing but **not captured** | framer is data-only |
+| `:` (comment) | Ignored | Per WHATWG |
+| BOM | Consumed at stream start | UTF-8 BOM silently skipped |
 
 ---
 
@@ -210,6 +354,13 @@ Reviewers should evaluate the PR against:
   represent the OpenAPI specification's composition rules?
 - **Fixture coverage** — does every lowering rule have dedicated unit/fixture
   coverage with green tests?
+
+> **Phase 10 note:** The file `docs/generators/cpp-boost-beast-client.md`
+> (auto-generated CONFIG OPTIONS, FEATURE SET) will be regenerated from the
+> generator metadata during the release gate. Options added in Phase 9
+> (`sseSchemaMode`, `formatAssertionPolicy`, `x-sse-event-data-schema`)
+> will appear automatically at that time.  Verify the generated doc does not
+> regress any corrected claims.
 
 ---
 

@@ -2050,7 +2050,7 @@ public class CppBoostBeastClientCodegenTest {
         CodegenConfigurator configurator = new CodegenConfigurator()
                 .setGeneratorName("cpp-boost-beast-client")
                 .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/composed-schema-lowering.yaml")
-                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
+                .addAdditionalProperty("sseSchemaMode", "jsonEventData")
                 .setOutputDir(output.getAbsolutePath());
 
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
@@ -2301,7 +2301,7 @@ public class CppBoostBeastClientCodegenTest {
         CodegenConfigurator configurator = new CodegenConfigurator()
                 .setGeneratorName("cpp-boost-beast-client")
                 .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-object.yaml")
-                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
+                .addAdditionalProperty("sseSchemaMode", "jsonEventData")
                 .setOutputDir(output.getAbsolutePath());
 
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
@@ -2349,7 +2349,7 @@ public class CppBoostBeastClientCodegenTest {
         CodegenConfigurator configurator = new CodegenConfigurator()
                 .setGeneratorName("cpp-boost-beast-client")
                 .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/dual-object-sse.yaml")
-                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
+                .addAdditionalProperty("sseSchemaMode", "jsonEventData")
                 .setOutputDir(output.getAbsolutePath());
 
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
@@ -2501,7 +2501,7 @@ public class CppBoostBeastClientCodegenTest {
         CodegenConfigurator configurator = new CodegenConfigurator()
                 .setGeneratorName("cpp-boost-beast-client")
                 .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-object.yaml")
-                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
+                .addAdditionalProperty("sseSchemaMode", "jsonEventData")
                 .setOutputDir(output.getAbsolutePath());
 
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
@@ -2621,7 +2621,7 @@ public class CppBoostBeastClientCodegenTest {
         CodegenConfigurator configurator = new CodegenConfigurator()
                 .setGeneratorName("cpp-boost-beast-client")
                 .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/pure-sse-object.yaml")
-                .setAdditionalProperty("sseSchemaMode", "jsonEventData")
+                .addAdditionalProperty("sseSchemaMode", "jsonEventData")
                 .setOutputDir(output.getAbsolutePath());
 
         List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();

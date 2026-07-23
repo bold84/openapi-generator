@@ -16,21 +16,39 @@
 // The generated client performs structural and composition validation to
 // ensure wire-format correctness, but is NOT a full JSON Schema validator:
 //
-//   ✓ oneOf exactly-one match enforcement (count + reject 0 or >1)
-//   ✓ anyOf at-least-one match enforcement (reject 0)
-//   ✓ discriminator value enforcement (unknown → throw)
+//   ✓ oneOf exactly-one match enforcement (validate_* per branch)
+//   ✓ anyOf at-least-one match enforcement (validate_* per branch)
+//   ✓ discriminator value enforcement (unknown → fall through to structural)
+//   ✓ type validation (string, boolean, integer, number, array, object, null)
+//   ✓ mathematical integer semantics (1 and 1.0 both accepted as integer)
+//   ✓ enum / const membership on string and numeric values
 //   ✓ required property presence in object JSON
-//   ✓ enum / const membership on object property setters
-//   ✓ basic type-kind checks (string, bool, int, double, null)
+//   ✓ numeric range validation (minimum, maximum, exclusiveMin, exclusiveMax)
+//   ✓ numeric multipleOf validation
+//   ✓ string length validation (minLength, maxLength)
+//   ✓ string pattern validation (ECMA-262 regex subset; fail-closed outside)
+//   ✓ array length constraints (minItems, maxItems)
+//   ✓ array uniqueItems validation
 //   ✓ nested error-path diagnostics (e.g. ".field[0].nested")
 //
+//   ✗ `not` schema (fails generation with schema-path diagnostic)
+//   ✗ items / prefixItems validation (fails generation)
+//   ✗ properties beyond required (fails generation on composition branches)
+//   ✗ constraining additionalProperties (false or typed; absent/true is fine)
+//   ✗ minProperties / maxProperties validation (fails generation)
+//   ✗ nested composition on branches (fails generation)
+//   ✗ boolean true/false schemas (fail-closed; OAS 3.1 value-schemas)
 //   ✗ String format validation (email, date-time, uri, etc.)
-//   ✗ Numeric range validation (minimum, maximum, multipleOf)
-//   ✗ String pattern validation (regex)
-//   ✗ Array length constraints (minItems, maxItems, uniqueItems)
-//   ✗ Object property constraints (minProperties, maxProperties)
 //   ✗ if/then/else conditional validation
 //   ✗ Unevaluated/additional property semantics
+//   ✗ Dependencies (dependentRequired)
+//   ✗ Contains validation
+//   ✗ Content media type / content encoding validation
+//   ✗ Property name validation
+//
+// When a composition branch contains an unsupported assertion keyword,
+// generation fails with a schema-path diagnostic rather than silently
+// accepting invalid wire values.
 //
 // For full JSON Schema validation, use a dedicated validator library
 // (e.g. valijson, nlohmann/json-schema-validator) on the deserialized
@@ -55,6 +73,8 @@
 #include <algorithm>
 #include <array>
 #include <boost/json.hpp>
+
+#include "ValidationTypes.h"
 
 namespace org {
 namespace openapitools {
@@ -135,10 +155,10 @@ struct HasModelToJsonValue<T, std::void_t<decltype(std::declval<const T&>().toJs
 
 // Trait: detects whether a type has fromJsonValue member
 template <typename T, typename = void>
-struct HasModelFromJsonValue : std::false_type {};
+struct HasFromJsonValueMethod : std::false_type {};
 
 template <typename T>
-struct HasModelFromJsonValue<T,
+struct HasFromJsonValueMethod<T,
     std::void_t<decltype(std::declval<T&>().fromJsonValue(std::declval<const boost::json::value&>()))>>
     : std::true_type {};
 
@@ -174,24 +194,23 @@ bool tryParseBranch(boost::json::value const& value, T& result, std::string* err
             result = boost::json::value_to<bool>(value);
             return true;
         } else if constexpr (std::is_same_v<T, std::int32_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < (std::numeric_limits<std::int32_t>::min)() || raw > (std::numeric_limits<std::int32_t>::max)()) return false;
             result = static_cast<std::int32_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::uint8_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < 0 || raw > 255) return false;
             result = static_cast<std::uint8_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::int64_t>) {
-            if (!value.is_int64()) return false;
-            result = value.as_int64();
-            return true;
+            return tryGetMathematicalInteger(value, result);
         } else if constexpr (std::is_same_v<T, double>) {
             if (value.is_double()) { result = value.as_double(); return true; }
             if (value.is_int64()) { result = static_cast<double>(value.as_int64()); return true; }
+            if (value.is_uint64()) { result = static_cast<double>(value.as_uint64()); return true; }
             return false;
         } else if constexpr (std::is_same_v<T, boost::json::value>) {
             result = value;
@@ -261,12 +280,19 @@ bool tryParseBranch(boost::json::value const& value, T& result, std::string* err
             }
             result = std::move(m);
             return true;
+        } else if constexpr (IsCompositionBranchValue<T>{}) {
+            // CompositionBranchValue<Idx, Inner> — unwrap, parse inner, rewrap.
+            using InnerType = decltype(T::value);
+            InnerType inner;
+            if (!tryParseBranch(value, inner, errorPath)) return false;
+            result.value = std::move(inner);
+            return true;
         } else {
             // Model type — try fromJsonValue member.
             // Do NOT swallow model validation errors (required field, type
             // mismatch, discriminator): propagate them via errorPath so the
             // caller can include them in the final diagnostic.
-            if constexpr (HasModelFromJsonValue<T>{}) {
+            if constexpr (HasFromJsonValueMethod<T>{}) {
                 T candidate;
                 try {
                     candidate.fromJsonValue(value);
@@ -378,7 +404,7 @@ struct JsonValueConverter
 
     static Target fromJsonValue(const boost::json::value& jsonValue)
     {
-        return jsonValueConverterFromJsonValue<Target>(jsonValue, HasModelFromJsonValue<Target>{});
+        return jsonValueConverterFromJsonValue<Target>(jsonValue, HasFromJsonValueMethod<Target>{});
     }
 };
 
@@ -662,37 +688,17 @@ boost::json::object Pet::toJsonObject_internal() const
         if (m_IdIsSet) {
             object["id"] = JsonValueConverter<int64_t>::toJsonValue(getId());
         }
-        // Current nullability scope (Phase 2): unset optional → key omitted from JSON object.
-        // Full tri-state (unset=omit, present-null→JSON null, present-value→JSON value)
-        // is deferred to a future phase. When m_Id.has_value(), the inner value is
-        // serialized; when disengaged, the key is simply not written. This matches the
-        // most common OpenAPI use case (optional properties omitted when absent).
         if (m_CategoryIsSet) {
             object["category"] = JsonValueConverter<Category>::toJsonValue(getCategory());
         }
-        // Current nullability scope (Phase 2): unset optional → key omitted from JSON object.
-        // Full tri-state (unset=omit, present-null→JSON null, present-value→JSON value)
-        // is deferred to a future phase. When m_Category.has_value(), the inner value is
-        // serialized; when disengaged, the key is simply not written. This matches the
-        // most common OpenAPI use case (optional properties omitted when absent).
         object["name"] = JsonValueConverter<std::string>::toJsonValue(getName());
         object["photoUrls"] = JsonValueConverter<std::vector<std::string>>::toJsonValue(getPhotoUrls());
         if (m_TagsIsSet) {
             object["tags"] = JsonValueConverter<std::vector<std::shared_ptr<Tag>>>::toJsonValue(getTags());
         }
-        // Current nullability scope (Phase 2): unset optional → key omitted from JSON object.
-        // Full tri-state (unset=omit, present-null→JSON null, present-value→JSON value)
-        // is deferred to a future phase. When m_Tags.has_value(), the inner value is
-        // serialized; when disengaged, the key is simply not written. This matches the
-        // most common OpenAPI use case (optional properties omitted when absent).
         if (m_StatusIsSet) {
             object["status"] = JsonValueConverter<std::string>::toJsonValue(getStatus());
         }
-        // Current nullability scope (Phase 2): unset optional → key omitted from JSON object.
-        // Full tri-state (unset=omit, present-null→JSON null, present-value→JSON value)
-        // is deferred to a future phase. When m_Status.has_value(), the inner value is
-        // serialized; when disengaged, the key is simply not written. This matches the
-        // most common OpenAPI use case (optional properties omitted when absent).
     return object;
 }
 

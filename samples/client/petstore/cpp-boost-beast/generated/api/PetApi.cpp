@@ -11,6 +11,7 @@
  */
 
 
+#include <cctype>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/json.hpp>
 
+#include "ValidationTypes.h"
 
 #include "PetApi.h"
 
@@ -127,11 +129,49 @@ std::string toRawBodyValue(const std::optional<T>& value) {
     return "";
 }
 
+// Generic toFormParameterValue: uses operator<< for arithmetic types,
+// JSON serialization for object/map types via toRequestJsonValue.
+template<typename T, typename = void>
+struct FormParamSerializer {
+    static std::string serialize(const T& value) {
+        std::ostringstream stream;
+        stream << value;
+        return stream.str();
+    }
+};
+
+// Map types: serialize as JSON object via toRequestJsonValue.
 template<typename T>
-std::string toFormParameterValue(const T& value) {
-    std::ostringstream stream;
-    stream << value;
-    return stream.str();
+struct FormParamSerializer<std::map<std::string, T>, void> {
+    static std::string serialize(const std::map<std::string, T>& mapValue) {
+        boost::json::object obj;
+        for (const auto& entry : mapValue) {
+            obj[entry.first] = toRequestJsonValue(entry.second);
+        }
+        return boost::json::serialize(obj);
+    }
+};
+
+// Detect types with toJsonValue() member — model classes.
+template <typename T, typename = void>
+struct HasFormToJsonValue : std::false_type {};
+
+template <typename T>
+struct HasFormToJsonValue<T, std::void_t<
+    decltype(std::declval<const T&>().toJsonValue())>> : std::true_type {};
+
+// Model classes: serialize via toJsonValue() as JSON.
+template<typename T>
+typename std::enable_if<HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const T& value) {
+    return boost::json::serialize(value.toJsonValue());
+}
+
+// Fallback for types without toJsonValue() — operator<< or map serializer.
+template<typename T>
+typename std::enable_if<!HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const T& value) {
+    return FormParamSerializer<T>::serialize(value);
 }
 
 template<typename T>
@@ -142,8 +182,21 @@ std::string toFormParameterValue(const std::optional<T>& value) {
     return "";
 }
 
+// Arrays of model types (HasFormToJsonValue): serialize as JSON array.
 template<typename T>
-std::string toFormParameterValue(const std::vector<T>& values) {
+typename std::enable_if<HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const std::vector<T>& values) {
+    boost::json::array jsonArray;
+    for (const auto& value : values) {
+        jsonArray.push_back(value.toJsonValue());
+    }
+    return boost::json::serialize(jsonArray);
+}
+
+// Arrays of types without toJsonValue: comma-delimited (OAS form-style).
+template<typename T>
+typename std::enable_if<!HasFormToJsonValue<T>::value, std::string>::type
+toFormParameterValue(const std::vector<T>& values) {
     std::stringstream serializedValues;
     const char* separator = "";
     for (const auto& value : values) {
@@ -482,6 +535,9 @@ boost::json::value toRequestJsonValue(const std::variant<Ts...>& requestValue);
 template<typename T>
 boost::json::value toRequestJsonValue(const std::optional<T>& requestValue);
 
+template<std::size_t Idx, typename Val>
+boost::json::value toRequestJsonValue(const CompositionBranchValue<Idx, Val>& v);
+
 template<typename T>
 boost::json::value toRequestJsonValue(const std::shared_ptr<T>& requestValue) {
     return requestValue == nullptr ? boost::json::value(nullptr) : requestValue->toJsonValue();
@@ -492,6 +548,11 @@ boost::json::value toRequestJsonValue(const std::variant<Ts...>& requestValue) {
     return std::visit([](auto const& v) -> boost::json::value {
         return toRequestJsonValue(v);
     }, requestValue);
+}
+
+template<std::size_t Idx, typename Val>
+boost::json::value toRequestJsonValue(const CompositionBranchValue<Idx, Val>& v) {
+    return toRequestJsonValue(v.value);
 }
 
 template<typename T>
@@ -521,26 +582,54 @@ boost::json::value toRequestJsonValue(const std::map<std::string, T>& requestVal
     return requestObject;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Multipart form parameter serialization helpers.
+//
+// serializeMultipartFormData produces wire-format multipart/form-data
+// bodies per RFC 2046. Each FormParameter carries:
+//   - name    : the part name (Content-Disposition form-data name)
+//   - value   : the serialized part body
+//   - isFile  : if true, adds filename and defaults to octet-stream
+//   - contentType : explicit Content-Type override (Encoding Object)
+//
+// Content-Type precedence (OAS 3.0 §10.4):
+//   1. Encoding Object contentType on the property
+//   2. OAS default for the property type (octet-stream for binary)
+// When no contentType is set and isFile is false, no Content-Type
+// header is emitted for the part.
+// ──────────────────────────────────────────────────────────────────────
+
 /// addVariantFormParameter definition (forward-declared above).
 /// Must be defined after toRequestJsonValue so lambdas can find it via ADL.
+/// When encodingContentType is non-empty, it overrides the per-branch default
+/// according to OAS Encoding Object contentType precedence (OAS 3.0 §10.4):
+///   1. Encoding Object contentType
+///   2. OAS default for the property type (octet-stream for binary, JSON for objects)
+///   OAS 3.1 contentMediaType may override per-type defaults in future.
 template<typename VariantType>
 void addVariantFormParameter(
     std::vector<FormParameter>& formParameters,
     const std::string& name,
-    const VariantType& value) {
+    const VariantType& value,
+    const std::string& encodingContentType = "") {
+    const std::string resolvedContentType = encodingContentType;
     std::visit([&](auto const& branch) {
         using BranchType = std::decay_t<decltype(branch)>;
         // Only explicit byte containers are treated as file/binary branches.
         // std::string branches are serialized as JSON to correctly handle
         // string|object variant unions (e.g., oneOf [string, DataObject]).
         if constexpr (std::is_same_v<BranchType, std::vector<std::uint8_t>>) {
-            // Binary branch — send as file part with octet-stream
+            // Binary branch — send as file part with encoding or default content type
+            std::string partContentType = resolvedContentType.empty()
+                ? "application/octet-stream" : resolvedContentType;
             formParameters.emplace_back(name, toFormParameterValue(branch), true,
-                                        "application/octet-stream");
+                                        partContentType);
         } else {
             // Object or string branch — serialize as JSON part
+            std::string partContentType = resolvedContentType.empty()
+                ? "application/json" : resolvedContentType;
             std::string jsonValue = boost::json::serialize(toRequestJsonValue(branch));
-            formParameters.emplace_back(name, jsonValue, false, "application/json");
+            formParameters.emplace_back(name, jsonValue, false, partContentType);
         }
     }, value);
 }
@@ -646,24 +735,23 @@ bool tryParseBranch(const boost::json::value& value, T& result) {
             result = boost::json::value_to<bool>(value);
             return true;
         } else if constexpr (std::is_same_v<T, std::uint8_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < 0 || raw > 255) return false;
             result = static_cast<std::uint8_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::int32_t>) {
-            if (!value.is_int64()) return false;
-            auto raw = value.as_int64();
+            std::int64_t raw;
+            if (!tryGetMathematicalInteger(value, raw)) return false;
             if (raw < (std::numeric_limits<std::int32_t>::min)() || raw > (std::numeric_limits<std::int32_t>::max)()) return false;
             result = static_cast<std::int32_t>(raw);
             return true;
         } else if constexpr (std::is_same_v<T, std::int64_t>) {
-            if (!value.is_int64()) return false;
-            result = value.as_int64();
-            return true;
+            return tryGetMathematicalInteger(value, result);
         } else if constexpr (std::is_same_v<T, double>) {
             if (value.is_double()) { result = value.as_double(); return true; }
             if (value.is_int64()) { result = static_cast<double>(value.as_int64()); return true; }
+            if (value.is_uint64()) { result = static_cast<double>(value.as_uint64()); return true; }
             return false;
         } else if constexpr (std::is_same_v<T, boost::json::value>) {
             result = value;
@@ -704,6 +792,13 @@ bool tryParseBranch(const boost::json::value& value, T& result) {
                 m.emplace(std::string(entry.key()), std::move(converted));
             }
             result = std::move(m);
+            return true;
+        } else if constexpr (IsCompositionBranchValue<T>{}) {
+            // CompositionBranchValue<Idx, Inner> — unwrap, parse inner, rewrap.
+            using InnerType = decltype(T::value);
+            InnerType inner;
+            if (!tryParseBranch(value, inner)) return false;
+            result.value = std::move(inner);
             return true;
         } else {
             // Model type with fromJsonValue member
@@ -851,7 +946,6 @@ void appendParsedEvent(std::vector<EventVariant>& events,
                        Converter&& converter) {
     events.push_back(converter(boost::json::parse(eventData)));
 }
-
 }
 
 PetApiException::PetApiException(boost::beast::http::status statusCode, std::string what)
@@ -1076,11 +1170,13 @@ PetApi::updatePetWithForm(
     formParameters.emplace_back(
         "name",
         toFormParameterValue(name),
-        false);
+        false,
+        "text/plain");
     formParameters.emplace_back(
         "status",
         toFormParameterValue(status),
-        false);
+        false,
+        "text/plain");
     if (normalizeMediaType(requestContentType) == "multipart/form-data") {
         const std::string multipartBoundary = selectMultipartBoundary(formParameters);
         headers["Content-Type"] = requestContentType + "; boundary=" + multipartBoundary;
@@ -1236,11 +1332,13 @@ PetApi::uploadFile(
     formParameters.emplace_back(
         "additionalMetadata",
         toFormParameterValue(additionalMetadata),
-        false);
+        false,
+        "text/plain");
     formParameters.emplace_back(
         "file",
         toFormParameterValue(file),
-        true);
+        true,
+        "application/octet-stream");
     if (normalizeMediaType(requestContentType) == "multipart/form-data") {
         const std::string multipartBoundary = selectMultipartBoundary(formParameters);
         headers["Content-Type"] = requestContentType + "; boundary=" + multipartBoundary;
