@@ -458,17 +458,19 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(inputParamSourceContent.contains("#include <limits>"),
                 "Variant sources using numeric_limits must include <limits>");
 
-        // PetByType is a discriminated variant
+        // PetByType is a discriminated variant with validation-neutral discriminator.
+        // Phase 4: discriminator reorders candidate validation for diagnostics.
         Path petByTypeSource = output.toPath().resolve("model/PetByType.cpp");
         String petByTypeSourceContent = java.nio.file.Files.readString(petByTypeSource);
-        Assert.assertTrue(petByTypeSourceContent.contains("discriminator"),
-                "PetByType from_json should reference discriminator");
+        Assert.assertTrue(petByTypeSourceContent.contains("discPreferredBranch"),
+                "PetByType fromJsonValue should use discPreferredBranch for reorder");
         Assert.assertTrue(petByTypeSourceContent.contains("pet_type"),
                 "PetByType from_json should reference pet_type discriminator property");
-        Assert.assertTrue(petByTypeSourceContent.contains("must be a string"),
-                "PetByType must reject a non-string discriminator before structural matching");
         Assert.assertTrue(petByTypeSourceContent.contains("cat\\\"quoted"),
                 "PetByType must emit escaped discriminator mapping string literals");
+        // Non-string discriminator does NOT throw — falls through to normal validation
+        Assert.assertFalse(petByTypeSourceContent.contains("must be a string"),
+                "PetByType must not throw for non-string discriminator (falls through)");
 
         // OptionalScore (oneOf null+number → std::optional<double>) is not generated
         // as a stand-alone file by the current pipeline — the OpenAPI 3.1 parser
@@ -539,6 +541,11 @@ public class CppBoostBeastClientCodegenTest {
                 "PetByType fromJsonValue should reference cat discriminator mapping");
         Assert.assertTrue(petByTypeSourceContent.contains("discValue == \"dog\""),
                 "PetByType fromJsonValue should reference dog discriminator mapping");
+        // Phase 4: discriminator reorder — discPreferredBranch set from mapping
+        Assert.assertTrue(petByTypeSourceContent.contains("discPreferredBranch = 0"),
+                "PetByType cat mapping should resolve to branch index 0");
+        Assert.assertTrue(petByTypeSourceContent.contains("discPreferredBranch = 1"),
+                "PetByType dog mapping should resolve to branch index 1");
 
         // Verify C++17 compatibility: no `requires` keyword in generated sources
         Assert.assertFalse(petByTypeSourceContent.contains("requires "),
@@ -552,17 +559,27 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(inputParamSourceContent.contains("#include <map>"),
                 "InputParam variant source should include <map>");
 
-        // Phase 4: discriminator is validation-neutral — unknown values do NOT
-        // throw. All branches are validated for composition cardinality.
-        Assert.assertTrue(petByTypeSourceContent.contains("validation-neutral"),
-                "PetByType fromJsonValue should have validation-neutral discriminator comment");
-        // The discriminator is read and type-checked (must be a string), but
-        // unknown values fall through to normal branch-by-branch validation.
-        Assert.assertTrue(petByTypeSourceContent.contains("must be a string"),
-                "PetByType must reject a non-string discriminator before structural matching");
-        // No standalone "Unknown discriminator value" throw for unknown values
+        // Phase 4: discriminator reorders candidate validation — unknown values do
+        // NOT throw. All branches are validated for composition cardinality.
+        // The discriminator-preferred branch is validated first (reorder), then
+        // remaining branches via the guarded loop.
+        Assert.assertTrue(petByTypeSourceContent.contains("discPreferredBranch"),
+                "PetByType fromJsonValue should use discPreferredBranch (reorder)");
+        Assert.assertTrue(petByTypeSourceContent.contains("Validate discriminator-preferred"),
+                "PetByType fromJsonValue should validate preferred branch first (reorder)");
+        Assert.assertTrue(petByTypeSourceContent.contains("Validate remaining branches"),
+                "PetByType fromJsonValue should validate remaining branches after reorder");
+        // Discriminator-preferred validation must not skip other branches:
+        // the guard check (discPreferredBranch != N) appears in the main loop
+        Assert.assertTrue(
+                petByTypeSourceContent.contains("discPreferredBranch != 0")
+                || petByTypeSourceContent.contains("discPreferredBranch != 1"),
+                "PetByType main validation loop must guard against re-validating the preferred branch");
+        // No standalone throw for unknown or non-string discriminator values
         Assert.assertFalse(petByTypeSourceContent.contains("Unknown discriminator value"),
-                "PetByType must not throw for unknown discriminator values (Phase 4: unknown → fall through)");
+                "PetByType must not throw for unknown discriminator values");
+        Assert.assertFalse(petByTypeSourceContent.contains("must be a string"),
+                "PetByType must not throw for non-string discriminator values");
         // Normal branch validation always runs — verify validation code present
         Assert.assertTrue(petByTypeSourceContent.contains("validMatchCount"),
                 "PetByType fromJsonValue must validate all branches (validation-neutral)");
@@ -649,13 +666,17 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(variantPayloadSourceContent.contains("More than one matching branch for oneOf VariantPayload"),
                 "VariantPayload oneOf source should reject multi-match with descriptive error");
 
-        // ResponseStreamEvent uses validation-neutral discriminator:
-        // the discriminator is read but does not short-circuit validation.
-        // All branches are validated; unknown values fall through to normal
-        // branch-by-branch structural matching.
+        // ResponseStreamEvent uses discriminator reorder for diagnostics:
+        // discPreferredBranch is computed from the discriminator value and the
+        // preferred branch is validated first; all branches still participate
+        // in composition cardinality. Unknown values fall through.
         String rseSourceContent = java.nio.file.Files.readString(responseStreamEventSource);
-        Assert.assertTrue(rseSourceContent.contains("validation-neutral"),
-                "ResponseStreamEvent should contain validation-neutral discriminator comment");
+        Assert.assertTrue(rseSourceContent.contains("discPreferredBranch"),
+                "ResponseStreamEvent should contain discPreferredBranch (discriminator reorder)");
+        Assert.assertTrue(rseSourceContent.contains("Validate discriminator-preferred"),
+                "ResponseStreamEvent should validate preferred branch first (reorder)");
+        Assert.assertTrue(rseSourceContent.contains("Validate remaining branches"),
+                "ResponseStreamEvent should validate remaining branches after reorder");
 
         // Scenario 18: AnyOfOverlapping, OverlappingObjectA, OverlappingObjectB,
         // ParentWithAnyOfOverlapping — verify files are generated
@@ -2683,6 +2704,75 @@ public class CppBoostBeastClientCodegenTest {
                 "First composed branch (null) must have originalBranchIndex=1");
         Assert.assertEquals((int) storedIndices.get(1), 2,
                 "Second composed branch (string) must have originalBranchIndex=2");
+    }
+
+    @Test
+    public void discriminatorBranchIndexMappingBuilt() {
+        // Contract test: x-discriminator-branch-index must be built from
+        // discriminator mapping values matched against branch resolved schema
+        // names.  URI-style and plain-name mappings both work; unresolvable
+        // mappings do not crash and produce empty index map.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        openAPI.setServers(new java.util.ArrayList<>());
+        io.swagger.v3.oas.models.Components components =
+                new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
+
+        // Animal schema: oneOf with Mammal, Bird, discriminator with explicit URI mapping
+        ComposedSchema animal = new ComposedSchema();
+        Schema mammalRef = new Schema().$ref("#/components/schemas/Mammal");
+        Schema birdRef = new Schema().$ref("#/components/schemas/Bird");
+        animal.addOneOfItem(mammalRef);
+        animal.addOneOfItem(birdRef);
+        animal.setDiscriminator(
+                new io.swagger.v3.oas.models.media.Discriminator()
+                        .propertyName("kind")
+                        .mapping("mammal", "#/components/schemas/Mammal")
+                        .mapping("bird", "Bird"));
+        schemas.put("Animal", animal);
+        schemas.put("Mammal", new ObjectSchema());
+        schemas.put("Bird", new ObjectSchema());
+
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        codegen.preprocessOpenAPI(openAPI);
+
+        // Descriptor must capture discriminator with mapping
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("Animal");
+        Assert.assertNotNull(desc, "Animal must have composition descriptor");
+        Assert.assertTrue(desc.hasDiscriminator(), "Animal must have discriminator");
+        Assert.assertEquals(desc.getDiscriminator().getPropertyName(), "kind");
+        Assert.assertEquals(desc.getDiscriminator().getMapping().size(), 2,
+                "Discriminator must have 2 mapping entries");
+
+        // Build the branch index mapping (matches buildDiscriminatorBranchIndex logic)
+        Map<String, Integer> indexMap = CppBoostBeastClientCodegen.buildDiscriminatorBranchIndex(
+                desc.getDiscriminator().getMapping(), desc.getBranches());
+        Assert.assertNotNull(indexMap, "buildDiscriminatorBranchIndex must return non-null map");
+        Assert.assertEquals(indexMap.size(), 2,
+                "Both mammal and bird mappings must resolve to branches");
+        Assert.assertEquals((int) indexMap.get("mammal"), 0,
+                "mammal mapping must resolve to branch 0 (Mammal)");
+        Assert.assertEquals((int) indexMap.get("bird"), 1,
+                "bird mapping must resolve to branch 1 (Bird)");
+
+        // Test unresolvable mapping: extra mapping pointing to a non-existent schema
+        Map<String, String> mappingWithExtra = new java.util.LinkedHashMap<>();
+        mappingWithExtra.put("mammal", "#/components/schemas/Mammal");
+        mappingWithExtra.put("bird", "Bird");
+        mappingWithExtra.put("reptile", "Reptile"); // not in branches
+        Map<String, Integer> extraIndexMap = CppBoostBeastClientCodegen.buildDiscriminatorBranchIndex(
+                mappingWithExtra, desc.getBranches());
+        Assert.assertEquals(extraIndexMap.size(), 2,
+                "Unresolvable mappings must be excluded from index map");
+        Assert.assertFalse(extraIndexMap.containsKey("reptile"),
+                "Unresolvable mapping 'reptile' must not appear in index map");
     }
 
     @Test

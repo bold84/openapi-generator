@@ -1603,6 +1603,16 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // (postProcessAllModels) after all resolvedAliasTypes are populated.
             // We store the resolved type so Phase 1b can check for self-refs.
             cm.vendorExtensions.put("x-discriminator-resolved-type", resolvedType);
+
+            // Build discriminator-value → branch-index lookup for template reorder.
+            if (descriptor != null && descriptor.hasDiscriminator()) {
+                Map<String, Integer> discBranchIndex = buildDiscriminatorBranchIndex(
+                        descriptor.getDiscriminator().getMapping(),
+                        descriptor.getBranches());
+                if (!discBranchIndex.isEmpty()) {
+                    cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                }
+            }
         }
 
         // Update data type so templates and references use the resolved type
@@ -1717,6 +1727,16 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             cm.vendorExtensions.put("x-discriminator-mapping",
                     desc.getDiscriminator().getMapping());
             cm.vendorExtensions.put("x-discriminator-resolved-type", resolvedType);
+
+            // Build discriminator-value → branch-index lookup for template reorder.
+            if (desc.hasDiscriminator()) {
+                Map<String, Integer> discBranchIndex = buildDiscriminatorBranchIndex(
+                        desc.getDiscriminator().getMapping(),
+                        descBranches);
+                if (!discBranchIndex.isEmpty()) {
+                    cm.vendorExtensions.put("x-discriminator-branch-index", discBranchIndex);
+                }
+            }
         }
 
         cm.dataType = resolvedType;
@@ -1738,6 +1758,50 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             this.isStringLike = isStringLike;
             this.originalBranchIndex = originalBranchIndex;
         }
+    }
+
+    /**
+     * Builds a map from C++-escaped discriminator mapping value → composition
+     * branch index by matching the mapping target name against branch resolved
+     * schema names.  Mapping keys are C++-escaped for use in generated string
+     * literal comparisons.  Used by the template to reorder candidate validation
+     * for diagnostics.
+     *
+     * @param discMapping the discriminator.value → target mapping
+     * @param branches    the composition branch descriptors
+     * @return map from C++-escaped discriminator value to branch descriptor index
+     */
+    public static Map<String, Integer> buildDiscriminatorBranchIndex(
+            Map<String, String> discMapping,
+            List<CompositionBranchDescriptor> branches) {
+        Map<String, Integer> indexMap = new LinkedHashMap<>();
+        if (discMapping == null || discMapping.isEmpty()) return indexMap;
+        for (Map.Entry<String, String> entry : discMapping.entrySet()) {
+            String targetName = extractSimpleRef(entry.getValue());
+            if (targetName == null) continue;
+            for (int bi = 0; bi < branches.size(); bi++) {
+                if (targetName.equals(branches.get(bi).getResolvedSchemaName())) {
+                    indexMap.put(escapeCppStringContent(entry.getKey()), bi);
+                    break;
+                }
+            }
+        }
+        return indexMap;
+    }
+
+    /**
+     * Extracts a simple schema name from a discriminator mapping value.
+     * Handles both URI references (e.g. "#/components/schemas/Mammal")
+     * and plain component names (e.g. "Mammal").
+     */
+    private static String extractSimpleRef(String mappingValue) {
+        if (mappingValue == null || mappingValue.isEmpty()) return null;
+        String ref = mappingValue.trim();
+        if (ref.startsWith("#/")) {
+            int lastSlash = ref.lastIndexOf('/');
+            return lastSlash >= 0 ? ref.substring(lastSlash + 1) : ref;
+        }
+        return ref;
     }
 
     private List<Map<String, Object>> buildTypeErasedOneOfBranches(
