@@ -2551,16 +2551,32 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(processed.vendorExtensions.containsKey("x-cpp-type"),
                 "SchemaWithSelfRef must have x-cpp-type after lowering");
         String resolvedType = (String) processed.vendorExtensions.get("x-cpp-type");
-        // After self-ref filtering: [null, string] → Rule 1 does not trigger
-        // because there are 2 composed branches but only 1 null (no optional).
-        // Rule 3 filters null, Rule 4: single non-null → std::string.
-        Assert.assertEquals(resolvedType, "std::string",
-                "SchemaWithSelfRef should lower to std::string "
-                        + "(self-ref filtered, null removed, string remains)");
+        // After self-ref filtering: composed branches = [null (idx=1), string (idx=2)].
+        // Rule 1 via descriptor: alwaysNullCount=1, branches.size()==2 →
+        // "std::optional<std::string>".
+        Assert.assertTrue(resolvedType != null
+                        && resolvedType.contains("std::optional")
+                        && resolvedType.contains("std::string"),
+                "SchemaWithSelfRef must lower to std::optional<std::string> "
+                        + "(self-ref filtered, Rule 1 detects [null, T] pattern via descriptor), got: "
+                        + resolvedType);
 
-        // Verify originalBranchIndex was stored for Phase 1b
-        Assert.assertTrue(processed.vendorExtensions.containsKey("x-cpp-branch-original-index"),
+        // Verify x-cpp-branch-original-index contains the descriptor positions
+        // after the self-ref (branch 0) was filtered: [1, 2]
+        Assert.assertTrue(processed.vendorExtensions
+                        .containsKey("x-cpp-branch-original-index"),
                 "SchemaWithSelfRef must have x-cpp-branch-original-index for Phase 1b");
+        @SuppressWarnings("unchecked")
+        List<Integer> storedIndices = (List<Integer>) processed.vendorExtensions
+                .get("x-cpp-branch-original-index");
+        Assert.assertNotNull(storedIndices,
+                "x-cpp-branch-original-index must not be null");
+        Assert.assertEquals(storedIndices.size(), 2,
+                "x-cpp-branch-original-index must have 2 branches after self-ref skip");
+        Assert.assertEquals((int) storedIndices.get(0), 1,
+                "First composed branch (null) must have originalBranchIndex=1");
+        Assert.assertEquals((int) storedIndices.get(1), 2,
+                "Second composed branch (string) must have originalBranchIndex=2");
     }
 
     @Test
