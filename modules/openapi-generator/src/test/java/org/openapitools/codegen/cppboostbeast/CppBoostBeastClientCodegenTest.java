@@ -2755,11 +2755,11 @@ public class CppBoostBeastClientCodegenTest {
 
         // OAS 3.1 numeric exclusive bounds
         IntegerSchema exclMinValBranch = new IntegerSchema();
-        exclMinValBranch.setExclusiveMinimum(5);
+        exclMinValBranch.setExclusiveMinimumValue(java.math.BigDecimal.valueOf(5));
         schema.addAnyOfItem(exclMinValBranch);
 
         IntegerSchema exclMaxValBranch = new IntegerSchema();
-        exclMaxValBranch.setExclusiveMaximum(200);
+        exclMaxValBranch.setExclusiveMaximumValue(java.math.BigDecimal.valueOf(200));
         schema.addAnyOfItem(exclMaxValBranch);
 
         schemas.put("ExclusiveBoundsTest", schema);
@@ -2971,6 +2971,65 @@ public class CppBoostBeastClientCodegenTest {
         // allOf normally exempts non-not unsupported assertions, but `not`
         // must still throw.
         codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test
+    public void generatedValidatorSourceContainsMultipleOfAndExclusiveAndIntegerEnum() throws IOException {
+        // Phase 2 strong review: verify generated source contains actual
+        // validation logic for multipleOf (fmod), exclusive bounds, and
+        // integer enum comparisons.
+        String specContent =
+            "openapi: 3.0.3\n" +
+            "info:\n" +
+            "  title: validator-output-test\n" +
+            "  version: 1.0.0\n" +
+            "paths: {}\n" +
+            "components:\n" +
+            "  schemas:\n" +
+            "    ConstrainedNumber:\n" +
+            "      oneOf:\n" +
+            "        - type: integer\n" +
+            "          multipleOf: 3\n" +
+            "          minimum: 10\n" +
+            "          maximum: 100\n" +
+            "          exclusiveMinimum: true\n" +
+            "        - type: integer\n" +
+            "          enum: [1, 2, 3]\n";
+
+        java.nio.file.Path specFile = java.nio.file.Files.createTempFile("validator-output-", ".yaml");
+        specFile.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(specFile, specContent);
+
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-validator-output").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(specFile.toAbsolutePath().toString())
+                .setOutputDir(output.getAbsolutePath())
+                .addAdditionalProperty("packageName", "CppBoostBeastValidatorTest");
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path constrainedSource = output.toPath().resolve("model/ConstrainedNumber.cpp");
+        TestUtils.assertFileExists(constrainedSource);
+        String sourceContent = java.nio.file.Files.readString(constrainedSource);
+
+        // Verify std::fmod validation for multipleOf
+        Assert.assertTrue(sourceContent.contains("std::fmod"),
+                "Generated validator must use std::fmod for multipleOf validation. Source: " + sourceContent);
+
+        // Verify exclusiveMinimum: <= comparison against the exclusive bound
+        Assert.assertTrue(sourceContent.contains("<=") || sourceContent.contains("exclusive minimum"),
+                "Generated validator must emit exclusive minimum comparison");
+
+        // Verify integer enum comparison: raw integer comparisons (not string equality)
+        Assert.assertTrue(sourceContent.contains("1") && sourceContent.contains("2") && sourceContent.contains("3"),
+                "Generated validator must contain integer enum values 1, 2, 3");
+        // Must NOT use string comparison for integer enum
+        Assert.assertTrue(sourceContent.contains("is_int64") || sourceContent.contains("is_uint64"),
+                "Integer enum branch must use integer type checking (is_int64/is_uint64)");
     }
 
     @Test

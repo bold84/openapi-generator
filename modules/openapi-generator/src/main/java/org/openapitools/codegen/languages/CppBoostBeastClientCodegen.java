@@ -396,9 +396,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (targetForAssertions.getTypes() != null && !targetForAssertions.getTypes().isEmpty()) {
                     supported.add("type");
                     validateParams.put("validation-type", "type-array");
-                    // OAS 3.1 type arrays: format as comma-separated list
-                    validateParams.put("validation-type-array", String.join(",",
-                            targetForAssertions.getTypes()));
+                    // OAS 3.1 type arrays: store as List<String> for template iteration;
+                    // has-validation-type-array is a boolean flag for outer section guard.
+                    validateParams.put("validation-type-array",
+                            new ArrayList<>(targetForAssertions.getTypes()));
+                    validateParams.put("has-validation-type-array", true);
                 }
                 if (targetForAssertions.getEnum() != null && !targetForAssertions.getEnum().isEmpty()) {
                     supported.add("enum");
@@ -486,12 +488,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
                 if (targetForAssertions.getItems() != null
                         || targetForAssertions.getPrefixItems() != null) {
-                    supported.add("array-items");
-                    if (targetForAssertions.getPrefixItems() != null) {
-                        validateParams.put("validation-prefix-items-count",
-                                targetForAssertions.getPrefixItems().size());
-                    }
-                    validateParams.put("has-validation-array-items", true);
+                    // items/prefixItems validation affects membership but is not
+                    // yet implemented in the validator template. Fail-closed for
+                    // oneOf/anyOf; allOf exempted (non-not unsupported).
+                    unsupported.add("array-items");
                 }
                 if (targetForAssertions.getMinItems() != null
                         || targetForAssertions.getMaxItems() != null) {
@@ -523,22 +523,16 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
                 if (targetForAssertions.getMinProperties() != null
                         || targetForAssertions.getMaxProperties() != null) {
-                    supported.add("object-property-count");
-                    if (targetForAssertions.getMinProperties() != null) {
-                        validateParams.put("validation-min-properties",
-                                targetForAssertions.getMinProperties());
-                    }
-                    if (targetForAssertions.getMaxProperties() != null) {
-                        validateParams.put("validation-max-properties",
-                                targetForAssertions.getMaxProperties());
-                    }
-                    validateParams.put("has-validation-object-count", true);
+                    // minProperties/maxProperties affects membership but is not
+                    // yet implemented in the validator template. Fail-closed.
+                    unsupported.add("object-property-count");
                 }
                 if (targetForAssertions.getOneOf() != null
                         || targetForAssertions.getAnyOf() != null
                         || targetForAssertions.getAllOf() != null) {
-                    supported.add("composition");
-                    validateParams.put("has-validation-composition", true);
+                    // Nested composition is not implemented in per-branch
+                    // validators. Fail-closed for oneOf/anyOf.
+                    unsupported.add("composition");
                 }
                 // `not` is always unsupported: it can flip any membership decision
                 // and no generated validator currently implements it.

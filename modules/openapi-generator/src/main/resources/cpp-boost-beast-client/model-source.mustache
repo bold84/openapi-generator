@@ -18,12 +18,13 @@
 //   ✓ string pattern validation (ECMA-262 regex subset; fail-closed outside)
 //   ✓ array length constraints (minItems, maxItems)
 //   ✓ array uniqueItems validation
-//   ✓ object property count constraints (minProperties, maxProperties)
-//   ✓ boolean schema true/false validation
-//   ✓ nested composition ($ref, oneOf, anyOf, allOf)
 //   ✓ nested error-path diagnostics (e.g. ".field[0].nested")
-//   ✗ `not` schema (fails generation with schema-path diagnostic)
 //
+//   ✗ `not` schema (fails generation with schema-path diagnostic)
+//   ✗ items / prefixItems validation (fails generation)
+//   ✗ minProperties / maxProperties validation (fails generation)
+//   ✗ nested composition on branches (fails generation)
+//   ✗ boolean true/false schemas (fail-closed; OAS 3.1 value-schemas)
 //   ✗ String format validation (email, date-time, uri, etc.)
 //   ✗ if/then/else conditional validation
 //   ✗ Unevaluated/additional property semantics
@@ -373,7 +374,7 @@ ValidationResult validate_{{validator-id}}(
     // Type validation
     {{#validation-type}}
     {{! type-array means OAS 3.1 type: [string, integer, ...] }}
-    {{#validation-type-array}}
+    {{#has-validation-type-array}}
     {
         bool typeMatch = false;
         {{#validation-type-array}}
@@ -383,27 +384,27 @@ ValidationResult validate_{{validator-id}}(
             return ValidationResult::invalidAt(path, "no matching type in type array");
         }
     }
-    {{/validation-type-array}}
-    {{^validation-type-array}}
+    {{/has-validation-type-array}}
+    {{^has-validation-type-array}}
     if (!checkJsonType(instance, "{{.}}")) {
         return ValidationResult::invalidAt(path, "expected type {{.}}");
     }
-    {{/validation-type-array}}
+    {{/has-validation-type-array}}
     {{/validation-type}}
 
     // Mathematical integer validation for integer-typed branches
     {{#validation-type}}
-    {{#validation-type-array}}
+    {{#has-validation-type-array}}
     {{! Skip per-type mathematical-int check for type arrays — handled above }}
-    {{/validation-type-array}}
-    {{^validation-type-array}}
+    {{/has-validation-type-array}}
+    {{^has-validation-type-array}}
     if (std::string("{{.}}") == "integer" && instance.is_double()) {
         if (!isJsonInteger(instance)) {
             return ValidationResult::invalidAt(path,
                 "expected mathematical integer, got non-integral double");
         }
     }
-    {{/validation-type-array}}
+    {{/has-validation-type-array}}
     {{/validation-type}}
 
     // Enum validation (all JSON kinds: string, integer, number, bool)
@@ -546,7 +547,9 @@ ValidationResult validate_{{validator-id}}(
     if (isJsonNumber(instance)) {
         double numericVal = instance.is_double()
             ? instance.as_double()
-            : static_cast<double>(instance.as_int64());
+            : instance.is_int64()
+                ? static_cast<double>(instance.as_int64())
+                : static_cast<double>(instance.as_uint64());
         {{#validation-min}}
         if (numericVal < {{validation-min}}) {
             return ValidationResult::invalidAt(path,
