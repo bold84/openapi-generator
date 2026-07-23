@@ -371,7 +371,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
             } else if (branchSchema != null) {
                 targetForAssertions = branchSchema;
-                resolvedName = branchSchema.getType();
+                // Detect OAS 3.1 boolean value schemas (true/false literals)
+                if (branchSchema.getBooleanSchemaValue() != null) {
+                    resolvedName = "boolean-schema";
+                } else {
+                    resolvedName = branchSchema.getType();
+                }
                 if (resolvedName == null) {
                     if (branchSchema.getEnum() != null && !branchSchema.getEnum().isEmpty()) {
                         resolvedName = "enum";
@@ -510,16 +515,31 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     supported.add("unique-items");
                     validateParams.put("has-validation-unique-items", true);
                 }
-                if (targetForAssertions.getRequired() != null
-                        || (targetForAssertions.getProperties() != null
-                            && !targetForAssertions.getProperties().isEmpty())
-                        || targetForAssertions.getAdditionalProperties() != null) {
+                // required: supported — presence check is generated in validator
+                if (targetForAssertions.getRequired() != null) {
                     supported.add("object-properties");
-                    if (targetForAssertions.getRequired() != null) {
-                        validateParams.put("validation-required",
-                                targetForAssertions.getRequired());
-                    }
+                    validateParams.put("validation-required",
+                            targetForAssertions.getRequired());
                     validateParams.put("has-validation-object-props", true);
+                }
+                // properties: fail-closed — per-property validation on composition
+                // branches is not implemented; object properties are validated by
+                // the resolved model type, not the branch validator.
+                if (targetForAssertions.getProperties() != null
+                        && !targetForAssertions.getProperties().isEmpty()) {
+                    unsupported.add("properties");
+                }
+                // additionalProperties: fail-closed unless no-op (true or absent).
+                // Only non-empty typed schemas and false can affect membership.
+                if (targetForAssertions.getAdditionalProperties() != null
+                        && targetForAssertions.getAdditionalProperties() instanceof Schema) {
+                    Schema addProp = (Schema) targetForAssertions.getAdditionalProperties();
+                    boolean hasConstraint = Boolean.FALSE.equals(addProp.getBooleanSchemaValue())
+                            || addProp.getType() != null
+                            || (addProp.getEnum() != null && !addProp.getEnum().isEmpty());
+                    if (hasConstraint) {
+                        unsupported.add("additional-properties");
+                    }
                 }
                 if (targetForAssertions.getMinProperties() != null
                         || targetForAssertions.getMaxProperties() != null) {
@@ -566,6 +586,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
                 if (targetForAssertions.getPropertyNames() != null) {
                     unsupported.add("property-names");
+                }
+                // OAS 3.1 boolean value schemas (true → always-match, false → never-match)
+                // affect oneOf/anyOf membership with no generated validator.
+                if (targetForAssertions.getBooleanSchemaValue() != null) {
+                    unsupported.add("boolean-schema");
                 }
             }
 

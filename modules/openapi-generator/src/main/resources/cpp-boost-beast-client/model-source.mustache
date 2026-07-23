@@ -364,13 +364,6 @@ ValidationResult validate_{{validator-id}}(
     // Schema: {{resolved-schema-name}}
     // Assertions: {{#supported-assertions}}{{.}} {{/supported-assertions}}
 
-    // Boolean schema validation
-    if ("{{resolved-schema-name}}" == "boolean") {
-        if (!instance.is_bool() && !instance.is_null()) {
-            return ValidationResult::invalidAt(path, "expected boolean");
-        }
-    }
-
     // Type validation
     {{#validation-type}}
     {{! type-array means OAS 3.1 type: [string, integer, ...] }}

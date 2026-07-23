@@ -3016,20 +3016,118 @@ public class CppBoostBeastClientCodegenTest {
         TestUtils.assertFileExists(constrainedSource);
         String sourceContent = java.nio.file.Files.readString(constrainedSource);
 
-        // Verify std::fmod validation for multipleOf
-        Assert.assertTrue(sourceContent.contains("std::fmod"),
+        // Verify std::fmod validation for multipleOf with exact guard pattern
+        Assert.assertTrue(sourceContent.contains("std::fmod("),
                 "Generated validator must use std::fmod for multipleOf validation. Source: " + sourceContent);
+        Assert.assertTrue(sourceContent.contains("fmod(numericVal, static_cast<double>(3))"),
+                "Generated validator must check fmod(numericVal, 3) for multipleOf=3. Source: " + sourceContent);
 
-        // Verify exclusiveMinimum: <= comparison against the exclusive bound
-        Assert.assertTrue(sourceContent.contains("<=") || sourceContent.contains("exclusive minimum"),
-                "Generated validator must emit exclusive minimum comparison");
+        // Verify exclusiveMinimum: <= 10 comparison (exclusive on minimum=10)
+        Assert.assertTrue(sourceContent.contains("<= 10") || sourceContent.contains("<=10"),
+                "Generated validator must emit '<= 10' for exclusiveMinimum on minimum=10. Source: " + sourceContent);
+        Assert.assertTrue(sourceContent.contains("at or below exclusive minimum"),
+                "Generated validator error message must reference exclusive minimum");
 
         // Verify integer enum comparison: raw integer comparisons (not string equality)
-        Assert.assertTrue(sourceContent.contains("1") && sourceContent.contains("2") && sourceContent.contains("3"),
-                "Generated validator must contain integer enum values 1, 2, 3");
+        // Must check rawInt == static_cast<std::int64_t>(N) pattern
+        Assert.assertTrue(sourceContent.contains("rawInt == static_cast<std::int64_t>(1)"),
+                "Generated validator must compare rawInt == static_cast<std::int64_t>(1). Source: " + sourceContent);
+        Assert.assertTrue(sourceContent.contains("rawInt == static_cast<std::int64_t>(2)"),
+                "Generated validator must compare rawInt == static_cast<std::int64_t>(2). Source: " + sourceContent);
+        Assert.assertTrue(sourceContent.contains("rawInt == static_cast<std::int64_t>(3)"),
+                "Generated validator must compare rawInt == static_cast<std::int64_t>(3). Source: " + sourceContent);
         // Must NOT use string comparison for integer enum
-        Assert.assertTrue(sourceContent.contains("is_int64") || sourceContent.contains("is_uint64"),
-                "Integer enum branch must use integer type checking (is_int64/is_uint64)");
+        Assert.assertFalse(sourceContent.contains("is_string"),
+                "Integer enum branch must not use string comparison");
+    }
+
+    // --- Phase 2 strong review: properties/additionalProperties fail-closed ---
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void propertiesOnOneOfBranchFailsGeneration() {
+        // Non-empty properties on a composition branch without full validator
+        // coverage must fail generation for oneOf (affects membership).
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        ObjectSchema objBranch = new ObjectSchema();
+        objBranch.addProperties("name", new StringSchema());
+        // No required — only properties, no required
+        schema.addOneOfItem(objBranch);
+        schemas.put("SchemaWithProperties", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test
+    public void requiredOnlyOnBranchSucceeds() {
+        // required-only on a composition branch must NOT fail generation.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.0.4");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        ObjectSchema objBranch = new ObjectSchema();
+        objBranch.setRequired(Arrays.asList("name"));
+        // No properties — only required
+        schema.addOneOfItem(objBranch);
+        schemas.put("SchemaWithRequiredOnly", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        // Must not throw
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithRequiredOnly");
+        Assert.assertNotNull(desc, "SchemaWithRequiredOnly must have a descriptor");
+        Assert.assertEquals(desc.getBranches().size(), 1);
+
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor branch = desc.getBranches().get(0);
+        Assert.assertTrue(branch.getSupportedAssertions().contains("object-properties"),
+                "Required-only branch must have object-properties in supported");
+        Assert.assertFalse(branch.getUnsupportedAssertions().contains("properties"),
+                "Required-only branch must not have properties in unsupported");
+    }
+
+    // --- Phase 2 strong review: boolean schema fail-closed ---
+
+    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
+    public void booleanSchemaOnOneOfBranchFailsGeneration() {
+        // OAS 3.1 boolean value schemas (true/false literals) on a composition
+        // branch must fail generation for oneOf. Use BooleanSchema which is the
+        // swagger-parser's representation of a boolean value schema.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.1.0");
+        io.swagger.v3.oas.models.Components components = new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema schema = new ComposedSchema();
+        // BooleanSchema represents OAS 3.1 boolean true/false schema values.
+        // The isBooleanSchema()/getBooleanSchemaValue() methods detect this.
+        io.swagger.v3.oas.models.media.BooleanSchema boolBranch =
+                new io.swagger.v3.oas.models.media.BooleanSchema();
+        schema.addOneOfItem(boolBranch);
+        schemas.put("SchemaWithBooleanBranch", schema);
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+
+        codegen.preprocessOpenAPI(openAPI);
     }
 
     @Test
