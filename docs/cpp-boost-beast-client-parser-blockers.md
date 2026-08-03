@@ -35,9 +35,14 @@ Evidence key:
 > `required` are emitted (source+IR evidence) but have **no runtime proof yet**, so
 > the matrix marks them `deferred` and their rows below are labelled `Deferred`
 > (runtime-unproven), not OK/Supported. GS4 "zero DEFERRED" is **not met** (19
-> rows remain DEFERRED). The pinned JSTS baseline (GS2) is recorded in `oas31-jsts/README.md`
-> and `runner-issues.md` (PASS 40 / FAIL 32 / BLOCKED 316 of 388 run; **not
-> green**).
+> rows remain DEFERRED). The pinned JSTS baselines (GS2) are recorded in `oas31-jsts/README.md`
+> and `runner-issues.md`: Wave-0 selection PASS 40 / FAIL 32 / BLOCKED 316 of 388 run, and the
+> Wave-1 numeric/boolean slice PASS 32 / FAIL 20 / BLOCKED 229 of 281 run (**not green**). The
+> Wave-1 generated-path wire gate (`oas-compliance/gate-generated-path.sh`) is GREEN (39/39 via
+> the real generator's `validate_<id>` dispatch), but promotion requires a zero-BLOCKED JSTS slice,
+> which is not met, so `const`/`maximum`/`exclusiveMaximum`/`minimum`/`exclusiveMinimum` stay
+> `deferred` and `not` stays `fail-closed`; `enum`/`multipleOf`/`type` stay `supported` on Phase-2
+> evidence with EXACT-MATH caveats.
 
 ---
 
@@ -90,12 +95,12 @@ Evidence key:
 | --- | --- | --- | --- | --- |
 | `type` (arrays, 3.1) | Yes (`getTypes()`/`getType()`) | `validation-type-array` emission + applicability by instance type; full applicability edge cases Wave 2.4 (K-23) | source: scanner; parser: `getTypes()`/`getType()`; IR: `validateParams['validation-type-array']`; runtime: `semantic-results.tsv` (number-only-accept-int, integer-mathematical-form, allnull-anyof PASS) | OK (G-honest); full edge-case surface Wave 2.4 |
 | `enum` | Yes (`Schema.getEnum()`) | `validation-enum` emission; EXACT-MATH caveat (K-34) until Wave 1 exact layer | source: scanner; parser: `getEnum()`; IR: `validateParams['validation-enum-values']`; runtime: `semantic-results.tsv` (anyof-enum-union, allof-enum-intersection, oneof-string-string-enum-overlap PASS) | OK (G-honest); exact-equal Wave 1 |
-| `const` (all JSON kinds) | Yes (`Schema.getConst()`) | `validation-const` emission; EXACT-MATH caveat (K-34) | source: scanner; parser: `getConst()`; IR: `validateParams['validation-const-*']`; runtime: JSTS `const` (not run, Wave-0 baseline) | Deferred (G-honest emitter); exact-equal Wave 1; runtime-unproven|
+| `const` (all JSON kinds) | Yes (`Schema.getConst()`) | `validation-const` emission; EXACT-MATH caveat (K-34) | source: scanner; parser: `getConst()`; IR: `validateParams['validation-const-*']`; runtime: generated-path wire gate GREEN (39/39) but JSTS `const` slice not zero-BLOCKED (54 BLOCKED, K-18) | Deferred (G-honest emitter); exact-equal Wave 1; JSTS not zero-BLOCKED|
 | `multipleOf` | Yes (`Schema.getMultipleOf()`) | `validation-multiple-of`; EXACT-MATH caveat (K-33) via double only | source: scanner; parser: `getMultipleOf()`; IR: `validateParams['validation-multiple-of']`; runtime: `semantic-results.tsv` (oneof-constrained-numbers multipleOf branches PASS) | OK (G-honest); exact Wave 1 |
-| `maximum` | Yes (`Schema.getMaximum()`; `ModelUtils.resolveMaximumBound`) | `validation-max`; EXACT-MATH caveat (K-33) | source: `resolveMaximumBound`; parser: `getMaximum()`; IR: `validateParams['validation-max']`; runtime: numeric (Wave-0 subset) | Deferred (G-honest emitter); exact Wave 1; runtime-unproven|
-| `exclusiveMaximum` | Yes (`resolveMaximumBound(exclusive)`) | `validation-exclusive-max`; 3.0 boolean dual-path preserved; EXACT-MATH caveat (K-33) | source: `resolveMaximumBound`; parser: `getExclusiveMaximum()`; IR: `validateParams['validation-exclusive-max']`; runtime: numeric (Wave-0 subset) | Deferred (G-honest emitter); exact Wave 1; runtime-unproven|
-| `minimum` | Yes (`Schema.getMinimum()`; `resolveMinimumBound`) | `validation-min`; EXACT-MATH caveat (K-33) | source: `resolveMinimumBound`; parser: `getMinimum()`; IR: `validateParams['validation-min']`; runtime: numeric (Wave-0 subset) | Deferred (G-honest emitter); exact Wave 1; runtime-unproven|
-| `exclusiveMinimum` | Yes (`resolveMinimumBound(exclusive)`) | `validation-exclusive-min`; 3.0 boolean dual-path; EXACT-MATH caveat (K-33) | source: `resolveMinimumBound`; parser: `getExclusiveMinimum()`; IR: `validateParams['validation-exclusive-min']`; runtime: numeric (Wave-0 subset) | Deferred (G-honest emitter); exact Wave 1; runtime-unproven|
+| `maximum` | Yes (`Schema.getMaximum()`; `ModelUtils.resolveMaximumBound`) | `validation-max`; EXACT-MATH caveat (K-33) | source: `resolveMaximumBound`; parser: `getMaximum()`; IR: `validateParams['validation-max']`; runtime: generated-path wire gate GREEN (39/39) but JSTS `maximum` slice not zero-BLOCKED (8 BLOCKED, K-18) | Deferred (G-honest emitter); exact Wave 1; JSTS not zero-BLOCKED|
+| `exclusiveMaximum` | Yes (`resolveMaximumBound(exclusive)`) | `validation-exclusive-max`; 3.0 boolean dual-path preserved; EXACT-MATH caveat (K-33) | source: `resolveMaximumBound`; parser: `getExclusiveMaximum()`; IR: `validateParams['validation-exclusive-max']`; runtime: generated-path wire gate GREEN (39/39) but JSTS `exclusiveMaximum` slice not zero-BLOCKED (4 BLOCKED, K-18) | Deferred (G-honest emitter); exact Wave 1; JSTS not zero-BLOCKED|
+| `minimum` | Yes (`Schema.getMinimum()`; `resolveMinimumBound`) | `validation-min`; EXACT-MATH caveat (K-33) | source: `resolveMinimumBound`; parser: `getMinimum()`; IR: `validateParams['validation-min']`; runtime: generated-path wire gate GREEN (39/39) but JSTS `minimum` slice not zero-BLOCKED (11 BLOCKED, K-18) | Deferred (G-honest emitter); exact Wave 1; JSTS not zero-BLOCKED|
+| `exclusiveMinimum` | Yes (`resolveMinimumBound(exclusive)`) | `validation-exclusive-min`; 3.0 boolean dual-path; EXACT-MATH caveat (K-33) | source: `resolveMinimumBound`; parser: `getExclusiveMinimum()`; IR: `validateParams['validation-exclusive-min']`; runtime: generated-path wire gate GREEN (39/39) but JSTS `exclusiveMinimum` slice not zero-BLOCKED (4 BLOCKED, K-18) | Deferred (G-honest emitter); exact Wave 1; JSTS not zero-BLOCKED|
 | `maxLength` | Yes (`Schema.getMaxLength()`) | `validation-max-length`; counts **UTF-8 bytes**, not code points (K-13); Wave 2.5 | source: scanner; parser: `getMaxLength()`; IR: `validateParams['validation-max-length']`; runtime: JSTS `maxLength` (Wave-0 subset) | Deferred (bytes; runtime-unproven)|
 | `minLength` | Yes (`Schema.getMinLength()`) | `validation-min-length`; counts UTF-8 bytes (K-13); Wave 2.5 | source: scanner; parser: `getMinLength()`; IR: `validateParams['validation-min-length']`; runtime: JSTS `minLength` (Wave-0 subset) | Deferred (bytes; runtime-unproven)|
 | `pattern` (ECMA-262) | Yes (`Schema.getPattern()`) | subset `regex_match` (anchored) today — G-honest only; `patternEngine=ecma262` unanchored+Unicode Wave 3.6 (K-13) | source: scanner + plan §4.6; parser: `getPattern()`; IR: `validateParams['validation-pattern']`; runtime: JSTS `pattern` (Wave-0 subset) | Deferred (subset engine; runtime-unproven)|
