@@ -324,3 +324,17 @@ openai-cpp-sdk/generated-oas-negative/
 openai-cpp-sdk/generated-openai/
 openai-cpp-sdk/build-generated/
 openai-cpp-sdk/build-master-verification/
+
+# Local planning, automation, and worktrees
+/.opencode-automation/
+/.plan-reviews/
+/.worktrees/
+/tmp/
+
+# Generated cpp-boost-beast compliance reports
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/composed-schemas.tsv
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/semantic-results.tsv
+
+# Generated build diagnostics
+**/build/reports/problems/
+/samples/server/petstore/fsharp-giraffe/**/obj/
