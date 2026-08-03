@@ -158,6 +158,77 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
+    public void generatedPathEmitsFullNumericBooleanDispatch() throws IOException {
+        // Wave-1 wire pass: the REAL generator must emit the full numeric/boolean
+        // keyword set as densified IR + a thin validate_<id> dispatch from a
+        // single committed OAS 3.1 doc (oas31-generated-path-regression.yaml).
+        // This is the JVM-side guard that keeps the generated path green; the
+        // C++ side (compile + run verdicts through the emitted dispatch) is
+        // covered by oas-compliance/gate-generated-path.sh.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-wire").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/oas31-generated-path-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path irSource = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Path dispatch = output.toPath().resolve("model/schema_validate.generated.cpp");
+        Path irHeader = output.toPath().resolve("model/schema_ir.generated.hpp");
+
+        Assert.assertTrue(java.nio.file.Files.exists(irSource),
+                "schema_ir.generated.cpp must be emitted");
+        Assert.assertTrue(java.nio.file.Files.exists(dispatch),
+                "schema_validate.generated.cpp must be emitted");
+        Assert.assertTrue(java.nio.file.Files.exists(irHeader),
+                "schema_ir.generated.hpp must be emitted");
+
+        // Each numeric/boolean keyword must survive as its ORIGINAL lexeme (the
+        // >2^53 const, decimal multipleOf, and huge/tiny exponent bounds) so
+        // ExactNumber::parseLexeme reconstructs the value exactly.  Note: scalar
+        // `const` is normalized by openapi-generator to a single-element `enum`
+        // (OpenAPINormalizer) before IR emission, which is semantically identical
+        // to const (single deep-equal value) and yields the same accept/reject
+        // verdicts; the values below therefore appear as ExactNumber::parseLexeme.
+        TestUtils.assertFileContains(irSource,
+                "ExactNumber::parseLexeme(\"1180591620717411303424\")",
+                "ExactNumber::parseLexeme(\"1\")",
+                "ExactNumber::parseLexeme(\"0\")",
+                "ExactNumber::parseLexeme(\"2.5\")",
+                "setExact(n.multipleOf, n.hasMultipleOf, \"0.1\")",
+                "setExact(n.multipleOf, n.hasMultipleOf, \"0.3\")",
+                "setExact(n.minimum, n.hasMinimum, \"5\")",
+                "setExact(n.maximum, n.hasMaximum, \"10\")",
+                "n.enumBooleans.push_back(true)");
+        // A partner tell-tale of double rounding must never appear.
+        Assert.assertFalse(
+                java.nio.file.Files.readString(irSource).contains("1180591620717411325952"),
+                "IR must not contain a rounded double rendering of 2^70");
+
+        // The thin dispatch must expose validate_<id> for every schema in the doc.
+        TestUtils.assertFileContains(dispatch,
+                "validate_ExactEqualsOne_branch_0",
+                "validate_ExactIntegerType_branch_0",
+                "validate_MulTenth_branch_0",
+                "validate_MulThird_branch_0",
+                "validate_RangeMinMax_branch_0",
+                "validate_ZeroConst_branch_0",
+                "validate_BigConst_branch_0",
+                "validate_HugeMax_branch_0",
+                "validate_TinyMin_branch_0",
+                "validate_BoolConstTrue_branch_0",
+                "validate_BoolEnumTrue_branch_0",
+                "validate_NumberEnumSpellings_branch_0");
+        TestUtils.assertFileContains(dispatch,
+                "oas31::SchemaEvaluator const evaluator(oas31::schemaRegistry())",
+                "oas31::schemaNodeFor");
+    }
+
+    @Test
     public void generatesInheritedModelsAndRecursiveJsonConversions() throws IOException {
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-models").toFile();
         output.deleteOnExit();

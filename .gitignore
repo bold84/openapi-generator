@@ -350,3 +350,14 @@ openai-cpp-sdk/build-master-verification/
 # Generated build diagnostics
 **/build/reports/problems/
 /samples/server/petstore/fsharp-giraffe/**/obj/
+
+# Wave-1 GENERATED-path integration (wire): the generated schema_ir.generated.*
+# + schema_validate.generated.cpp are deterministic outputs of the real
+# generator (gate-generated-path.sh regenerates them from the committed OAS 3.1
+# doc oas31-generated-path-regression.yaml) and are therefore NEVER committed.
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-wiregen-build/
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/schema_ir.generated.hpp
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/schema_ir.generated.cpp
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/schema_validate.generated.cpp
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/wiregen-results.log
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/wiregen-tsv.log
