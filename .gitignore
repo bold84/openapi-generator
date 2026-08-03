@@ -339,8 +339,11 @@ openai-cpp-sdk/build-master-verification/
 # every gate-a.sh run, so it is intentionally ignored rather than committed).
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-build/
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-results.log
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-numeric-results.log
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/semantic-resolved.tsv
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2_cases.inc
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2_numeric_cases.inc
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/schema_ir_numeric.generated.hpp
 # Locally downloaded/toolchain JDK archive (never committed)
 /tmp-jdk/
 

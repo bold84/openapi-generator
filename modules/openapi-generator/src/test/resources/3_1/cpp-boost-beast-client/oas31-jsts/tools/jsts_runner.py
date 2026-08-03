@@ -43,6 +43,52 @@ import time
 
 DRAFT_DIR = "tests/draft2020-12"
 
+# ============================================================================
+# Wave-1 numeric/boolean slice — the explicit JSTS target set for THIS slice
+# ============================================================================
+# The pinned 2020-12 corpus files whose schema keywords are in the Wave-1
+# shared-SchemaEvaluator keyword subset (slice contract §6): type (number/
+# integer), const, enum, minimum, maximum, exclusiveMinimum, exclusiveMaximum,
+# multipleOf, plus boolean value-schemas (boolean_schema) and the `not`
+# applicator. These are the ONLY files this slice claims to target; full GS2
+# (the entire required-vocabulary corpus, 44 files / 1292 cases) is EXPLICITLY
+# NOT claimed in this slice (anti-greenwash — see README "Wave-1 slice target").
+#
+# Invariant: every file below must also be classified into a required-vocab
+# group by classify_file() so it is reachable through the same OAS-wrapped +
+# compiled path as the rest of the corpus.
+NUMERIC_BOOLEAN_SLICE_FILES = [
+    "boolean_schema.json",     # core   — OAS 3.1 true/false value-schema
+    "not.json",                # applicator — `not`
+    "const.json",              # validation
+    "enum.json",               # validation
+    "minimum.json",            # validation
+    "maximum.json",            # validation
+    "exclusiveMinimum.json",   # validation
+    "exclusiveMaximum.json",   # validation
+    "multipleOf.json",         # validation
+    "type.json",               # validation — number/integer cases
+]
+# Sanity note: slice-file membership in the required-vocab groups is asserted
+# at runtime by _assert_slice_membership() (defined after classify_file so the
+# classification table exists), and surfaced by both discover and main.
+
+# The Wave-1 numeric/boolean slice (see README "Wave-1 slice target") pins the
+# 2020-12 dialect corpus. The corpus can be supplied either as a full upstream
+# JSTS clone (whose 2020-12 files live at `tests/draft2020-12/`) or as the
+# flattened tree produced by tools/vendor.sh (whose 2020-12 *.json files are
+# copied straight into `<suite>/tests/`, and whose `remotes/` is copied as
+# `<suite>/remotes/`). resolve_draft_dir() accepts both layouts so the runner is
+# layout-agnostic; it prefers the canonical clone path and otherwise falls back
+# to the vendored flattened layout.
+def resolve_draft_dir(suite):
+    for cand in (os.path.join(suite, "tests", "draft2020-12"),
+                 os.path.join(suite, "draft2020-12"),
+                 os.path.join(suite, "tests")):
+        if os.path.isdir(cand):
+            return cand
+    return os.path.join(suite, DRAFT_DIR)
+
 REQUIRED_GROUPS = {
     "core":            ["anchor.json", "boolean_schema.json", "defs.json",
                         "ref.json", "refRemote.json", "dynamicRef.json"],
@@ -74,6 +120,16 @@ def classify_file(basename):
         if basename in files:
             return grp
     return None
+
+
+def _assert_slice_membership():
+    """Every Wave-1 slice file must be a required-vocab file, so the slice is a
+    strict subset of the GS2 corpus sharing the same OAS-wrapped path."""
+    missing = [f for f in NUMERIC_BOOLEAN_SLICE_FILES
+               if classify_file(f) is None]
+    if missing:
+        raise RuntimeError(
+            "slice files not in required-vocab set: " + ", ".join(missing))
 
 
 def load_groups(path):
@@ -174,7 +230,7 @@ def parse_harness(out):
 
 
 def evaluate_file(suite, jar, work_dir, filename, timeout):
-    path = os.path.join(suite, DRAFT_DIR, filename)
+    path = os.path.join(resolve_draft_dir(suite), filename)
     groups = load_groups(path)
     per_group = {}
     verdicts = {}
@@ -251,11 +307,13 @@ def evaluate_file(suite, jar, work_dir, filename, timeout):
 
 
 def discover(suite):
-    base = os.path.join(suite, DRAFT_DIR)
+    _assert_slice_membership()
+    base = resolve_draft_dir(suite)
     manifest = {"dialect": "2020-12", "files": {}, "groups": {},
                 "totals": {"required_files": 0, "required_cases": 0,
                            "optional_files": 0, "optional_cases": 0}}
     group_totals = {g: 0 for g in REQUIRED_GROUPS}
+    slice_stats = {f: {"cases": None, "notFound": False} for f in NUMERIC_BOOLEAN_SLICE_FILES}
     for fn in sorted(f for f in os.listdir(base) if f.endswith(".json")):
         groups = load_groups(os.path.join(base, fn))
         cases = sum(len(g["tests"]) for g in groups)
@@ -266,6 +324,8 @@ def discover(suite):
             group_totals[grp] += cases
             manifest["totals"]["required_files"] += 1
             manifest["totals"]["required_cases"] += cases
+        if fn in slice_stats:
+            slice_stats[fn]["cases"] = cases
     opt_base = os.path.join(base, "optional")
     if os.path.isdir(opt_base):
         for root, _, fs in os.walk(opt_base):
@@ -279,6 +339,14 @@ def discover(suite):
                     manifest["totals"]["optional_files"] += 1
                     manifest["totals"]["optional_cases"] += cases
     manifest["groups"] = group_totals
+    manifest["slice"] = {
+        "name": "numeric-boolean",
+        "files": slice_stats,
+        "filesCount": len([f for f in slice_stats if slice_stats[f]["cases"] is not None]),
+        "casesTotal": sum(s["cases"] for s in slice_stats.values()
+                          if s["cases"] is not None),
+        "requiredVocabSubset": True,
+    }
     return manifest
 
 
@@ -289,6 +357,11 @@ def main():
     ap.add_argument("--jar")
     ap.add_argument("--work")
     ap.add_argument("--files", default=None)
+    ap.add_argument("--slice", choices=["numeric-boolean", "all"], default=None,
+                    help="Run the Wave-1 numeric/boolean slice (10 files, the "
+                         "explicit target set) instead of all required-vocab "
+                         "files. 'all' runs the entire required-vocabulary "
+                         "corpus (full GS2 scope — NOT claimed in this slice).")
     ap.add_argument("--out", default=None)
     ap.add_argument("--timeout", type=int, default=300)
     args = ap.parse_args()
@@ -304,8 +377,12 @@ def main():
     if not args.jar or not os.path.exists(args.jar):
         print("ERROR: --jar required and must exist", file=sys.stderr)
         sys.exit(2)
-    base = os.path.join(args.suite, DRAFT_DIR)
-    if args.files:
+    base = resolve_draft_dir(args.suite)
+    if args.slice == "numeric-boolean":
+        if args.files:
+            raise SystemExit("ERROR: --files and --slice cannot be combined")
+        files = list(NUMERIC_BOOLEAN_SLICE_FILES)
+    elif args.files:
         files = [s.strip() for s in args.files.split(",") if s.strip()]
     else:
         files = sorted(f for f in os.listdir(base)

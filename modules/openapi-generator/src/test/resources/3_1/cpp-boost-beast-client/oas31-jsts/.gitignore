@@ -1,0 +1,11 @@
+# Regenerable build artifacts for this directory (NOT committed — see README).
+# The vendored 2020-12 JSTS corpus + remotes tree is produced by tools/vendor.sh
+# from the pinned suiteCommit in jsts-exclusions.yaml and can be re-materialised
+# at any time; it must never be tracked.
+/vendor/
+
+# Per-run outputs are written to a caller-provided --out / --work dir (often
+# /tmp); if ever produced in-dir, ignore them too.
+/manifest.json
+/report.json
+/run-work/

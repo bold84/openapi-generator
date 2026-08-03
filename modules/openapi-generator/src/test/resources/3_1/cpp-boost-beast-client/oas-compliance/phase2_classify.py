@@ -20,6 +20,15 @@ import os
 import sys
 import yaml
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    from phase2_numeric_gen import NUMERIC_SLICES as _NUMERIC_SLICE_MAP
+    NUMERIC_SLICE_SCHEMAS = set(_NUMERIC_SLICE_MAP.keys())
+except Exception:
+    # If the numeric driver/generator module is unavailable, treat no schema as
+    # numeric-slice; the Wave-0 header check applies unchanged (honest FAIL).
+    NUMERIC_SLICE_SCHEMAS = set()
+
 compliance_dir = os.environ.get("SCRIPT_DIR", os.path.abspath("."))
 output_dir = os.environ.get("OUTPUT_DIR", "")
 semantic_file = os.path.join(compliance_dir, "semantic-cases.yaml")
@@ -85,6 +94,16 @@ def row_outcome(row_id, expected, schema_name, note, case_spec=None, is_phase2=F
         if case_spec:
             result = "DEFERRED"
             detail = f"exercised via spec '{case_spec}' (separate test)"
+            buckets[expected] += 1
+        elif schema_name in NUMERIC_SLICE_SCHEMAS:
+            # Wave-1 numeric/boolean slice schemas have NO Wave-0 model header;
+            # they are the shared SchemaEvaluator IR + ExactNumber engine and are
+            # proven exclusively by the compiled phase2_numeric_driver.  In the
+            # baseline (no Phase-2 evidence) they are honestly DEFERRED; with
+            # evidence from the numeric driver they flip to PASS via the resolved
+            # lookup above (never a silent pass).
+            result = "DEFERRED"
+            detail = f"numeric/boolean slice ({expected} — needs Wave-1 SchemaEvaluator driver)"
             buckets[expected] += 1
         elif schema_name:
             if os.path.exists(schema_header):

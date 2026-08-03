@@ -94,18 +94,29 @@ flag.
 # 1. Vendor the pinned corpus (or point --suite at a JSTS clone):
 ./tools/vendor.sh ../vendor
 
-# 2. Discovery (count files / groups / cases):
+# 2. Discovery (count files / groups / cases; the JSON payload also carries the
+#    `slice` section enumerating the Wave-1 numeric/boolean target):
 python3 tools/jsts_runner.py discover --suite ../vendor --out manifest.json
 
-# 3. Run the production pipeline on a subset (needs the generator jar):
+# 3. Run the production pipeline on the Wave-1 numeric/boolean slice
+#    (the explicit target set for this slice; needs the generator jar):
 python3 tools/jsts_runner.py run \
-    --suite <jsts-clone> \
+    --suite <jsts-clone-or-vendor> \
     --jar ../modules/openapi-generator-cli/target/openapi-generator-cli.jar \
     --work ./run-work \
-    --files required.json,properties.json \
+    --slice numeric-boolean \
     --out report.json
-# omit --files to run all required-vocabulary files
+# omit --slice to run all required-vocabulary files (full GS2 scope — see below)
+# a single file/group can be run with --files a.json,b.json
 ```
+
+> **Layout note.** `--suite` accepts either a full upstream clone (whose
+> 2020-12 files live at `tests/draft2020-12/`) or the **flattened vendored
+> tree** produced by `tools/vendor.sh` (whose 2020-12 `*.json` files are copied
+> straight into `<suite>/tests/`, and whose `remotes/` is copied as
+> `<suite>/remotes/`). The runner's `resolve_draft_dir()` detects both layouts
+> automatically, so `--suite ../vendor` works directly against the vendored
+> tree.
 
 Outcome codes: **PASS** = decode verdict equals suite `valid`; **FAIL** = decode
 verdict disagrees with `valid` (a genuine required-vocabulary shortfall);
@@ -113,15 +124,6 @@ verdict disagrees with `valid` (a genuine required-vocabulary shortfall);
 rejected the schema, or compile failed. Anti-greenwash: anything not run is
 recorded as **not run**, never as pass. Per-group reports live in the JSON
 `report` and in `runner-issues.md`.
-
-### Wave-0 baseline (2026-08-03, exact measured numbers)
-| Metric | Value |
-| --- | --- |
-| Files run / total required-vocab | 10 / 44 |
-| Cases run / total required-vocab | 388 / 1292 |
-| PASS | 40 |
-| FAIL | 32 |
-| BLOCKED | 316 |
 
 > **Authoritative defect ledger.** Every runner/harness defect and semantic
 > shortfall that blocks GS2 is tracked in **`runner-issues.md`** (this
@@ -137,6 +139,99 @@ recorded as **not run**, never as pass. Per-group reports live in the JSON
 (`jsts-exclusions.yaml` ledger is empty), but 100% execution+pass is blocked by
 the genuine shortfalls catalogued in `runner-issues.md`. This is the honest
 baseline; it is not claimed as support.
+
+## Wave-1 slice target — numeric/boolean set (EXPLICIT, and NOT full GS2)
+
+This directory's **Wave-1 slice** targets **only the numeric/boolean subset** of
+the pinned 2020-12 corpus — the files whose schema keywords fall inside the
+Wave-1 shared-`SchemaEvaluator` keyword set (slice contract §6: `type`
+(number/integer), `const`, `enum`, `minimum`, `maximum`, `exclusiveMinimum`,
+`exclusiveMaximum`, `multipleOf`, plus OAS 3.1 boolean value-schemas and the
+`not` applicator). It does **NOT** target the full GS2 required-vocabulary
+corpus.
+
+**Which groups this slice targets (exact machine-enumerable set —
+`NUMERIC_BOOLEAN_SLICE_FILES` in `tools/jsts_runner.py`, and the `slice`
+section of the discovery manifest):**
+
+| File | Required group | Cases | Keywords exercised |
+| --- | --- | --- | --- |
+| `boolean_schema.json` | core | 18 | OAS 3.1 `true`/`false` value-schema |
+| `not.json` | applicator | 40 | `not` |
+| `const.json` | validation | 54 | `const` |
+| `enum.json` | validation | 51 | `enum` |
+| `minimum.json` | validation | 11 | `minimum` |
+| `maximum.json` | validation | 8 | `maximum` |
+| `exclusiveMinimum.json` | validation | 4 | `exclusiveMinimum` |
+| `exclusiveMaximum.json` | validation | 4 | `exclusiveMaximum` |
+| `multipleOf.json` | validation | 11 | `multipleOf` (exact `divmod`) |
+| `type.json` | validation | 80 | `type` number/integer |
+| **Slice total** | — | **281** | — |
+
+> Every file above is a required-vocabulary file (the runner asserts
+> `requiredVocabSubset = true`), so the slice is a **strict subset** of the GS2
+> corpus and runs through the **same OAS-wrapped + compiled path** as full GS2.
+> `--slice numeric-boolean` is the canonical way to run exactly this set; omit
+> it to run the entire required-vocabulary corpus (full GS2 scope).
+
+**Measured result (2026-08-03, `--slice numeric-boolean`, real execution):**
+
+| Metric | Value |
+| --- | --- |
+| Files run / slice total | 10 / 10 |
+| Cases run / slice total | 281 / 281 |
+| PASS | 32 |
+| FAIL | 20 |
+| BLOCKED | 229 |
+| **Zero-BLOCKED target** | **NO — 229 BLOCKED** |
+
+Per-file PASS / FAIL / BLOCKED (`/tmp/jsts-slice-report.json`, reproduced via
+`--slice numeric-boolean`):
+
+| File | PASS | FAIL | BLOCKED | Dominant cause |
+| --- | --- | --- | --- | --- |
+| `boolean_schema.json` | 0 | 0 | 18 | generation rejects top-level boolean schema (H1 remaining wall — spec-validation, not the runner crash, already fixed) |
+| `not.json` | 0 | 0 | 40 | generation rejects `not` applicator schema (fail-closed, S3) |
+| `const.json` | 0 | 0 | 54 | no production model materialised (S4 / K-18) |
+| `enum.json` | 25 | 20 | 6 | partial decode fidelity (S2); G14 no model (S4) |
+| `minimum.json` | 0 | 0 | 11 | no production model (S4 / K-18) |
+| `maximum.json` | 0 | 0 | 8 | no production model (S4 / K-18) |
+| `exclusiveMinimum.json` | 0 | 0 | 4 | no production model (S4 / K-18) |
+| `exclusiveMaximum.json` | 0 | 0 | 4 | no production model (S4 / K-18) |
+| `multipleOf.json` | 0 | 0 | 11 | no production model (S4 / K-18); exact-`divmod` path not yet exercised |
+| `type.json` | 7 | 0 | 73 | mostly no production model (S4 / K-18); G7 integer/number grouping passes 7 |
+
+**Full GS2 is explicitly NOT claimed by this slice.**
+
+- The slice contains **229 BLOCKED** cases, so the **zero-BLOCKED target is
+  NOT met** (`targetZeroBlocked = false`).
+- The **entire** required-vocabulary corpus (44 files / 1292 cases) — i.e.
+  **GS2 / G-full-schema** — is **out of scope** for this slice (slice contract
+  §0 anti-greenwash: "GS2/GS4/Wave-1-full-fidelity are OUT of scope — never
+  claim them"). Neither this README nor `runner-issues.md` claims it.
+- The exact-number layer (D1) is intentionally **not yet exercised** here:
+  the OAS-wrapped decode path parses numbers through Boost.JSON, which destroys
+  the numeric lexeme (contract §2 finding), so `ExactNumber` based
+  `multipleOf`/`const`/`enum`-number validity is `[unverified]` until the
+  `runner` agent lands the number-lexeme tokenizer. The `multipleOf.json` rows
+  are measured as BLOCKED (no model), never as a passing exact-`divmod` claim.
+
+### Captured Wave-0 baseline (2026-08-03, for reference — DIFFERENT selection)
+
+Earlier Wave-0 runs measured a **different 10-file subset** (388 cases incl.
+`required.json`/`properties.json`), not the numeric/boolean slice above. The two
+baselines are not interchangeable:
+
+| Metric | Value |
+| --- | --- |
+| Files run / total required-vocab | 10 / 44 (Wave-0 selection) |
+| Cases run / total required-vocab | 388 / 1292 |
+| PASS | 40 |
+| FAIL | 32 |
+| BLOCKED | 316 |
+
+The authoritative, current number for **this** slice is the **numeric/boolean
+281-case** run in the section above.
 
 Dialect-scoped `optional/` tests, which frequently rely on format validation or
 the optional annotation vocabularies, are run through their own optional

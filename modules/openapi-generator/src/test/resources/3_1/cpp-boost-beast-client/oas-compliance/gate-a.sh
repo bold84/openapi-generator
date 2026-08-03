@@ -661,6 +661,85 @@ run_phase2_runner() {
 
 
 # =============================================================================
+# Phase-2b Wave-1 numeric/boolean raw-instance driver (ExactNumber + raw
+# number-lexeme tokenizer, ADR D1/D5).
+#
+# Compiles a NEW driver (phase2_numeric_driver.cpp) that links the real
+# Wave-1 engine — oas31_ir.hpp + oas31_validator.hpp + oas31_exact_number.hpp +
+# this slice's raw lexeme tokenizer (oas31_lexeme.hpp) + generated densified
+# IR — and, per numeric/boolean case, captures the EXACT numeric lexeme from
+# the raw payload BEFORE boost::json canonicalizes it, feeds it to ExactNumber
+# via RawInstance, and dispatches validate_<id> -> SchemaEvaluator.
+#
+# On success it APPENDS its case_id -> PASS/FAIL evidence to the SAME
+# semantic-resolved.tsv the Wave-0 runner wrote, so the gate-a classifier turns
+# the numeric-slice DEFERRED rows into real PASS prove.  Returns 0 only when the
+# driver compiled AND ran cleanly; otherwise the numeric rows stay honestly
+# DEFERRED (never a silent pass).
+# =============================================================================
+run_numeric_driver() {
+    header "Step 4c: Wave-1 numeric/boolean SchemaEvaluator driver (Boost)"
+
+    local boost_include="${BOOST_INCLUDE_DIR:-/opt/homebrew/include}"
+    local gen_root="${PROJECT_ROOT}/generated-oas-client"   # surface only; driver is self-contained
+    local build_dir="${SCRIPT_DIR}/phase2-build"
+    local runner_src="${SCRIPT_DIR}/phase2_numeric_driver.cpp"
+    local gen_script="${SCRIPT_DIR}/phase2_numeric_gen.py"
+    local lexeme_hdr="${SCRIPT_DIR}/oas31_lexeme.hpp"
+    local res_dir="${PROJECT_ROOT}/modules/openapi-generator/src/main/resources/cpp-boost-beast-client"
+    if [[ ! -f "${runner_src}" ]] || [[ ! -f "${gen_script}" ]] || [[ ! -f "${lexeme_hdr}" ]]; then
+        warn_msg "numeric driver sources missing (phase2_numeric_driver.cpp / phase2_numeric_gen.py / oas31_lexeme.hpp)."
+        return 1
+    fi
+
+    # 1. Generate the numeric case manifest + densified IR.
+    local gen_rc=0
+    PHASE2_NUM_INC="${build_dir}/phase2_numeric_cases.inc" \
+    PHASE2_NUM_IR="${build_dir}/schema_ir_numeric.generated.hpp" \
+    SCRIPT_DIR="${SCRIPT_DIR}" python3 "${gen_script}" || gen_rc=$?
+    if [[ "${gen_rc}" -ne 0 ]] || [[ ! -f "${build_dir}/phase2_numeric_cases.inc" ]] || [[ ! -f "${build_dir}/schema_ir_numeric.generated.hpp" ]]; then
+        echo -e "  ${RED}ERROR${NC}  phase2_numeric_gen.py failed; numeric rows stay DEFERRED."
+        return 1
+    fi
+
+    # 2. Compile the driver under -Werror (links the real oas31 engine + IR + lexeme tokenizer).
+    mkdir -p "${build_dir}"
+    cp "${runner_src}" "${build_dir}/"
+    cp "${lexeme_hdr}" "${build_dir}/"
+    printf '#include <boost/json/src.hpp>\n' > "${build_dir}/boost_json_src.cpp"
+    info_msg "Compiling Wave-1 numeric/boolean driver under -Werror (C++17, Boost header-only)..."
+    local cc_rc=0
+    g++ -std=c++17 -Wall -Wextra -Werror \
+        -I"${boost_include}" -I"${res_dir}" -I"${build_dir}" -I"${SCRIPT_DIR}" \
+        "${build_dir}/phase2_numeric_driver.cpp" "${build_dir}/boost_json_src.cpp" \
+        -o "${build_dir}/phase2_numeric_driver" 2>&1 | tee "${build_dir}/numeric-compile.log" || cc_rc=$?
+    if [[ "${cc_rc}" -ne 0 ]]; then
+        echo -e "  ${RED}ERROR${NC}  numeric driver failed to compile under -Werror; numeric rows stay DEFERRED."
+        echo -e "  See ${build_dir}/numeric-compile.log"
+        return 1
+    fi
+
+    # 3. Run it; APPEND numeric evidence to the same resolved file the Wave-0
+    #    runner wrote (semantic-resolved.tsv). Dash-return non-zero on failure.
+    local resolved="${SCRIPT_DIR}/semantic-resolved.tsv"
+    local run_log="${SCRIPT_DIR}/phase2-numeric-results.log"
+    local run_rc=0
+    "${build_dir}/phase2_numeric_driver" "${resolved}" 2>&1 | tee "${run_log}" || run_rc=$?
+    if [[ "${run_rc}" -ne 0 ]]; then
+        echo -e "  ${RED}ERROR${NC}  numeric driver did not complete cleanly; numeric rows stay DEFERRED."
+        return 1
+    fi
+
+    local total pass fail
+    total=$(grep -oE '__PHASE2_NUM_TOTAL__=[0-9]+' "${run_log}" | head -1 | cut -d= -f2 || true)
+    pass=$(grep -oE '__PHASE2_NUM_PASS__=[0-9]+' "${run_log}" | head -1 | cut -d= -f2 || true)
+    fail=$(grep -oE '__PHASE2_NUM_FAIL__=[0-9]+' "${run_log}" | head -1 | cut -d= -f2 || true)
+    echo -e "  ${GREEN}PASS${NC}  Wave-1 numeric/boolean driver: ${total:-0} raw-instance cases, ${pass:-0} PASS, ${fail:-0} FAIL (ExactNumber + lexeme path)"
+    return 0
+}
+
+
+# =============================================================================
 # Detect the C++ compilation toolchain required by the Phase-2 raw-instance
 # runner (Wave-0 K-18). In this environment Boost/Beast may be absent, in
 # which case runtime accept/reject cannot be proven and semantic rows stay
@@ -766,9 +845,18 @@ main() {
     #      DEFERRED (external specs / round-trip M / response-dispatch / wire). ----
     local toolchain
     toolchain="$(toolchain_status)"
+    local numeric_ok=false
     if [[ "${toolchain}" == "OK" ]]; then
         if run_phase2_runner; then
             phase2_ok=true
+            # Wave-1 numeric/boolean driver: append ExactNumber + lexeme-path
+            # evidence to the resolved file so numeric/boolean slice rows flip
+            # from DEFERRED to real PASS.  Failure keeps them honestly DEFERRED.
+            if run_numeric_driver; then
+                numeric_ok=true
+            else
+                echo -e "  ${YELLOW}WARN${NC}  numeric/boolean Wave-1 driver did not run; numeric slice rows remain DEFERRED."
+            fi
             export BOOST_PHASE2_RESOLVED="${SCRIPT_DIR}/semantic-resolved.tsv"
             run_semantic_cases || SEMANTIC_EXIT=$?
             deferred_after="${SEMANTIC_DEFERRED:-0}"

@@ -49,6 +49,68 @@ Ran the production pipeline (generator → g++ → run) on **10** files / 388 ca
 met**: 100% required-vocabulary execution+pass is blocked by the shortfalls
 below. Nothing below is claimed as support; it is the honest Wave-0 baseline.
 
+## Wave-1 numeric/boolean slice — EXPLICIT target set (2026-08-03, [executed])
+
+This ledger's **Wave-1 slice** targets **only the numeric/boolean 2020-12
+subset** — the 10 files whose keywords fall inside the Wave-1
+shared-`SchemaEvaluator` keyword set (slice contract §6): `type`
+(number/integer), `const`, `enum`, `minimum`, `maximum`, `exclusiveMinimum`,
+`exclusiveMaximum`, `multipleOf`, plus `boolean_schema` (OAS 3.1 true/false
+value-schema) and `not`. This is a **strict subset** of the required-vocabulary
+GS2 corpus (`requiredVocabSubset = true`, asserted by the runner) and runs
+through the **same OAS-wrapped + compiled path**. The exact set is
+`NUMERIC_BOOLEAN_SLICE_FILES` in `tools/jsts_runner.py` and the `slice` section
+of the discovery manifest; run it canonically with `--slice numeric-boolean`.
+
+**Full GS2 is explicitly NOT claimed by this slice.** Neither this
+numeric/boolean target nor anything below is a GS2 / G-full-schema claim (slice
+contract §0: GS2/GS4/Wave-1-full-fidelity are out of scope — never claim them).
+
+### [executed] Measured result (`--slice numeric-boolean`, real run)
+
+Ran the production pipeline (generator jar → g++ with Boost → run) on all **10**
+slice files / **281** cases:
+
+| Metric | Value |
+| --- | --- |
+| Files run / slice total | 10 / 10 |
+| Cases evaluated | 281 |
+| **PASS** | **32** |
+| **FAIL** | **20** |
+| **BLOCKED** | **229** |
+| **Zero-BLOCKED target (numeric/boolean)** | **NOT met — 229 BLOCKED** |
+
+Per-file tallies (reproducible; `/tmp/jsts-slice-report.json`):
+
+| File | PASS | FAIL | BLOCKED | Dominant cause (see ledger rows below) |
+| --- | --- | --- | --- | --- |
+| `boolean_schema.json` | 0 | 0 | 18 | generation rejects top-level boolean schema (H1 remaining wall — spec-validation, not runner crash) |
+| `not.json` | 0 | 0 | 40 | whole-file generation rejection of `not` (S3) |
+| `const.json` | 0 | 0 | 54 | no production model (S4) |
+| `enum.json` | 25 | 20 | 6 | decode fidelity (S2); G14 no model (S4) |
+| `minimum.json` | 0 | 0 | 11 | no production model (S4) |
+| `maximum.json` | 0 | 0 | 8 | no production model (S4) |
+| `exclusiveMinimum.json` | 0 | 0 | 4 | no production model (S4) |
+| `exclusiveMaximum.json` | 0 | 0 | 4 | no production model (S4) |
+| `multipleOf.json` | 0 | 0 | 11 | no production model (S4); exact-`divmod` not yet exercised (D1 `[unverified]` on this path) |
+| `type.json` | 7 | 0 | 73 | mostly no production model (S4); G7 passes 7 |
+
+Result: `targetZeroBlocked = false` for this slice. The dominant blocker is the
+K-18 raw-instance-validator gap (S4) — the OAS-wrapped decode path only
+materialises a model for object-like schemas, so the scalar/number/bare-object
+schemas these files exercise have no evaluable production model; `boolean_schema`
+and `not` additionally fail whole-file generation (H1-remaining / S3). The
+exact-number layer (D1) is **not** claimed: numbers are parsed through
+Boost.JSON, which destroys the numeric lexeme, so `ExactNumber`-based exact
+`multipleOf`/`const`/`enum`-number validity is `[unverified]` on this path until
+the `runner` agent lands the number-lexeme tokenizer (contract §2).
+
+> **[note] Baselines are not interchangeable.** The earlier Wave-0 "10 files /
+> 388 cases" numbers (40 PASS / 32 FAIL / 316 BLOCKED) were a **different
+> 10-file selection** (incl. `required.json`/`properties.json`), not this
+> slice. The authoritative current number for the numeric/boolean slice is the
+> **281-case** run in the table above.
+
 ## (A) Harness / pipeline defects — zeroable by fixing runner tooling
 
 These are runner/vendor/compile-glue defects. Closing them is prerequisite to

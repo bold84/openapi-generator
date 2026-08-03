@@ -87,6 +87,77 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
+    public void emitsWave1SchemaIrWithExactNumericLexemes() throws IOException {
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-ir").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/schema-ir-lexeme-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path irHeader = output.toPath().resolve("model/schema_ir.generated.hpp");
+        Path irSource = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Path dispatch = output.toPath().resolve("model/schema_validate.generated.cpp");
+        Path exactHeader = output.toPath().resolve("model/oas31_exact_number.hpp");
+        Path irStructs = output.toPath().resolve("model/oas31_ir.hpp");
+        Path validatorHeader = output.toPath().resolve("model/oas31_validator.hpp");
+
+        Assert.assertTrue(java.nio.file.Files.exists(irHeader),
+                "schema_ir.generated.hpp must be emitted");
+        Assert.assertTrue(java.nio.file.Files.exists(irSource),
+                "schema_ir.generated.cpp must be emitted");
+        Assert.assertTrue(java.nio.file.Files.exists(dispatch),
+                "schema_validate.generated.cpp must be emitted");
+        // Static Wave-1 support headers are copied into model/.
+        Assert.assertTrue(java.nio.file.Files.exists(exactHeader),
+                "oas31_exact_number.hpp must be copied into model/");
+        Assert.assertTrue(java.nio.file.Files.exists(irStructs),
+                "oas31_ir.hpp must be copied into model/");
+        Assert.assertTrue(java.nio.file.Files.exists(validatorHeader),
+                "oas31_validator.hpp must be copied into model/");
+
+        String ir = java.nio.file.Files.readString(irSource);
+        // Numeric constraints must carry their ORIGINAL lexeme verbatim (the
+        // wrapped bounds go through setExact, enum/const through parseLexeme) —
+        // never a rounded double rendering, so ExactNumber reconstructs exactly.
+        TestUtils.assertFileContains(irSource,
+                "setExact(n.minimum, n.hasMinimum, \"0.3\")",
+                "setExact(n.multipleOf, n.hasMultipleOf, \"0.1\")",
+                "setExact(n.maximum, n.hasMaximum, \"1000\")",
+                "setExact(n.exclusiveMinimum, n.hasExclusiveMinimum, \"0\")",
+                "setExact(n.exclusiveMaximum, n.hasExclusiveMaximum, \"1.0\")",
+                "ExactNumber::parseLexeme(\"1.5\")",
+                "ExactNumber::parseLexeme(\"2.25\")",
+                "ExactNumber::parseLexeme(\"3.0\")",
+                "ExactNumber::parseLexeme(\"42\")");
+        // A rounded double tie (e.g. 0.30000000000000004) must never leak in.
+        Assert.assertFalse(ir.contains("0.30000000000000004"),
+                "IR must not contain a rounded double rendering of 0.3");
+        // Lexemes survive verbatim inside the emitted strings.
+        Assert.assertTrue(ir.contains("\"0.3\"") && ir.contains("\"0.1\""),
+                "decimal lexemes must appear verbatim in the IR source");
+
+        // validate_<id> thin dispatch delegates to SchemaEvaluator over the node.
+        String dispatchContent = java.nio.file.Files.readString(dispatch);
+        Assert.assertTrue(dispatchContent.contains("validate_Amount_branch_0"),
+                "thin dispatch must emit validate_Amount_branch_0");
+        Assert.assertTrue(dispatchContent.contains("validate_Amount_branch_2"),
+                "thin dispatch must emit validate_Amount_branch_2");
+        TestUtils.assertFileContains(dispatch,
+                "oas31::SchemaEvaluator const evaluator(oas31::schemaRegistry())",
+                "oas31::schemaNodeFor");
+
+        // Header declares schemaRegistry() + schemaNodeFor().
+        TestUtils.assertFileContains(irHeader,
+                "SchemaResourceRegistry const& schemaRegistry();",
+                "SchemaIndex schemaNodeFor(std::string const& id);");
+    }
+
+    @Test
     public void generatesInheritedModelsAndRecursiveJsonConversions() throws IOException {
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-models").toFile();
         output.deleteOnExit();

@@ -719,6 +719,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 // affect oneOf/anyOf membership with no generated validator.
                 if (targetForAssertions.getBooleanSchemaValue() != null) {
                     unsupported.add("boolean-schema");
+                    // Preserve the literal boolean value so Wave-1 IR emission can
+                    // populate SchemaNode::booleanValue for the densified IR table.
+                    validateParams.put("validation-boolean-value",
+                            targetForAssertions.getBooleanSchemaValue());
                 }
             }
 
@@ -1484,6 +1488,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         supportingFiles.add(new SupportingFile("http-client-impl-source.mustache", "api", "HttpClientImpl.cpp"));
         supportingFiles.add(new SupportingFile("anytype-header.mustache", "model", "AnyType.h"));
         supportingFiles.add(new SupportingFile("MultipartWireTest.cpp.mustache", "test", "MultipartWireTest.cpp"));
+
+        // Wave-1 OAS 3.1 exact-number + densified IR support headers (static, header-only).
+        // These are copied verbatim (no .mustache extension) into model/. Ownership:
+        // exact-lib / ir / eval agents per docs/cpp-boost-beast-oas31-wave1-slice-contract.md.
+        supportingFiles.add(new SupportingFile("oas31_exact_number.hpp", "model", "oas31_exact_number.hpp"));
+        supportingFiles.add(new SupportingFile("oas31_ir.hpp", "model", "oas31_ir.hpp"));
+        supportingFiles.add(new SupportingFile("oas31_validator.hpp", "model", "oas31_validator.hpp"));
+        // Emitted (generation-time) Wave-1 IR tables + thin validate_<id> dispatch.
+        // Content is rendered once (not per model) from postProcessSupportingFileData.
+        supportingFiles.add(new SupportingFile("oas31_schema_ir_header.mustache", "model", "schema_ir.generated.hpp"));
+        supportingFiles.add(new SupportingFile("oas31_schema_ir_source.mustache", "model", "schema_ir.generated.cpp"));
+        supportingFiles.add(new SupportingFile("oas31_schema_validate.mustache", "model", "schema_validate.generated.cpp"));
 
         languageSpecificPrimitives = new HashSet<String>(
                 Arrays.asList("int", "char", "bool", "long", "float", "double", "std::int32_t", "std::int64_t"));
@@ -5578,5 +5594,340 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         String originalDefaultValue = var.defaultValue;
         super.updateCodegenPropertyEnum(var);
         var.defaultValue = originalDefaultValue;
+    }
+
+    // ========================================================================
+    // Wave-1: OAS 3.1 densified schema IR + validate_<id> thin dispatch emission
+    // ------------------------------------------------------------------------
+    // Emits (once per generation, not per model):
+    //   model/schema_ir.generated.hpp        table declarations + schemaNodeFor()
+    //   model/schema_ir.generated.cpp        densified SchemaNode/SchemaResource
+    //   model/schema_validate.generated.cpp  thin validate_<id> dispatch (ADR D5)
+    //
+    // The IR is populated from the same assertion scan that fills validateParams
+    // in preprocessOpenAPI (docs/cpp-boost-beast-oas31-wave1-slice-contract.md §6),
+    // so this keyword subset and the hand templates stay in lockstep. Every numeric
+    // keyword (minimum, maximum, exclusiveMinimum, exclusiveMaximum, multipleOf,
+    // numeric enum/const) is emitted as its ORIGINAL lexeme string
+    // (BigDecimal.toString() / constVal.toString()) so oas31::ExactNumber::parseLexeme
+    // reconstructs the value exactly — never a rounded double rendering.
+    // ========================================================================
+
+    // JsonType bit positions must match oas31::JsonType in oas31_ir.hpp.
+    private static final int JSONTYPE_BIT_NULL = 1 << 0;
+    private static final int JSONTYPE_BIT_BOOLEAN = 1 << 1;
+    private static final int JSONTYPE_BIT_NUMBER = 1 << 2;
+    private static final int JSONTYPE_BIT_STRING = 1 << 3;
+    private static final int JSONTYPE_BIT_ARRAY = 1 << 4;
+    private static final int JSONTYPE_BIT_OBJECT = 1 << 5;
+    private static final int JSONTYPE_BIT_INTEGER = 1 << 6; // schema-level only
+
+    @Override
+    public Map<String, Object> postProcessSupportingFileData(Map<String, Object> objs) {
+        Map<String, Object> processed = super.postProcessSupportingFileData(objs);
+
+        List<IrNode> nodes = new ArrayList<>();
+        for (CompositionDescriptor desc : compositionDescriptors.values()) {
+            if (desc == null || desc.getBranches() == null) {
+                continue;
+            }
+            for (CompositionBranchDescriptor branch : desc.getBranches()) {
+                IrNode node = irNodeFromBranch(branch);
+                if (node != null) {
+                    nodes.add(node);
+                }
+            }
+        }
+        // Deterministic ordering by validate_<id> so output is stable across runs.
+        nodes.sort(Comparator.comparing(n -> n.validatorId));
+
+        processed.put("oas31SchemaIrHeader", buildSchemaIrHeader(nodes));
+        processed.put("oas31SchemaIrSource", buildSchemaIrSource(nodes));
+        processed.put("oas31SchemaIrValidateSource", buildSchemaIrValidateSource(nodes));
+        return processed;
+    }
+
+    /** A single densified SchemaNode to emit, from one composition branch. */
+    private static final class IrNode {
+        String validatorId;
+        String resolvedName;
+        int typeFlags = 0;
+        boolean hasType = false;
+        BooleanValueKind booleanValue = BooleanValueKind.NOT_BOOLEAN;
+        String minimum = null;
+        String maximum = null;
+        String exclusiveMinimum = null;
+        String exclusiveMaximum = null;
+        String multipleOf = null;
+        java.util.List<String> enumNumbers = new ArrayList<>();
+        java.util.List<String> enumStrings = new ArrayList<>();
+        java.util.List<String> enumBooleans = new ArrayList<>();
+        String constNumber = null;
+        String constString = null;
+        Boolean constBool = null;
+    }
+
+    private enum BooleanValueKind {
+        NOT_BOOLEAN, TRUE, FALSE
+    }
+
+    /** Builds an IR node from one branch's validateParams; null when nothing to emit. */
+    private IrNode irNodeFromBranch(CompositionBranchDescriptor branch) {
+        IrNode n = new IrNode();
+        n.validatorId = branch.getValidatorId();
+        n.resolvedName = branch.getResolvedSchemaName() != null
+                ? branch.getResolvedSchemaName() : "schema";
+        if (n.validatorId == null || n.validatorId.isEmpty()) {
+            return null;
+        }
+        Map<String, Object> vp = branch.getValidateParams();
+        if (vp == null) {
+            vp = Collections.emptyMap();
+        }
+
+        // type / type-array -> typeFlags
+        Object otype = vp.get("validation-type");
+        if (otype != null) {
+            n.hasType = true;
+            if ("type-array".equals(otype)) {
+                Object arr = vp.get("validation-type-array");
+                if (arr instanceof java.util.List) {
+                    for (Object t : (java.util.List<?>) arr) {
+                        n.typeFlags |= jsonTypeBit(String.valueOf(t));
+                    }
+                }
+            } else {
+                n.typeFlags |= jsonTypeBit(String.valueOf(otype));
+            }
+        }
+
+        // boolean value-schema
+        Object obool = vp.get("validation-boolean-value");
+        if (obool != null) {
+            n.booleanValue = Boolean.TRUE.equals(obool)
+                    ? BooleanValueKind.TRUE : BooleanValueKind.FALSE;
+        }
+
+        n.minimum = lexemeOf(vp.get("validation-min"));
+        n.maximum = lexemeOf(vp.get("validation-max"));
+        n.exclusiveMinimum = lexemeOf(vp.get("validation-exclusive-min"));
+        n.exclusiveMaximum = lexemeOf(vp.get("validation-exclusive-max"));
+        n.multipleOf = lexemeOf(vp.get("validation-multiple-of"));
+
+        // enum (partitioned by predominant kind, mirroring the hand template)
+        if (vp.containsKey("has-validation-enum")) {
+            Object kind = vp.get("validation-enum-kind");
+            Object vals = vp.get("validation-enum-values");
+            if (vals instanceof java.util.List) {
+                for (Object v : (java.util.List<?>) vals) {
+                    String sv = String.valueOf(v); // already escaped for strings
+                    if ("integer".equals(kind) || "number".equals(kind)) {
+                        n.enumNumbers.add(sv);
+                    } else if ("bool".equals(kind)) {
+                        n.enumBooleans.add(sv);
+                    } else {
+                        n.enumStrings.add(sv);
+                    }
+                }
+            }
+        }
+
+        // const (partitioned by kind)
+        if (vp.containsKey("has-validation-const")) {
+            String ctype = String.valueOf(vp.get("validation-const-type"));
+            Object cval = vp.get("validation-const-value");
+            if ("number".equals(ctype)) {
+                n.constNumber = lexemeOf(cval);
+            } else if ("boolean".equals(ctype)) {
+                n.constBool = Boolean.valueOf(String.valueOf(cval));
+            } else {
+                n.constString = cval != null ? String.valueOf(cval) : null;
+            }
+        }
+
+        boolean hasKeyword = n.hasType
+                || n.booleanValue != BooleanValueKind.NOT_BOOLEAN
+                || n.minimum != null || n.maximum != null
+                || n.exclusiveMinimum != null || n.exclusiveMaximum != null
+                || n.multipleOf != null
+                || !n.enumNumbers.isEmpty() || !n.enumStrings.isEmpty()
+                || !n.enumBooleans.isEmpty()
+                || n.constNumber != null || n.constString != null || n.constBool != null;
+        return hasKeyword ? n : null;
+    }
+
+    /** Original numeric lexeme, or null when absent (BigDecimal.toString()). */
+    private static String lexemeOf(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String s = String.valueOf(value);
+        return s.isEmpty() ? null : s;
+    }
+
+    /** Maps an OAS 3.1 type name to an oas31::JsonType bit. */
+    private static int jsonTypeBit(String type) {
+        switch (type) {
+            case "null": return JSONTYPE_BIT_NULL;
+            case "boolean": return JSONTYPE_BIT_BOOLEAN;
+            case "number": return JSONTYPE_BIT_NUMBER;
+            case "string": return JSONTYPE_BIT_STRING;
+            case "array": return JSONTYPE_BIT_ARRAY;
+            case "object": return JSONTYPE_BIT_OBJECT;
+            case "integer": return JSONTYPE_BIT_INTEGER;
+            default: return 0;
+        }
+    }
+
+    /** schema_ir.generated.hpp — declarations only (registry defined in .cpp). */
+    private String buildSchemaIrHeader(java.util.List<IrNode> nodes) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("// Generated by CppBoostBeastClientCodegen (Wave-1 densified schema IR).\n");
+        sb.append("// Do not edit by hand. SchemaNode/SchemaResource layout frozen in oas31_ir.hpp.\n");
+        sb.append("#ifndef OAS31_SCHEMA_IR_GENERATED_HPP_\n");
+        sb.append("#define OAS31_SCHEMA_IR_GENERATED_HPP_\n\n");
+        sb.append("#include \"oas31_ir.hpp\"\n");
+        sb.append("#include <string>\n\n");
+        sb.append("namespace oas31 {\n\n");
+        sb.append("// Densified SchemaResourceRegistry for the Wave-1 vertical slice.\n");
+        sb.append("// Numeric constraints carry ORIGINAL lexemes (ExactNumber::parseLexeme).\n");
+        sb.append("SchemaResourceRegistry const& schemaRegistry();\n\n");
+        sb.append("// Resolve a validate_<id> identifier to its SchemaIndex (kNoSchema if unknown).\n");
+        sb.append("SchemaIndex schemaNodeFor(std::string const& id);\n\n");
+        sb.append("} // namespace oas31\n\n");
+        sb.append("#endif // OAS31_SCHEMA_IR_GENERATED_HPP_\n");
+        return sb.toString();
+    }
+
+    /** schema_ir.generated.cpp — densified rows + schemaNodeFor() map. */
+    private String buildSchemaIrSource(java.util.List<IrNode> nodes) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("// Generated by CppBoostBeastClientCodegen (Wave-1 densified schema IR).\n");
+        sb.append("// Numeric constraints are exact lexemes parsed by oas31::ExactNumber::parseLexeme.\n");
+        sb.append("#include \"schema_ir.generated.hpp\"\n");
+        sb.append("#include \"oas31_exact_number.hpp\"\n");
+        sb.append("#include <string>\n\n");
+        sb.append("namespace oas31 {\n");
+        sb.append("namespace {\n\n");
+        sb.append("void setExact(ExactNumber& out, bool& hasOut, std::string const& lexeme) {\n");
+        sb.append("    if (!lexeme.empty()) { out = ExactNumber::parseLexeme(lexeme); hasOut = true; }\n");
+        sb.append("}\n\n");
+        sb.append("SchemaResourceRegistry buildRegistry() {\n");
+        sb.append("    SchemaResourceRegistry reg;\n");
+        sb.append("    SchemaResource res;\n");
+        sb.append("    res.baseUri = \"urn:openapi-generator:cpp-boost-beast:wave1\";\n");
+        sb.append("    res.dialect = \"https://spec.openapis.org/oas/3.1/dialect/base\";\n");
+        sb.append("    res.rootNodes.push_back(0);\n");
+        sb.append("    reg.resources.push_back(res);\n");
+
+        int index = 0;
+        for (IrNode node : nodes) {
+            sb.append("\n    { // node ").append(index).append(": ").append(node.resolvedName).append("\n");
+            sb.append("        SchemaNode n;\n");
+            sb.append("        n.resourceIdentity = 0;\n");
+            if (node.hasType) {
+                sb.append("        n.typeFlags = ").append(node.typeFlags).append("u;\n");
+            }
+            switch (node.booleanValue) {
+                case TRUE:
+                    sb.append("        n.booleanValue = BooleanValue::true_;\n");
+                    break;
+                case FALSE:
+                    sb.append("        n.booleanValue = BooleanValue::false_;\n");
+                    break;
+                default:
+                    break;
+            }
+            emitSetExact(sb, "n.minimum", "n.hasMinimum", node.minimum);
+            emitSetExact(sb, "n.maximum", "n.hasMaximum", node.maximum);
+            emitSetExact(sb, "n.exclusiveMinimum", "n.hasExclusiveMinimum", node.exclusiveMinimum);
+            emitSetExact(sb, "n.exclusiveMaximum", "n.hasExclusiveMaximum", node.exclusiveMaximum);
+            emitSetExact(sb, "n.multipleOf", "n.hasMultipleOf", node.multipleOf);
+            for (String lex : node.enumNumbers) {
+                sb.append("        n.enumNumbers.push_back(ExactNumber::parseLexeme(\"")
+                        .append(lex).append("\"));\n");
+            }
+            for (String s : node.enumStrings) {
+                sb.append("        n.enumStrings.push_back(\"").append(s).append("\");\n");
+            }
+            for (String b : node.enumBooleans) {
+                sb.append("        n.enumBooleans.push_back(").append(b).append(");\n");
+            }
+            if (node.constNumber != null) {
+                sb.append("        n.hasConst = true;\n");
+                sb.append("        n.constNumber = ExactNumber::parseLexeme(\"")
+                        .append(node.constNumber).append("\");\n");
+                sb.append("        n.constIsNumber = true;\n");
+            }
+            if (node.constString != null) {
+                sb.append("        n.hasConst = true;\n");
+                sb.append("        n.constString = \"").append(node.constString).append("\";\n");
+                sb.append("        n.constIsString = true;\n");
+            }
+            if (node.constBool != null) {
+                sb.append("        n.hasConst = true;\n");
+                sb.append("        n.constBool = ").append(node.constBool).append(";\n");
+                sb.append("        n.constIsBool = true;\n");
+            }
+            sb.append("        reg.nodes.push_back(n);\n");
+            sb.append("    }\n");
+            index++;
+        }
+
+        sb.append("\n    return reg;\n");
+        sb.append("}\n\n");
+        sb.append("} // namespace\n\n");
+        sb.append("SchemaResourceRegistry const& schemaRegistry() {\n");
+        sb.append("    static SchemaResourceRegistry const r = buildRegistry();\n");
+        sb.append("    return r;\n");
+        sb.append("}\n\n");
+        sb.append("SchemaIndex schemaNodeFor(std::string const& id) {\n");
+        index = 0;
+        for (IrNode node : nodes) {
+            sb.append("    if (id == \"").append(node.validatorId).append("\") return ").append(index).append(";\n");
+            index++;
+        }
+        sb.append("    (void)id;\n");
+        sb.append("    return kNoSchema;\n");
+        sb.append("}\n\n");
+        sb.append("} // namespace oas31\n");
+        return sb.toString();
+    }
+
+    private void emitSetExact(StringBuilder sb, String field, String hasField, String lexeme) {
+        if (lexeme != null) {
+            sb.append("        setExact(").append(field).append(", ").append(hasField)
+              .append(", \"").append(lexeme).append("\");\n");
+        }
+    }
+
+    /** schema_validate.generated.cpp — thin validate_<id> dispatch (ADR D5). */
+    private String buildSchemaIrValidateSource(java.util.List<IrNode> nodes) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("// Generated by CppBoostBeastClientCodegen — Wave-1 thin validate_<id> dispatch.\n");
+        sb.append("// Each entry delegates to oas31::SchemaEvaluator::validate over a densified\n");
+        sb.append("// schema node (ADR D5). Existing hand-template validate_* emissions are untouched.\n");
+        sb.append("#include \"schema_ir.generated.hpp\"\n");
+        sb.append("#include \"oas31_validator.hpp\"\n");
+        sb.append("#include <string>\n\n");
+
+        for (IrNode node : nodes) {
+            sb.append("\noas31::ValidationResult validate_").append(node.validatorId).append("(\n");
+            sb.append("    oas31::RawInstance const& instance,\n");
+            sb.append("    oas31::ValidationPath& path,\n");
+            sb.append("    oas31::ValidationContext& ctx)\n");
+            sb.append("{\n");
+            sb.append("    oas31::SchemaIndex idx = oas31::schemaNodeFor(\"")
+                    .append(node.validatorId).append("\");\n");
+            sb.append("    if (idx == oas31::kNoSchema) {\n");
+            sb.append("        return oas31::ValidationResult::invalid(path.str(),\n");
+            sb.append("            \"unknown generated schema id: ")
+                    .append(escapeCppStringContent(node.validatorId)).append("\");\n");
+            sb.append("    }\n");
+            sb.append("    static oas31::SchemaEvaluator const evaluator(oas31::schemaRegistry());\n");
+            sb.append("    return evaluator.validate(idx, instance, path, ctx);\n");
+            sb.append("}\n");
+        }
+        return sb.toString();
     }
 }
