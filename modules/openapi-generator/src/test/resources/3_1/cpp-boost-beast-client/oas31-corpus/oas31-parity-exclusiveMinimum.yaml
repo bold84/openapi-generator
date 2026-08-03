@@ -1,0 +1,63 @@
+# =============================================================================
+# oas31-parity-exclusiveMinimum.yaml
+# -----------------------------------------------------------------------------
+# Wave 0 OAS 3.1 corpus fixture — OpenAPI 3.1.2 parity + dialect declaration.
+#
+# Objectives:
+#   * Declare the TOP-LEVEL jsonSchemaDialect explicitly set to the pinned OAS
+#     3.1 dialect. This is the OAS 3.1 mechanism replacing the 3.0-style boolean
+#     `exclusiveMinimum`/`exclusiveMaximum` on the property itself.
+#   * Prove numeric exclusiveMinimum / exclusiveMaximum: in 3.1 these are
+#     NUMBERS (not the 3.0 booleans), and are true strict-inequality bounds.
+#
+# Because the whole document opts into the pinned dialect before any Schema
+# Object, every schema here is meta-validated against 3.1 semantics: numeric
+# exclusiveMinimum is recognised, and a boolean exclusiveMinimum would be an
+# invalid keyword shape (refused by the dialect/metaschema gate).
+#
+# Outcome markers (consumed by the GS3 Gate-A raw validator harness):
+#   # gen: <cpp type>          expected emitted C++ type (generation contract)
+#   # instance: <json> -> a|r  raw-instance validity verdict (S-V evidence)
+# =============================================================================
+openapi: "3.1.2"
+info:
+  title: OAS 3.1.2 Exclusive-Bound Parity Fixture
+  version: "1.0.0"
+
+# Explicit dialect override: identical to the absence default, made explicit so
+# the harness can prove that declaring it changes nothing semantically. It also
+# pins meta-validation of every keyword in this document to the OAS 3.1 dialect.
+jsonSchemaDialect: "https://spec.openapis.org/oas/3.1/dialect/2024-11-10"
+
+paths:
+  /exclusive:
+    get:
+      operationId: getExclusive
+      summary: Number schema with numeric exclusive bounds
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StrictRange"
+
+components:
+  schemas:
+    # -------------------------------------------------------------------------
+    # Numeric exclusiveMinimum / exclusiveMaximum (3.1 syntax).
+    # Bounds are strict: the boundary value itself is REJECTED.
+    # -------------------------------------------------------------------------
+    StrictRange:
+      description: Open interval (10, 20) excluding the endpoints themselves.
+      type: number
+      exclusiveMinimum: 10
+      exclusiveMaximum: 20
+      # gen: double (a validated numeric range; no variant needed)
+      # instance: 15      -> accept
+      # instance: 10      -> reject   (exclusiveMinimum is strict: not >= 10)
+      # instance: 20      -> reject   (exclusiveMaximum is strict: not <= 20)
+      # instance: 10.001  -> accept
+      # instance: 19.999  -> accept
+      # instance: 9.9     -> reject
+      # instance: "10"    -> reject   (not a JSON number)

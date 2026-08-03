@@ -334,6 +334,15 @@ openai-cpp-sdk/build-master-verification/
 # Generated cpp-boost-beast compliance reports
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/composed-schemas.tsv
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/semantic-results.tsv
+# Phase-2 raw-instance runner local build/runtime artifacts (never committed;
+# phase2_cases.inc is regenerated deterministically by phase2_gen_cases.py on
+# every gate-a.sh run, so it is intentionally ignored rather than committed).
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-build/
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-results.log
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/semantic-resolved.tsv
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2_cases.inc
+# Locally downloaded/toolchain JDK archive (never committed)
+/tmp-jdk/
 
 # Generated build diagnostics
 **/build/reports/problems/

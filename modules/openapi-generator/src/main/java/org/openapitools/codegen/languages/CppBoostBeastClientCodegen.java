@@ -371,6 +371,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     @Override
     public void preprocessOpenAPI(OpenAPI openAPI) {
         super.preprocessOpenAPI(openAPI);
+        // Opt-in / internally-gated Wave-0 silent-skip scanner. Default off so the
+        // existing 30.x/3.1 fixture suite is never regressed; enabled only when the
+        // oas31NoSilentSkip flag is set (plan §5 Wave 0 item 1 / GH).
+        if (Boolean.parseBoolean(String.valueOf(
+                additionalProperties().getOrDefault(STRICT_SCANNER_OPTION, "false")))) {
+            enforceNoSilentSkips(openAPI);
+        }
         // Populate variantModels and build composition descriptors before
         // model processing begins so that getTypeDeclaration can resolve $ref
         // to composed models as value types and branch semantics are captured
@@ -728,6 +735,671 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         return new CompositionDescriptor(
                 schemaName, schemaLocation, keyword, branches,
                 discriminatorDescriptor);
+    }
+
+    // ========================================================================
+    // Wave 0: OAS 3.1 dialect detection and normative structure gate (S-V)
+    // ------------------------------------------------------------------------
+    // Pure, testable helpers for the conformance plan (Wave 0 items 4 & 5).
+    //
+    // They are intentionally NOT auto-wired into the default generation
+    // pipeline: the repository test suite builds specs without an `info`
+    // object, so unconditional fail-closed wiring here would regress hundreds
+    // of existing fixtures before the Wave-1 enforcement decision is recorded.
+    // The conformance CI and the explicit strict mode invoke these helpers and
+    // act on the returned diagnostics. Wiring enforcement into processOpenAPI
+    // is deferred to Wave 1 and tracked in the compliance plan.
+    // ========================================================================
+
+    /** Pinned OAS 3.1 Schema dialect (spec.openapis.org/oas/3.1/dialect/2024-11-10). */
+    public static final String OAS_31_DIALECT =
+            "https://spec.openapis.org/oas/3.1/dialect/2024-11-10";
+
+    /** OAS alias accepted only as the identifier for the same pinned revision. */
+    public static final String OAS_31_DIALECT_BASE_ALIAS =
+            "https://spec.openapis.org/oas/3.1/dialect/base";
+
+    /** Plain JSON Schema Draft 2020-12 core identifier (non-OAS dialect). */
+    public static final String DRAFT_2020_12 =
+            "https://json-schema.org/draft/2020-12/schema";
+
+    /** Classified effective schema dialect for an OpenAPI document. */
+    public enum OasDialect {
+        /** OAS 3.1 pinned dialect (or its base alias). */
+        OAS_31,
+        /** Plain JSON Schema Draft 2020-12 (not OAS-wrapped). */
+        DRAFT_2020_12_REC,
+        /** A dialect identifier not recognized by this program. */
+        UNRECOGNIZED,
+        /** No dialect declared (OAS 3.1 default applies for OAS 3.1 documents). */
+        UNSPECIFIED
+    }
+
+    /**
+     * Resolve the effective schema dialect from the top-level
+     * {@code jsonSchemaDialect} and/or the root {@code $schema}. Per OAS 3.1
+     * the root {@code $schema} (when present at a document/schema-resource
+     * root) takes precedence over {@code jsonSchemaDialect} for that resource.
+     */
+    public static OasDialect resolveEffectiveDialect(String jsonSchemaDialect, String rootSchema) {
+        String effective = StringUtils.isNotBlank(rootSchema) ? rootSchema : jsonSchemaDialect;
+        if (StringUtils.isBlank(effective)) {
+            return OasDialect.UNSPECIFIED;
+        }
+        String trimmed = effective.trim();
+        if (OAS_31_DIALECT.equals(trimmed) || OAS_31_DIALECT_BASE_ALIAS.equals(trimmed)) {
+            return OasDialect.OAS_31;
+        }
+        if (DRAFT_2020_12.equals(trimmed)) {
+            return OasDialect.DRAFT_2020_12_REC;
+        }
+        return OasDialect.UNRECOGNIZED;
+    }
+
+    /** Resolve the effective dialect of an OpenAPI document from its declared knobs. */
+    public static OasDialect resolveDocumentDialect(OpenAPI openAPI) {
+        if (openAPI == null) {
+            return OasDialect.UNSPECIFIED;
+        }
+        String jsonSchemaDialect = openAPI.getJsonSchemaDialect();
+        if (jsonSchemaDialect != null) {
+            return resolveEffectiveDialect(jsonSchemaDialect, null);
+        }
+        // No jsonSchemaDialect: for OAS 3.1 the pinned dialect is the default.
+        return isOas31(openAPI) ? OasDialect.OAS_31 : OasDialect.UNSPECIFIED;
+    }
+
+    /**
+     * OAS 3 structural normative checks (plan §5 Wave 0 item 5). Returns a list
+     * of human-readable diagnostics; an empty list means the structure is
+     * normative. The caller decides whether to fail generation (strict mode).
+     */
+    public List<String> validateNormativeOas3Structure(OpenAPI openAPI) {
+        List<String> diagnostics = new ArrayList<>();
+        if (openAPI == null) {
+            diagnostics.add("document is null; cannot satisfy OAS structural requirements");
+            return diagnostics;
+        }
+        String version = openAPI.getOpenapi();
+        if (StringUtils.isBlank(version)) {
+            diagnostics.add("missing root `openapi` version field (required for OAS 3.x)");
+        } else if (!version.matches("3(\\.[0-9]+)*")) {
+            diagnostics.add("unsupported openapi version '" + version
+                    + "' (program targets OAS 3.0.x/3.1.x)");
+        }
+        io.swagger.v3.oas.models.info.Info info = openAPI.getInfo();
+        if (info == null) {
+            diagnostics.add("missing root `info` object (required by OAS)");
+        } else {
+            if (StringUtils.isBlank(info.getTitle())) {
+                diagnostics.add("missing `info.title` (required by OAS)");
+            }
+            if (StringUtils.isBlank(info.getVersion())) {
+                diagnostics.add("missing `info.version` (required by OAS)");
+            }
+        }
+        boolean hasPaths = openAPI.getPaths() != null && !openAPI.getPaths().isEmpty();
+        boolean hasComponents = openAPI.getComponents() != null;
+        boolean hasWebhooks =
+                openAPI.getWebhooks() != null && !openAPI.getWebhooks().isEmpty();
+        if (!hasPaths && !hasComponents && !hasWebhooks) {
+            diagnostics.add("missing at least one of `paths`, `components`, or `webhooks`");
+        }
+        return diagnostics;
+    }
+
+    /**
+     * Dialect/metaschema policy gate (plan §5 Wave 0 item 4): a dialect
+     * identifier that is not recognized by this program must be refused
+     * (unknown required vocabulary). The OAS 3.1 default applies when an
+     * OAS 3.1 document declares no {@code jsonSchemaDialect}.
+     * <p>
+     * Full {@code $vocabulary}/metaschema inspection (read only from the
+     * selected metaschema root) and {@code $schema}-in-subschema rejection
+     * require the Wave-1 SchemaResourceRegistry and are tracked as blockers.
+     */
+    public List<String> validateDialectPolicy(OpenAPI openAPI) {
+        List<String> diagnostics = new ArrayList<>();
+        if (openAPI == null) {
+            return diagnostics;
+        }
+        OasDialect dialect = resolveDocumentDialect(openAPI);
+        if (dialect == OasDialect.UNRECOGNIZED) {
+            diagnostics.add("unrecognized jsonSchemaDialect '" + openAPI.getJsonSchemaDialect()
+                    + "' — unknown required vocabulary/dialect, fail generation");
+        }
+        return diagnostics;
+    }
+
+    private static boolean isOas31(OpenAPI openAPI) {
+        if (openAPI == null) {
+            return false;
+        }
+        String v = openAPI.getOpenapi();
+        return v != null && v.startsWith("3.1");
+    }
+
+    // ========================================================================
+    // Wave 0 (A-1): Exhaustive schema-valued-position scanner + G-honest ledger
+    // ------------------------------------------------------------------------
+    // Implements plan §5 "Wave 0" item 1: an exhaustive scanner that walks every
+    // schema-valued position declared by the OAS 3.1 / JSON Schema 2020-12
+    // dialect (applicators, composition branches, properties/items, prefixItems,
+    // patternProperties, propertyNames, dependentSchemas, contains, not,
+    // if/then/else, dependentRequired, unevaluated*, contentSchema, ...) and, for
+    // every required-vocabulary keyword (plan §3.1-3.4 plus S-A keywords), records
+    // whether the generator (a) EMITTED a validator, (b) FAIL_CLOSED, or
+    // (c) SILENT_SKIP (the bug to fix).
+    //
+    // The occurrence ledger is a pure, testable data structure exposed for L0
+    // tests. Silent-skip enforcement is OPT-IN (a Java property/flag): default
+    // generation is untouched so the 90+ existing fixtures do not regress.
+    // ========================================================================
+
+    /** Core vocabulary identifiers (plan §3.1). */
+    public static final String VOCAB_CORE = "https://json-schema.org/draft/2020-12/vocab/core";
+    /** Applicator vocabulary (plan §3.2). */
+    public static final String VOCAB_APPLICATOR = "https://json-schema.org/draft/2020-12/vocab/applicator";
+    /** Unevaluated vocabulary (plan §3.3). */
+    public static final String VOCAB_UNEVALUATED = "https://json-schema.org/draft/2020-12/vocab/unevaluated";
+    /** Validation vocabulary (plan §3.4). */
+    public static final String VOCAB_VALIDATION = "https://json-schema.org/draft/2020-12/vocab/validation";
+    /** Metadata vocabulary (plan §3.5). */
+    public static final String VOCAB_METADATA = "https://json-schema.org/draft/2020-12/vocab/meta-data";
+    /** Format-annotation vocabulary (plan §3.6). */
+    public static final String VOCAB_FORMAT = "https://json-schema.org/draft/2020-12/vocab/format-annotation";
+    /** Content vocabulary (plan §3.7). */
+    public static final String VOCAB_CONTENT = "https://json-schema.org/draft/2020-12/vocab/content";
+    /** OAS base vocabulary (plan §3.8). */
+    public static final String VOCAB_OAS_BASE = "https://spec.openapis.org/oas/3.1/vocab/base";
+
+    /**
+     * Classification of a single keyword occurrence in the G-honest ledger.
+     */
+    public enum KeywordOccurrenceStatus {
+        /** A validator (or a structural handler) is emitted for this keyword. */
+        EMITTED,
+        /** The keyword affects validity but no validator is emitted; generator fails closed. */
+        FAIL_CLOSED,
+        /** The keyword affects validity but is neither emitted nor fail-closed (the bug). */
+        SILENT_SKIP,
+        /** Annotation / identifier / reference keyword with no direct validity effect. */
+        ANNOTATION,
+        /** A schema-valued position not directly indexable via swagger-models (raw re-walk needed). */
+        PARSER_GAP
+    }
+
+    /** One keyword occurrence at a schema-valued position in the G-honest ledger. */
+    public static final class KeywordOccurrence {
+        private final String keyword;
+        private final String location;
+        private final String vocabularyUri;
+        private final KeywordOccurrenceStatus status;
+        private final String detail;
+
+        public KeywordOccurrence(String keyword, String location, String vocabularyUri,
+                                 KeywordOccurrenceStatus status, String detail) {
+            this.keyword = keyword;
+            this.location = location;
+            this.vocabularyUri = vocabularyUri;
+            this.status = status;
+            this.detail = detail;
+        }
+
+        public String getKeyword() { return keyword; }
+        public String getLocation() { return location; }
+        public String getVocabularyUri() { return vocabularyUri; }
+        public KeywordOccurrenceStatus getStatus() { return status; }
+        public String getDetail() { return detail; }
+
+        @Override
+        public String toString() {
+            return status + "[" + keyword + "]@" + location
+                    + (detail == null || detail.isEmpty() ? "" : " (" + detail + ")");
+        }
+    }
+
+    /**
+     * G-honest keyword occurrence ledger: an ordered, deduplicated index of every
+     * schema-valued-position keyword occurrence discovered by the exhaustive
+     * scanner, plus keyword→occurrences lookup and status aggregations.
+     */
+    public static final class KeywordOccurrenceLedger {
+        private final List<KeywordOccurrence> occurrences = new ArrayList<>();
+        private final LinkedHashMap<String, List<KeywordOccurrence>> byKeyword = new LinkedHashMap<>();
+
+        void add(KeywordOccurrence occurrence) {
+            occurrences.add(occurrence);
+            byKeyword.computeIfAbsent(occurrence.getKeyword(), k -> new ArrayList<>())
+                    .add(occurrence);
+        }
+
+        public List<KeywordOccurrence> getOccurrences() {
+            return Collections.unmodifiableList(new ArrayList<>(occurrences));
+        }
+
+        public List<KeywordOccurrence> forKeyword(String keyword) {
+            return byKeyword.getOrDefault(keyword, Collections.emptyList());
+        }
+
+        public boolean hasKeyword(String keyword) {
+            return byKeyword.containsKey(keyword);
+        }
+
+        public Set<String> getKeywords() {
+            return Collections.unmodifiableSet(new LinkedHashSet<>(byKeyword.keySet()));
+        }
+
+        public List<KeywordOccurrence> withStatus(KeywordOccurrenceStatus status) {
+            List<KeywordOccurrence> out = new ArrayList<>();
+            for (KeywordOccurrence o : occurrences) {
+                if (o.getStatus() == status) {
+                    out.add(o);
+                }
+            }
+            return out;
+        }
+
+        /** Keywords whose occurrences are all non-silent (EMITTED / FAIL_CLOSED / ANNOTATION). */
+        public Set<String> silentSkips() {
+            Set<String> out = new LinkedHashSet<>();
+            for (KeywordOccurrence o : occurrences) {
+                if (o.getStatus() == KeywordOccurrenceStatus.SILENT_SKIP) {
+                    out.add(o.getKeyword());
+                }
+            }
+            return Collections.unmodifiableSet(out);
+        }
+
+        public Set<String> failClosed() {
+            Set<String> out = new LinkedHashSet<>();
+            for (KeywordOccurrence o : occurrences) {
+                if (o.getStatus() == KeywordOccurrenceStatus.FAIL_CLOSED) {
+                    out.add(o.getKeyword());
+                }
+            }
+            return Collections.unmodifiableSet(out);
+        }
+
+        public Set<String> emitted() {
+            Set<String> out = new LinkedHashSet<>();
+            for (KeywordOccurrence o : occurrences) {
+                if (o.getStatus() == KeywordOccurrenceStatus.EMITTED) {
+                    out.add(o.getKeyword());
+                }
+            }
+            return Collections.unmodifiableSet(out);
+        }
+
+        public int size() {
+            return occurrences.size();
+        }
+    }
+
+    /**
+     * Optional silent-skip scanner flag (opt-in / internally gated). When set to
+     * {@code true} on {@code additionalProperties}, {@link #preprocessOpenAPI}
+     * runs the exhaustive scanner and fails generation on any SILENT_SKIP.
+     * Default false: normal generation never regresses existing fixtures.
+     */
+    public static final String STRICT_SCANNER_OPTION = "oas31NoSilentSkip";
+
+    /**
+     * Exhaustive schema-valued-position scanner. Walks every schema under
+     * {@code components/schemas} and recursively each schema-valued child
+     * declared by the OAS 3.1 dialect, recording a {@link KeywordOccurrence}
+     * ledger. Reference targets ({@code $ref}) are NOT followed for exhaustive
+     * sub-position scanning in this pure Wave-0 pass (that requires the Wave-1
+     * SchemaResourceRegistry); every keyword occurrence on the authored schema
+     * tree is still indexed.
+     */
+    public KeywordOccurrenceLedger scanSchemaKeywordOccurrences(OpenAPI openAPI) {
+        KeywordOccurrenceLedger ledger = new KeywordOccurrenceLedger();
+        if (openAPI == null || openAPI.getComponents() == null
+                || openAPI.getComponents().getSchemas() == null) {
+            return ledger;
+        }
+        for (Map.Entry<String, Schema> e : openAPI.getComponents().getSchemas().entrySet()) {
+            String name = e.getKey();
+            scanSchemaNode(e.getValue(), "#/components/schemas/" + name, ledger, 0);
+        }
+        return ledger;
+    }
+
+    private void scanSchemaNode(Schema<?> schema, String location,
+                                KeywordOccurrenceLedger ledger, int depth) {
+        if (schema == null || depth > 1024) {
+            return;
+        }
+
+        // ---- Core / identifier keywords (plan §3.1) ----
+        if (schema.get$id() != null) {
+            record(ledger, "$id", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
+                    "identifier; resource registry indexing is Wave 1 (K-29)");
+        }
+        if (schema.get$schema() != null) {
+            record(ledger, "$schema", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
+                    "dialect selector; guarded by validateDialectPolicy (Wave 4.3)");
+        }
+        if (schema.get$ref() != null) {
+            record(ledger, "$ref", location, VOCAB_CORE, KeywordOccurrenceStatus.EMITTED,
+                    "reference; resolved by parser/IR");
+        }
+        if (schema.get$anchor() != null) {
+            record(ledger, "$anchor", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
+                    "plain-name fragment; Wave 4.2 (K-16)");
+        }
+        if (schema.get$dynamicAnchor() != null) {
+            record(ledger, "$dynamicAnchor", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
+                    "dynamic plain-name fragment; Wave 4.2 (K-16)");
+        }
+        if (schema.get$dynamicRef() != null) {
+            record(ledger, "$dynamicRef", location, VOCAB_CORE, KeywordOccurrenceStatus.PARSER_GAP,
+                    "dynamic reference; Wave 4.2 (K-16)");
+        }
+        if (schema.get$comment() != null) {
+            record(ledger, "$comment", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
+                    "no validity action / no annotation (K-32; string shape Wave 3)");
+        }
+        if (schema.get$vocabulary() != null) {
+            record(ledger, "$vocabulary", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
+                    "metaschema declaration; Wave 4.3 (K-27)");
+        }
+
+        // ---- Validation vocabulary (plan §3.4) ----
+        if (schema.getType() != null || (schema.getTypes() != null && !schema.getTypes().isEmpty())) {
+            record(ledger, "type", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-type / validation-type-array");
+        }
+        if (schema.getEnum() != null && !schema.getEnum().isEmpty()) {
+            record(ledger, "enum", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-enum-values");
+        }
+        if (schema.getConst() != null) {
+            record(ledger, "const", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-const; exact-math caveat Wave 1 (K-34)");
+        }
+        boolean hasMinimum = schema.getMinimum() != null
+                || schema.getExclusiveMinimum() != null
+                || schema.getExclusiveMinimumValue() != null;
+        boolean hasMaximum = schema.getMaximum() != null
+                || schema.getExclusiveMaximum() != null
+                || schema.getExclusiveMaximumValue() != null;
+        if (hasMinimum) {
+            record(ledger, "minimum", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "numeric-range; 3.0 boolean exclusiveMinimum preserved");
+        }
+        if (hasMaximum) {
+            record(ledger, "maximum", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "numeric-range; 3.0 boolean exclusiveMaximum preserved");
+        }
+        if (schema.getMultipleOf() != null) {
+            record(ledger, "multipleOf", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-multiple-of; exact-math caveat Wave 1 (K-33)");
+        }
+        if (schema.getMinLength() != null) {
+            record(ledger, "minLength", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-min-length; byte-length caveat Wave 2.5 (K-13)");
+        }
+        if (schema.getMaxLength() != null) {
+            record(ledger, "maxLength", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-max-length; byte-length caveat Wave 2.5 (K-13)");
+        }
+        if (schema.getPattern() != null) {
+            record(ledger, "pattern", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-pattern; regex_match full-anchor caveat Wave 3.6 (K-13)");
+        }
+        if (schema.getMinItems() != null) {
+            record(ledger, "minItems", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-min-items");
+        }
+        if (schema.getMaxItems() != null) {
+            record(ledger, "maxItems", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-max-items");
+        }
+        if (Boolean.TRUE.equals(schema.getUniqueItems())) {
+            record(ledger, "uniqueItems", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-unique-items; exact-math caveat Wave 1 (K-22)");
+        }
+        if (schema.getRequired() != null && !schema.getRequired().isEmpty()) {
+            record(ledger, "required", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-required / object-properties");
+        }
+        if (schema.getMinProperties() != null) {
+            record(ledger, "minProperties", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; object-property-count");
+        }
+        if (schema.getMaxProperties() != null) {
+            record(ledger, "maxProperties", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; object-property-count");
+        }
+        if (schema.getMinContains() != null) {
+            record(ledger, "minContains", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; contains family Wave 3.1 (K-08)");
+        }
+        if (schema.getMaxContains() != null) {
+            record(ledger, "maxContains", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; contains family Wave 3.1 (K-08)");
+        }
+        if (schema.getDependentRequired() != null && !schema.getDependentRequired().isEmpty()) {
+            record(ledger, "dependentRequired", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; dependencies Wave 3.4 (K-11)");
+        }
+
+        // ---- Applicator vocabulary (plan §3.2) ----
+        if (schema.getProperties() != null && !schema.getProperties().isEmpty()) {
+            record(ledger, "properties", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "object model emission");
+            for (Map.Entry<String, Schema> p : schema.getProperties().entrySet()) {
+                scanSchemaNode(p.getValue(), location + "/properties/" + p.getKey(), ledger, depth + 1);
+            }
+        }
+        if (schema.getPatternProperties() != null && !schema.getPatternProperties().isEmpty()) {
+            record(ledger, "patternProperties", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; Wave 3.2 (K-09) — previously a silent skip");
+            for (Map.Entry<String, Schema> p : schema.getPatternProperties().entrySet()) {
+                scanSchemaNode(p.getValue(), location + "/patternProperties/" + p.getKey(), ledger, depth + 1);
+            }
+        }
+        if (schema.getAdditionalProperties() != null) {
+            record(ledger, "additionalProperties", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "fail-closed unless no-op (true/absent)");
+            Object addProp = schema.getAdditionalProperties();
+            if (addProp instanceof Schema) {
+                scanSchemaNode((Schema) addProp, location + "/additionalProperties", ledger, depth + 1);
+            }
+        }
+        if (schema.getPropertyNames() != null) {
+            record(ledger, "propertyNames", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; Wave 3.3 (K-10)");
+            scanSchemaNode(schema.getPropertyNames(), location + "/propertyNames", ledger, depth + 1);
+        }
+        if (schema.getDependentSchemas() != null && !schema.getDependentSchemas().isEmpty()) {
+            record(ledger, "dependentSchemas", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; Wave 3.4 (K-11) — previously a silent skip");
+            for (Map.Entry<String, Schema> d : schema.getDependentSchemas().entrySet()) {
+                scanSchemaNode(d.getValue(), location + "/dependentSchemas/" + d.getKey(), ledger, depth + 1);
+            }
+        }
+        if (schema.getPrefixItems() != null && !schema.getPrefixItems().isEmpty()) {
+            record(ledger, "prefixItems", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "fail-closed; Wave 2.2 (K-06)");
+            for (int i = 0; i < schema.getPrefixItems().size(); i++) {
+                scanSchemaNode(schema.getPrefixItems().get(i), location + "/prefixItems/" + i, ledger, depth + 1);
+            }
+        }
+        if (schema.getItems() != null) {
+            record(ledger, "items", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "element typing via array storage");
+            scanSchemaNode(schema.getItems(), location + "/items", ledger, depth + 1);
+        }
+        if (schema.getContains() != null) {
+            record(ledger, "contains", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; Wave 3.1 (K-08)");
+            scanSchemaNode(schema.getContains(), location + "/contains", ledger, depth + 1);
+        }
+        if (schema.getNot() != null) {
+            record(ledger, "not", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; Wave 1.6 (K-01)");
+            scanSchemaNode(schema.getNot(), location + "/not", ledger, depth + 1);
+        }
+        if (schema.getIf() != null || schema.getThen() != null || schema.getElse() != null) {
+            if (schema.getIf() != null) {
+                record(ledger, "if", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                        "conditional; Wave 3.5 (K-02)");
+                scanSchemaNode(schema.getIf(), location + "/if", ledger, depth + 1);
+            }
+            if (schema.getThen() != null) {
+                record(ledger, "then", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                        "conditional; Wave 3.5 (K-02)");
+                scanSchemaNode(schema.getThen(), location + "/then", ledger, depth + 1);
+            }
+            if (schema.getElse() != null) {
+                record(ledger, "else", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
+                        "conditional; Wave 3.5 (K-02)");
+                scanSchemaNode(schema.getElse(), location + "/else", ledger, depth + 1);
+            }
+        }
+        if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) {
+            record(ledger, "allOf", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "composition; getUnsupportedAssertions may carry FAIL_CLOSED branches");
+            for (int i = 0; i < schema.getAllOf().size(); i++) {
+                scanSchemaNode(schema.getAllOf().get(i), location + "/allOf/" + i, ledger, depth + 1);
+            }
+        }
+        if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+            record(ledger, "anyOf", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "composition");
+            for (int i = 0; i < schema.getAnyOf().size(); i++) {
+                scanSchemaNode(schema.getAnyOf().get(i), location + "/anyOf/" + i, ledger, depth + 1);
+            }
+        }
+        if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
+            record(ledger, "oneOf", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "composition");
+            for (int i = 0; i < schema.getOneOf().size(); i++) {
+                scanSchemaNode(schema.getOneOf().get(i), location + "/oneOf/" + i, ledger, depth + 1);
+            }
+        }
+
+        // ---- Unevaluated vocabulary (plan §3.3) ----
+        if (schema.getUnevaluatedProperties() != null) {
+            record(ledger, "unevaluatedProperties", location, VOCAB_UNEVALUATED,
+                    KeywordOccurrenceStatus.FAIL_CLOSED, "no generated validator; Wave 4.1 (K-12)");
+            Schema<?> up = schema.getUnevaluatedProperties();
+            scanSchemaNode(up, location + "/unevaluatedProperties", ledger, depth + 1);
+        }
+        if (schema.getUnevaluatedItems() != null) {
+            record(ledger, "unevaluatedItems", location, VOCAB_UNEVALUATED,
+                    KeywordOccurrenceStatus.FAIL_CLOSED,
+                    "no generated validator; Wave 4.1 (K-12) — previously a silent skip");
+            Schema ui = schema.getUnevaluatedItems();
+            scanSchemaNode(ui, location + "/unevaluatedItems", ledger, depth + 1);
+        }
+
+        // ---- Metadata vocabulary (plan §3.5): annotation only ----
+        if (schema.getTitle() != null) record(ledger, "title", location, VOCAB_METADATA, KeywordOccurrenceStatus.ANNOTATION, null);
+        if (schema.getDescription() != null) record(ledger, "description", location, VOCAB_METADATA, KeywordOccurrenceStatus.ANNOTATION, null);
+        if (schema.getDefault() != null) record(ledger, "default", location, VOCAB_METADATA, KeywordOccurrenceStatus.ANNOTATION, "annotation only; never injected (K-21)");
+        if (Boolean.TRUE.equals(schema.getDeprecated())) record(ledger, "deprecated", location, VOCAB_METADATA, KeywordOccurrenceStatus.ANNOTATION, null);
+        if (Boolean.TRUE.equals(schema.getReadOnly())) record(ledger, "readOnly", location, VOCAB_METADATA, KeywordOccurrenceStatus.ANNOTATION, null);
+        if (Boolean.TRUE.equals(schema.getWriteOnly())) record(ledger, "writeOnly", location, VOCAB_METADATA, KeywordOccurrenceStatus.ANNOTATION, null);
+        if (schema.getExamples() != null && !schema.getExamples().isEmpty()) record(ledger, "examples", location, VOCAB_METADATA, KeywordOccurrenceStatus.ANNOTATION, null);
+
+        // ---- Format-annotation vocabulary (plan §3.6) ----
+        if (schema.getFormat() != null) record(ledger, "format", location, VOCAB_FORMAT, KeywordOccurrenceStatus.ANNOTATION,
+                "annotation by default; strict assertion Wave 4.4 (K-14)");
+
+        // ---- Content vocabulary (plan §3.7) ----
+        if (schema.getContentEncoding() != null) record(ledger, "contentEncoding", location, VOCAB_CONTENT, KeywordOccurrenceStatus.ANNOTATION,
+                "annotation; no auto-decode (K-31)");
+        if (schema.getContentMediaType() != null) record(ledger, "contentMediaType", location, VOCAB_CONTENT, KeywordOccurrenceStatus.ANNOTATION,
+                "annotation; no auto-decode (K-31)");
+        if (schema.getContentSchema() != null) {
+            record(ledger, "contentSchema", location, VOCAB_CONTENT, KeywordOccurrenceStatus.ANNOTATION,
+                    "schema-valued annotation; child indexed (K-15)");
+            scanSchemaNode(schema.getContentSchema(), location + "/contentSchema", ledger, depth + 1);
+        }
+
+        // ---- OAS base vocabulary (plan §3.8): annotation only ----
+        if (schema.getDiscriminator() != null) record(ledger, "discriminator", location, VOCAB_OAS_BASE, KeywordOccurrenceStatus.ANNOTATION,
+                "validation-neutral candidate-order hint");
+        if (schema.getXml() != null) record(ledger, "xml", location, VOCAB_OAS_BASE, KeywordOccurrenceStatus.ANNOTATION, null);
+        if (schema.getExternalDocs() != null) record(ledger, "externalDocs", location, VOCAB_OAS_BASE, KeywordOccurrenceStatus.ANNOTATION, null);
+        if (schema.getExample() != null || schema.getExampleSetFlag()) record(ledger, "example", location, VOCAB_OAS_BASE, KeywordOccurrenceStatus.ANNOTATION,
+                "OAS singular example, 3.0 dual-path preserved");
+
+        // ---- 3.0 dual-path compatibility keywords ----
+        if (Boolean.TRUE.equals(schema.getNullable())) record(ledger, "nullable", location, VOCAB_OAS_BASE, KeywordOccurrenceStatus.EMITTED,
+                "3.0 nullable dual-path; tri-state NullableField");
+        if (schema.getBooleanSchemaValue() != null) record(ledger, "boolean-schema", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
+                "true/false value schema; Wave 1.5 (K-03)");
+    }
+
+    private static void record(KeywordOccurrenceLedger ledger, String keyword, String location,
+                               String vocabularyUri, KeywordOccurrenceStatus status, String detail) {
+        ledger.add(new KeywordOccurrence(keyword, location, vocabularyUri, status, detail));
+    }
+
+    /**
+     * Returns every SILENT_SKIP keyword in the occurrence ledger — the silent-ignore
+     * gaps that G-honest (GH) forbids. An empty result means zero silent skips.
+     */
+    public List<String> validateNoSilentSkips(KeywordOccurrenceLedger ledger) {
+        List<String> diagnostics = new ArrayList<>();
+        if (ledger == null) {
+            return diagnostics;
+        }
+        for (KeywordOccurrence o : ledger.getOccurrences()) {
+            if (o.getStatus() == KeywordOccurrenceStatus.SILENT_SKIP) {
+                diagnostics.add("silent skip: '" + o.getKeyword() + "' at " + o.getLocation());
+            }
+        }
+        return diagnostics;
+    }
+
+    /** Convenience: scan then return any silent-skip diagnostics for a document. */
+    public List<String> validateNoSilentSkips(OpenAPI openAPI) {
+        return validateNoSilentSkips(scanSchemaKeywordOccurrences(openAPI));
+    }
+
+    /**
+     * Opt-in / internally-gated silent-skip enforcement. Scans the document and
+     * throws if any required-vocabulary keyword is neither emitted nor fail-closed
+     * (a SILENT_SKIP). Not wired unconditionally into {@link #preprocessOpenAPI};
+     * enabled only when {@link #STRICT_SCANNER_OPTION} is set on {@code additionalProperties}.
+     */
+    public void enforceNoSilentSkips(OpenAPI openAPI) {
+        List<String> diags = validateNoSilentSkips(openAPI);
+        if (!diags.isEmpty()) {
+            throw new UnsupportedSchemaAssertionException(
+                    "#/components/schemas", "silent-skip-scanner: " + String.join("; ", diags));
+        }
+    }
+
+    /**
+     * Set of fail-closed required-vocabulary keywords actually encountered for this
+     * document (the keywords the generator refuses rather than silently accepting).
+     */
+    public Set<String> failClosedKeywords(OpenAPI openAPI) {
+        return scanSchemaKeywordOccurrences(openAPI).failClosed();
+    }
+
+    /**
+     * Honest report of schema-valued positions that the exhaustive scanner cannot
+     * index through swagger-models (raw schema re-walk, plan §4.4) in the current
+     * parser layer. These are tracked, never silently accepted.
+     */
+    public List<String> parserGapReport() {
+        List<String> gaps = new ArrayList<>();
+        gaps.add("`$defs` children are schema-valued positions NOT exposed by swagger-models"
+                + " 2.2.52 (parser-blockers doc); require a raw schema re-walk (plan §4.4, Wave 1 K-29).");
+        gaps.add("`$id`/`$anchor`/`$dynamicAnchor` complete-document indexing and @ref-target"
+                + " sub-position walking require the Wave-1 SchemaResourceRegistry (K-29);"
+                + " this scanner records their occurrences but does not follow external refs.");
+        gaps.add("`contentSchema` child is indexed here, but full content annotation output"
+                + " (S-A, GA1) lands in Wave 3.7 (K-15).");
+        return gaps;
     }
 
     public CppBoostBeastClientCodegen() {

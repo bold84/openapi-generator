@@ -1,0 +1,66 @@
+# =============================================================================
+# oas31-boolean-schemas.yaml
+# -----------------------------------------------------------------------------
+# Wave 0 OAS 3.1 corpus fixture — OpenAPI 3.1.1 + boolean schemas.
+#
+# JSON Schema Draft 2020-12 (and therefore OAS 3.1) treats the literals `true`
+# and `false` as valid schemas:
+#   * `true`  — always valid (matches every instance).
+#   * `false` — always invalid (matches no instance).
+# These are NOT valid Schema Object shorthand in OpenAPI 3.0, so this file is
+# 3.1-only and proves 3.1 acceptance of boolean branches inside composition.
+#
+# Default jsonSchemaDialect (absent) applies: pinned OAS 3.1 dialect.
+#
+# Outcome markers (consumed by the GS3 Gate-A raw validator harness):
+#   # gen: <cpp type>          expected emitted C++ type (generation contract)
+#   # instance: <json> -> a|r  raw-instance validity verdict (S-V evidence)
+# =============================================================================
+openapi: "3.1.1"
+info:
+  title: OAS 3.1 Boolean-Schema Fixture
+  version: "1.0.0"
+
+paths:
+  /boolean-schemas:
+    get:
+      operationId: getBooleanSchemas
+      summary: oneOf over boolean true/false branches
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrueOrFalse"
+
+components:
+  schemas:
+    # -------------------------------------------------------------------------
+    # oneOf with boolean `true` and `false` branches.
+    #
+    # Branch 1 is `true`  (accepts anything), branch 2 is `false` (accepts
+    # nothing). Under oneOf exactly one branch must validate:
+    #   * a real instance that is NOT null -> branch 1 (true) passes, branch 2
+    #     (false) fails  -> exactly one -> ACCEPT.
+    #   * null -> `true` also matches null (JSON Schema `true` matches every
+    #     instance including null) and `false` rejects it -> exactly one ->
+    #     ACCEPT.  (A 3.0 nullable-style reading would differ; this fixture pins
+    #     the 2020-12 behaviour.)
+    # -------------------------------------------------------------------------
+    TrueOrFalse:
+      description: >-
+        oneOf whose branches are the boolean schemas true and false. Valid in
+        OAS 3.1 / JSON Schema 2020-12; invalid as Schema Objects in OAS 3.0.
+      oneOf:
+        - true
+          # gen: always-valid branch alias (accepts every instance)
+        - false
+          # gen: always-invalid branch alias (accepts no instance)
+      # gen: CompositionBranchValue<0, T> over the true branch (the only
+      #      satisfiable member); the false branch must remain present but is
+      #      never selected.
+      # instance: 0       -> accept   (true branch qualifies, false does not)
+      # instance: "x"     -> accept
+      # instance: null    -> accept   (true matches null as well)
+      # instance: {}      -> accept

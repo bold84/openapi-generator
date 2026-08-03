@@ -1,0 +1,951 @@
+# =============================================================================
+# cpp-boost-beast-client — OAS 3.1 / JSON Schema 2020-12 Compliance Matrix
+# =============================================================================
+# Wave 0 machine-readable keyword ledger ("Wave 0 item 1" of
+# CPP_BOOST_BEAST_OPENAPI_31_FULL_COMPLIANCE_PLAN.md).
+#
+# Important honesty rule: this is a WAVE-0 matrix. Status values reflect the
+# CURRENT generator state after remediation (phases 0–10) plus the Wave-0
+# compiled raw-instance Phase-2 runner evidence. It documents G-honest (zero
+# silent ignore) coverage and the fail-closed surface. It does NOT yet claim
+# G-full-schema. The Phase-2 compiled raw-instance runner (Boost-gated, Wave 0
+# K-18) has landed and produced real accept/reject evidence for the currently
+# `supported` composition/validation keywords (see `runtimeEvidence` rows
+# citing oas-compliance/semantic-results.tsv). GS4 'zero DEFERRED' is NOT met:
+# 19 semantic rows remain DEFERRED. Achieving G-full-schema additionally
+# requires the Wave 1–4 implementation waves; until then any keyword whose
+# exact mathematical/Unicode/evaluation semantics are not proven must stay
+# `fail-closed` rather than `supported`.
+#
+# Reclassification (GS1/GS2 runtime-only rule): `supported` is now granted ONLY
+# to keywords with real RUNTIME evidence (a JSTS required-vocabulary group
+# passing, or a compiled raw-instance accept/reject proof from
+# oas-compliance/semantic-results.tsv). source/parser/IR evidence alone do NOT
+# qualify. The 15 keywords whose validators are emitted (source+IR) but which
+# have no runtime proof yet ($ref, properties, items, const, maximum,
+# exclusiveMaximum, minimum, exclusiveMinimum, maxLength, minLength, pattern,
+# maxItems, minItems, uniqueItems, required) are therefore marked `deferred`
+# (runtime-unproven), NOT `fail-closed` (they do not refuse generation) and NOT
+# `supported` (no runtime evidence). They become claimable as `supported` only
+# when a JSTS group or compiled raw-instance proof lands.
+#
+# Row contract (plan §8.1): keyword, vocabularyUri, classification, profiles,
+# status, acceptedSchemaDomain, sourceEvidence, parserEvidence, irEvidence,
+# runtimeEvidence, jstsGroups, notes. CI rejects duplicate/missing manifest
+# keywords, unknown statuses, missing evidence for `supported`, and
+# generated-documentation drift.
+#
+# Status vocabulary:
+#   supported    — validated by generated validator / model emission (S-V) or
+#                  preserved & exposed (S-A). Evidence required.
+#                  EXACT-MATH / UNICODE caveats are called out per row because
+#                  they block the G-full-schema claim until the exact-number
+#                  layer and ECMA-262 pattern engine land.
+#   fail-closed  — recognised as validity-affecting but not implemented; the
+#                  generator refuses to emit rather than silently mis-validate.
+#                  This is G-honest, NOT full support.
+#   annotation   — collected/preserved/exposed with no validity effect (S-A).
+#   deferred     — recognised; implementation scheduled in a later wave.
+#
+# Evidence IDs are repo paths or test names (commit-hash evidence is recorded
+# in jsts-exclusions.yaml / the parser-blockers appendix).
+
+# —————————————————————————————————————————————————————————————————————————————
+# Core vocabulary (required) — https://json-schema.org/draft/2020-12/vocab/core
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: "$schema"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Identifier
+  profiles: [S-V, S-A]
+  status: deferred
+  acceptedSchemaDomain: resource-root only; prohibited in ordinary subschemas
+  sourceEvidence: "CPP_BOOST_BEAST_OPENAPI_31_FULL_COMPLIANCE_PLAN.md §3.1 §4.3"
+  parserEvidence: "swagger-models Schema.getJsonSchema()/get$schema() (2.2.52)"
+  irEvidence: "resolveEffectiveDialect()/validateDialectPolicy() in CppBoostBeastClientCodegen (Wave 0)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Root $schema / jsonSchemaDialect selection implemented as a pure gate; full resource-root + embedded-resource dialect ownership is Wave 1 (SchemaResourceRegistry)."
+
+- keyword: "$id"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Identifier
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: schema-resource base establishment
+  sourceEvidence: "plan §3.1, §4.2"
+  parserEvidence: "swagger-models, partial"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 1 (SchemaResourceRegistry K-29)."
+
+- keyword: "$ref"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Reference
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: local/external reference, adjacent keywords active
+  sourceEvidence: "CppBoostBeastClientCodegen buildCompositionDescriptor (resolves $ref with cycle detection)"
+  parserEvidence: "swagger-models Schema.get$ref()"
+  irEvidence: "CompositionBranchDescriptor.sourceRef/resolvedName"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Component-level $ref and cycle detection supported. Full URI/base resolution is Wave 1. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: "$defs"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Reserved schema container
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: schema-valued children indexed & referenceable
+  sourceEvidence: "plan §3.1"
+  parserEvidence: "swagger-models, partial (vanished from DSL; raw re-walk needed)"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 1 raw parser re-walk (§4.4)."
+
+- keyword: "$anchor"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Identifier
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: plain-name fragment unique within resource
+  sourceEvidence: "plan §3.1, §4.2"
+  parserEvidence: "swagger-models, absent"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 4 (K-16)."
+
+- keyword: "$dynamicAnchor"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Identifier
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: dynamic plain-name fragment
+  sourceEvidence: "plan §3.1, §4.3"
+  parserEvidence: "swagger-models, absent"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 4 (K-16)."
+
+- keyword: "$dynamicRef"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Reference
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: dynamic-scope replacement for $dynamicAnchor targets
+  sourceEvidence: "plan §3.1, §4.3"
+  parserEvidence: "swagger-models, absent"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 4 (K-16)."
+
+- keyword: "$vocabulary"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Metaschema declaration
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: root metaschema only
+  sourceEvidence: "plan §3.1; validateDialectPolicy() partial"
+  parserEvidence: "swagger-models, absent"
+  irEvidence: "validateDialectPolicy() (unrecognized → refuse) in CppBoostBeastClientCodegen (Wave 0)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Top-level refusal implemented; full metaschema $vocabulary inspection is Wave 1."
+
+- keyword: "$comment"
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Core reserved, non-annotation
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: string value; no validity/annotation action
+  sourceEvidence: "plan §3.1, §3.9 (K-32)"
+  parserEvidence: "swagger-models, partial"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3 (K-32): shape check only, never annotation output."
+
+- keyword: "$recursiveRef"
+  vocabularyUri: UNKNOWN (draft-07 legacy)
+  classification: Unknown keyword
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: unknown-annotation policy; NO legacy recursion
+  sourceEvidence: "plan §3.1, §4.3 (K-25)"
+  parserEvidence: "swagger-models, absent"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "General unknown-annotation policy; never activates legacy recursive semantics."
+
+- keyword: "$recursiveAnchor"
+  vocabularyUri: UNKNOWN (draft-07 legacy)
+  classification: Unknown keyword
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: unknown-annotation policy; NO legacy recursion
+  sourceEvidence: "plan §3.1, §4.3 (K-25)"
+  parserEvidence: "swagger-models, absent"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "General unknown-annotation policy; never activates legacy recursive semantics."
+
+# —————————————————————————————————————————————————————————————————————————————
+# Applicator vocabulary (required) — .../vocab/applicator
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: allOf
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator (AND)
+  profiles: [S-V]
+  status: supported
+  acceptedSchemaDomain: recursive allOf intersection (objects + scalar aliases)
+  sourceEvidence: "CppBoostBeastClientCodegen computeAllOfIntersection"
+  parserEvidence: "ComposedSchema.getAllOf()"
+  irEvidence: "CompositionDescriptor keyword=allOf; AllOfIntersection"
+  runtimeEvidence: "oas-compliance/semantic-results.tsv (Phase-2 runner: allof-enum-intersection-accept/reject, optional-impossible-allof-accept/reject PASS)"
+  jstsGroups: []
+  notes: "NOT full nested applicator surface (see note on allOf exemption). Failing members that carry unsupported assertions are exempted by design (allOf = all must match); a full schema-valued-position scanner is the Wave-0 ledger."
+
+- keyword: anyOf
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator (OR)
+  profiles: [S-V]
+  status: supported
+  acceptedSchemaDomain: oneOf/anyOf tagged storage + validator-first membership
+  sourceEvidence: "CppBoostBeastClientCodegen CompositionDescriptor"
+  parserEvidence: "ComposedSchema.getAnyOf()"
+  irEvidence: "CompositionDescriptor keyword=anyOf"
+  runtimeEvidence: "oas-compliance/semantic-results.tsv (Phase-2 runner: anyof-enum-union-accept/reject, allnull-anyof-accept/reject PASS)"
+  jstsGroups: []
+  notes: "Runtime accept/reject proven by the compiled Phase-2 raw-instance runner (K-18)."
+  
+
+- keyword: oneOf
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator (XOR)
+  profiles: [S-V]
+  status: supported
+  acceptedSchemaDomain: exactly-one branch
+  sourceEvidence: "CppBoostBeastClientCodegen CompositionDescriptor"
+  parserEvidence: "ComposedSchema.getOneOf()"
+  irEvidence: "CompositionDescriptor keyword=oneOf"
+  runtimeEvidence: "oas-compliance/semantic-results.tsv (Phase-2 runner: oneof-constrained-numbers-*, integer-mathematical-form, duplicatenull-oneof, oneof-string-string-enum-overlap PASS)"
+  jstsGroups: []
+  notes: "Runtime accept/reject proven by the compiled Phase-2 raw-instance runner (K-18)."
+  
+
+- keyword: not
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator (NOT)
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: invert subschema result
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('not'))"
+  parserEvidence: "Schema.getNot()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Always fail-closed because it flips membership. Wave 1.6 (K-01)."
+
+- keyword: if
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator (conditional)
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: conditional selection
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('conditional'))"
+  parserEvidence: "Schema.getIf()/getThen()/getElse()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.5 (K-02)."
+
+- keyword: then
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator (conditional)
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: conditional branch
+  sourceEvidence: "plan §3.2; scanner (conditional)"
+  parserEvidence: "Schema.getThen()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.5 (K-02)."
+
+- keyword: else
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator (conditional)
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: conditional branch
+  sourceEvidence: "plan §3.2; scanner (conditional)"
+  parserEvidence: "Schema.getElse()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.5 (K-02)."
+
+- keyword: properties
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: top-level model properties (not full branch surface)
+  sourceEvidence: "CppBoostBeastClientCodegen fromModel object storage"
+  parserEvidence: "ObjectSchema.getProperties()"
+  irEvidence: "AllOfIntersection.properties"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Everywhere-not-only-top-level is Wave 2.1 (K-04). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2.1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: patternProperties
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: regex-keyed property applicator
+  sourceEvidence: "plan §3.2 (K-09)"
+  parserEvidence: "swagger-models, partial"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.2 (K-09)."
+
+- keyword: additionalProperties
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: constrained additionalProperties
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('additional-properties') when constrained)"
+  parserEvidence: "Schema.getAdditionalProperties() (Schema|Boolean)"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "true/absent treated as no-op (supported); false/constrained schema fail-closed. Wave 2.1 (K-04)."
+
+- keyword: propertyNames
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: subschema on each property name
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('property-names'))"
+  parserEvidence: "Schema.getPropertyNames()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.3 (K-10)."
+
+- keyword: dependentSchemas
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: schema-form property dependency
+  sourceEvidence: "plan §3.2 (K-11)"
+  parserEvidence: "swagger-models, partial"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.4 (K-11)."
+
+- keyword: prefixItems
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: tuple validation by index
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('array-prefix-items'); allOf exempt)"
+  parserEvidence: "Schema.getPrefixItems()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Fail-closed for oneOf/anyOf; allOf exempted by design. Wave 2.2 (K-06)."
+
+- keyword: items
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: post-prefix array items (OAS-required presence)
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (items not fail-closed; OAS-required)"
+  parserEvidence: "ArraySchema.getItems()"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Presence alone does not affect membership beyond type validation. Wave 2.2 (K-06). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2.2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: contains
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: at-least-one item matching
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('contains'))"
+  parserEvidence: "Schema.getContains()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.1 (K-08)."
+
+# —————————————————————————————————————————————————————————————————————————————
+# Unevaluated vocabulary (required) — .../vocab/unevaluated
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: unevaluatedProperties
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/unevaluated
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: evaluation-path semantics
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('unevaluated'))"
+  parserEvidence: "Schema.getUnevaluatedProperties()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: [unevaluated]
+  notes: "Wave 4.1 (K-12, K-35)."
+
+- keyword: unevaluatedItems
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/unevaluated
+  classification: Applicator
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: evaluation-path semantics
+  sourceEvidence: "plan §3.3 (K-12)"
+  parserEvidence: "Schema.getUnevaluatedItems()"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: [unevaluated]
+  notes: "Wave 4.1 (K-12, K-35)."
+
+# —————————————————————————————————————————————————————————————————————————————
+# Validation vocabulary (required) — .../vocab/validation
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: type
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: supported
+  acceptedSchemaDomain: single type + OAS 3.1 type arrays + null
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (supported.add('type')) + validation-type-array emission"
+  parserEvidence: "Schema.getType()/getTypes()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-type-array']"
+  runtimeEvidence: "oas-compliance/semantic-results.tsv (Phase-2 runner: number-only-accept-int, integer-mathematical-form, allnull-anyof PASS)"
+  jstsGroups: [type]
+  notes: "Type-array applicability edge cases (K-23) advanced in Wave 2.4."
+
+- keyword: enum
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: supported
+  acceptedSchemaDomain: deep equality across JSON kinds
+  sourceEvidence: "CppBoostBeastClientCodegen scanner + validation-enum emission"
+  parserEvidence: "Schema.getEnum()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-enum-values']"
+  runtimeEvidence: "oas-compliance/semantic-results.tsv (Phase-2 runner: anyof-enum-union, allof-enum-intersection, oneof-string-string-enum-overlap PASS)"
+  jstsGroups: [enum]
+  notes: "EXACT-MATH CAVEAT (K-34): equality uses Boost.JSON double currently; arbitrary-precision exact equality is Wave 1 (K-30). fail-closed upgrade pending exact layer."
+
+- keyword: const
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: deep equality across JSON kinds
+  sourceEvidence: "CppBoostBeastClientCodegen scanner + validation-const emission"
+  parserEvidence: "Schema.getConst()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-const-*']"
+  runtimeEvidence: ""
+  jstsGroups: [const]
+  notes: "EXACT-MATH CAVEAT (K-34): exact equality is Wave 1 (K-30). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: multipleOf
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: supported
+  acceptedSchemaDomain: numeric multiple check
+  sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-multiple-of emission"
+  parserEvidence: "Schema.getMultipleOf()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-multiple-of']"
+  runtimeEvidence: "oas-compliance/semantic-results.tsv (Phase-2 runner: oneof-constrained-numbers multipleOf branches PASS)"
+  jstsGroups: [multipleOf]
+  notes: "EXACT-MATH CAVEAT (K-33): via double, no base-10 decimal-rational; Wave 1 (K-30)."
+
+- keyword: maximum
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: exact number comparison
+  sourceEvidence: "CppBoostBeastClientCodegen resolveMaximumBound → validation-max emission"
+  parserEvidence: "Schema.getMaximum(); ModelUtils.resolveMaximumBound"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-max']"
+  runtimeEvidence: ""
+  jstsGroups: [maximum]
+  notes: "EXACT-MATH CAVEAT (K-33): exact comparison is Wave 1 (K-30). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: exclusiveMaximum
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: exact number comparison (numeric in 3.1 / boolean in 3.0)
+  sourceEvidence: "CppBoostBeastClientCodegen resolveMaximumBound(exclusive) → validation-exclusive-max emission"
+  parserEvidence: "ModelUtils.resolveMaximumBound (3.0→3.1 conversion)"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-exclusive-max']"
+  runtimeEvidence: ""
+  jstsGroups: [exclusiveMaximum]
+  notes: "EXACT-MATH CAVEAT (K-33). 3.0 boolean dual-path preserved. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: minimum
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: exact number comparison
+  sourceEvidence: "CppBoostBeastClientCodegen resolveMinimumBound → validation-min emission"
+  parserEvidence: "Schema.getMinimum(); ModelUtils.resolveMinimumBound"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-min']"
+  runtimeEvidence: ""
+  jstsGroups: [minimum]
+  notes: "EXACT-MATH CAVEAT (K-33). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: exclusiveMinimum
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: exact number comparison
+  sourceEvidence: "CppBoostBeastClientCodegen resolveMinimumBound(exclusive) → validation-exclusive-min emission"
+  parserEvidence: "ModelUtils.resolveMinimumBound (3.0→3.1 conversion)"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-exclusive-min']"
+  runtimeEvidence: ""
+  jstsGroups: [exclusiveMinimum]
+  notes: "EXACT-MATH CAVEAT (K-33). 3.0 boolean dual-path preserved. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: maxLength
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: string length
+  sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-max-length emission"
+  parserEvidence: "Schema.getMaxLength()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-max-length']"
+  runtimeEvidence: ""
+  jstsGroups: [maxLength]
+  notes: "UNICODE CAVEAT (K-13/K-14 family): length counts UTF-8 bytes, not code points. Wave 2.5. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2.5 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: minLength
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: string length
+  sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-min-length emission"
+  parserEvidence: "Schema.getMinLength()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-min-length']"
+  runtimeEvidence: ""
+  jstsGroups: [minLength]
+  notes: "UNICODE CAVEAT (K-13/K-14 family). Wave 2.5. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2.5 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: pattern
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: unanchored search (subset engine only)
+  sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-pattern emission"
+  parserEvidence: "Schema.getPattern()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-pattern']"
+  runtimeEvidence: ""
+  jstsGroups: [pattern]
+  notes: "G-honest ONLY: current regex_match (anchored) is subset. ECMA-262 unanchored+Unicode engine (patternEngine=ecma262) is Wave 3.6 (K-13). Upgrade to ecma262 engine is required before G-full-schema. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 3.6 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: maxItems
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: array length
+  sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-max-items emission"
+  parserEvidence: "Schema.getMaxItems()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-max-items']"
+  runtimeEvidence: ""
+  jstsGroups: [maxItems]
+  notes: " [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: minItems
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: array length
+  sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-min-items emission"
+  parserEvidence: "Schema.getMinItems()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-min-items']"
+  runtimeEvidence: ""
+  jstsGroups: [minItems]
+  notes: " [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: uniqueItems
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: deep JSON equality
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (supported.add('unique-items'))"
+  parserEvidence: "Schema.getUniqueItems()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['has-validation-unique-items']"
+  runtimeEvidence: ""
+  jstsGroups: [uniqueItems]
+  notes: "EXACT-MATH CAVEAT (K-22): arbitrary-precision deep equality is Wave 1 (K-30). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: maxContains
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: no effect without adjacent contains
+  sourceEvidence: "plan §3.4 (K-08)"
+  parserEvidence: "Schema.getMaxContains()"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: [contains]
+  notes: "Wave 3.1 (K-08)."
+
+- keyword: minContains
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: default 1 with adjacent contains
+  sourceEvidence: "plan §3.4 (K-08)"
+  parserEvidence: "Schema.getMinContains()"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: [contains]
+  notes: "Wave 3.1 (K-08)."
+
+- keyword: maxProperties
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: object member count
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (object-property-count)"
+  parserEvidence: "Schema.getMaxProperties()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: [maxProperties]
+  notes: "Wave 2.1/2.5 (K-05)."
+
+- keyword: minProperties
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: object member count
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (object-property-count)"
+  parserEvidence: "Schema.getMinProperties()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: [minProperties]
+  notes: "Wave 2.1/2.5 (K-05)."
+
+- keyword: required
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: deferred
+  acceptedSchemaDomain: object property presence (unique names)
+  sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-required emission"
+  parserEvidence: "Schema.getRequired()"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-required']"
+  runtimeEvidence: ""
+  jstsGroups: [required]
+  notes: "Enforced at model and composed-branch level. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+
+- keyword: dependentRequired
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
+  classification: Assertion
+  profiles: [S-V]
+  status: fail-closed
+  acceptedSchemaDomain: array-form property dependency
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (dependencies)"
+  parserEvidence: "Schema.getDependentRequired()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: [dependentRequired]
+  notes: "Wave 3.4 (K-11)."
+
+# —————————————————————————————————————————————————————————————————————————————
+# Metadata vocabulary (required) — .../vocab/meta-data
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: title
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/meta-data
+  classification: Annotation
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: preserved & exposed; no validity effect
+  sourceEvidence: "plan §3.5, §3.8 (K-28)"
+  parserEvidence: "Schema.getTitle()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Annotation collection is Wave 3.0 (K-28)."
+
+- keyword: description
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/meta-data
+  classification: Annotation
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: preserved & exposed
+  sourceEvidence: "plan §3.5 (K-28)"
+  parserEvidence: "Schema.getDescription()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.0 (K-28)."
+
+- keyword: default
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/meta-data
+  classification: Annotation
+  profiles: [S-A, C]
+  status: annotation
+  acceptedSchemaDomain: annotation only; never injects missing values
+  sourceEvidence: "plan §3.5, §3.8 (K-21)"
+  parserEvidence: "Schema.getDefault()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "must never silently inject values. Wave 3.8 (K-21)."
+
+- keyword: deprecated
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/meta-data
+  classification: Annotation
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: preserved
+  sourceEvidence: "plan §3.5 (K-28)"
+  parserEvidence: "Schema.getDeprecated()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.0 (K-28)."
+
+- keyword: readOnly
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/meta-data
+  classification: Annotation
+  profiles: [S-A, C]
+  status: annotation
+  acceptedSchemaDomain: annotation only; C direction-aware policy
+  sourceEvidence: "plan §3.5, §3.8 (K-21)"
+  parserEvidence: "Schema.getReadOnly()"
+  irEvidence: "SchemaNode.metadata; C projection policy"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "C: exclude from request projection; reject explicit read-only before send. Wave 3.8."
+
+- keyword: writeOnly
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/meta-data
+  classification: Annotation
+  profiles: [S-A, C]
+  status: annotation
+  acceptedSchemaDomain: annotation only; C direction-aware policy
+  sourceEvidence: "plan §3.5, §3.8 (K-21)"
+  parserEvidence: "Schema.getWriteOnly()"
+  irEvidence: "SchemaNode.metadata; C projection policy"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "C: reject response containing the property by default. Wave 3.8."
+
+- keyword: examples
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/meta-data
+  classification: Annotation
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: preserved (distinct from OAS example)
+  sourceEvidence: "plan §3.5, §3.8 (K-28)"
+  parserEvidence: "Schema.getExamples()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.0 (K-28)."
+
+# —————————————————————————————————————————————————————————————————————————————
+# Format-annotation vocabulary (required) — .../vocab/format-annotation
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: format
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/format-annotation
+  classification: Annotation (default)
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: annotation by default; optional application checks
+  sourceEvidence: "plan §3.6, §4.7 (K-14)"
+  parserEvidence: "Schema.getFormat()"
+  irEvidence: "SchemaNode.metadata (Wave 4.4)"
+  runtimeEvidence: ""
+  jstsGroups: [format]
+  notes: "Annotation-only is OAS default. Format-Assertion is NOT claimed; if ever claimed, ALL formats must be supported or dialect refused."
+
+# —————————————————————————————————————————————————————————————————————————————
+# Content vocabulary (required) — .../vocab/content
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: contentEncoding
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/content
+  classification: Annotation
+  profiles: [S-A]
+  status: fail-closed
+  acceptedSchemaDomain: decoded per value only if application-processing enabled
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (content-encoding) + plan §3.7 (K-31)"
+  parserEvidence: "Schema.getContentEncoding()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "No automatic decode/parse. Wave 3.7 (K-31)."
+
+- keyword: contentMediaType
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/content
+  classification: Annotation
+  profiles: [S-A]
+  status: fail-closed
+  acceptedSchemaDomain: annotation if enabled; MediaType/Encoding precedence
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (content-encoding) + plan §3.7 (K-31)"
+  parserEvidence: "Schema.getContentMediaType()"
+  irEvidence: "branch.unsupportedAssertions"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "No automatic decode. Wave 3.7 (K-31)."
+
+- keyword: contentSchema
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/content
+  classification: Schema-valued annotation
+  profiles: [S-A]
+  status: deferred
+  acceptedSchemaDomain: child indexed as schema; optional decoded validation separate
+  sourceEvidence: "plan §3.7 (K-15)"
+  parserEvidence: "swagger-models, partial"
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.7 (K-15)."
+
+# —————————————————————————————————————————————————————————————————————————————
+# OAS base vocabulary (optional in dialect; REQUIRED for OAS-aware S-A)
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: discriminator
+  vocabularyUri: https://spec.openapis.org/oas/3.1/vocab/base
+  classification: Annotation / hint
+  profiles: [S-V, S-A]
+  status: supported
+  acceptedSchemaDomain: validation-neutral candidate-order hint only
+  sourceEvidence: "CppBoostBeastClientCodegen DiscriminatorDescriptor + validation-neutral discriminator"
+  parserEvidence: "Schema.getDiscriminator()"
+  irEvidence: "CompositionDescriptor.discriminatorDescriptor"
+  runtimeEvidence: "oas-compliance/semantic-results.tsv (Phase-2 runner: discriminator-known-overlap, discriminator-unknown, discriminator-missing PASS)"
+  jstsGroups: []
+  notes: "Never skips branch evaluation required for composition semantics."
+
+- keyword: xml
+  vocabularyUri: https://spec.openapis.org/oas/3.1/vocab/base
+  classification: Annotation
+  profiles: [S-A, C]
+  status: annotation
+  acceptedSchemaDomain: preserved & exposed; XML binding outside C
+  sourceEvidence: "plan §3.8 §10 (XML excluded from JSON outbound profile)"
+  parserEvidence: "Schema.getXml()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "XML request/response binding is a product exclusion (never map XML as JSON)."
+
+- keyword: externalDocs
+  vocabularyUri: https://spec.openapis.org/oas/3.1/vocab/base
+  classification: Annotation
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: preserved; no validity effect
+  sourceEvidence: "plan §3.8 (K-28)"
+  parserEvidence: "Schema.getExternalDocs()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.0."
+
+- keyword: example
+  vocabularyUri: https://spec.openapis.org/oas/3.1/vocab/base
+  classification: Annotation
+  profiles: [S-A]
+  status: annotation
+  acceptedSchemaDomain: OAS singular value, distinct from examples[]
+  sourceEvidence: "plan §3.8 (K-28)"
+  parserEvidence: "Schema.getExample()"
+  irEvidence: "SchemaNode.metadata (Wave 3)"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Wave 3.0."
+
+# —————————————————————————————————————————————————————————————————————————————
+# Excluded-by-product keywords / entities (plan §3.9, §10)
+# —————————————————————————————————————————————————————————————————————————————
+- keyword: swagger "2.0"
+  vocabularyUri: N/A (pre-OAS 3)
+  classification: Product exclusion
+  profiles: [S-V, S-A]
+  status: fail-closed
+  acceptedSchemaDomain: out of scope for OAS 3.1 program
+  sourceEvidence: "plan §1.4, §3.9"
+  parserEvidence: ""
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Program targets OAS 3.0.x/3.1.x; swagger 2.0 is not a G-full-schema target."
+
+- keyword: OpenAPI "3.2" features (itemSchema / query / $self / device flow)
+  vocabularyUri: N/A (OAS 3.2)
+  classification: Product exclusion
+  profiles: [S-V, S-A, M, C]
+  status: fail-closed
+  acceptedSchemaDomain: explicitly out of scope
+  sourceEvidence: "plan §1.3, §10"
+  parserEvidence: ""
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "No 3.2 features in this program."
+
+- keyword: XML request/response wire binding
+  vocabularyUri: N/A
+  classification: Product exclusion
+  profiles: [C]
+  status: fail-closed
+  acceptedSchemaDomain: documented as JSON outbound profile
+  sourceEvidence: "plan §3.9, §10"
+  parserEvidence: ""
+  irEvidence: ""
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "Emit targeted unsupported-codec diagnostic; never map XML as JSON."
+
+- keyword: SSE typed JSON-per-event (itemSchema)
+  vocabularyUri: N/A (convention, not core OAS)
+  classification: Convention
+  profiles: [C]
+  status: annotation
+  acceptedSchemaDomain: sseSchemaMode convention only (representation / jsonEventData)
+  sourceEvidence: "plan §3.9, §4.9"
+  parserEvidence: "-DsseschemaMode"
+  irEvidence: "SSE representation vs jsonEventData"
+  runtimeEvidence: ""
+  jstsGroups: []
+  notes: "sseSchemaMode=representation (default) / jsonEventData (explicit convention). Never market typed SSE as core OAS 3.1 schema compliance."

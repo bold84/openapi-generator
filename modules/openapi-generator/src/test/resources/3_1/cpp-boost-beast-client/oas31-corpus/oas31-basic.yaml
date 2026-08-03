@@ -1,0 +1,89 @@
+# =============================================================================
+# oas31-basic.yaml
+# -----------------------------------------------------------------------------
+# Wave 0 OAS 3.1 corpus fixture — OpenAPI 3.1.0 baseline.
+#
+# Exercises (with the OAS 3.1 syntax, which differs from 3.0):
+#   * a type-array schema  type: ['integer','null']          (JSON Schema 2020-12)
+#   * an array schema with prefixItems + items               (Tuple validation)
+#   * a const keyword schema                                 (Validation vocabulary)
+#
+# jsonSchemaDialect is ABSENT, so the default pinned OAS 3.1 dialect
+# (https://spec.openapis.org/oas/3.1/dialect/2024-11-10) applies.
+#
+# Outcome markers (consumed by the GS3 Gate-A raw validator harness):
+#   # gen: <cpp type>          expected emitted C++ type (generation contract)
+#   # instance: <json> -> a|r  raw-instance validity verdict (S-V evidence)
+# =============================================================================
+openapi: "3.1.0"
+info:
+  title: OAS 3.1 Basic Fixture
+  version: "1.0.0"
+  # No jsonSchemaDialect on purpose: default pinned OAS dialect applies.
+
+paths:
+  /basic:
+    get:
+      operationId: getBasic
+      summary: Exercise basic 3.1 schema constructs
+      responses:
+        "200":
+          description: OK — all three schemas below
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NullableInteger"
+
+components:
+  schemas:
+    # -------------------------------------------------------------------------
+    # Type-array schema — multiple allowed types in ONE type keyword (3.1-only).
+    # Accepts only exact JSON integers OR null (2020-12 instance-domain lookup).
+    # -------------------------------------------------------------------------
+    NullableInteger:
+      description: Integer-or-null via a type array, not 3.0's nullable.
+      type:
+        - integer
+        - "null"
+      # gen: std::optional<std::int64_t>  (null maps to optional absence)
+      # instance: 7        -> accept
+      # instance: 3.5      -> reject   (not an integer; a JSON number is not null)
+      # instance: null     -> accept
+      # instance: "seven"  -> reject
+
+    # -------------------------------------------------------------------------
+    # Tuple array schema — prefixItems constrains leading positions by index;
+    # items constrains any elements beyond the prefix coverage (2020-12).
+    # -------------------------------------------------------------------------
+    TupleArray:
+      description: Fixed 2-tuple followed by any number of integers.
+      type: array
+      prefixItems:
+        - type: string
+          # gen: std::string
+          # instance: "abc" -> accept
+        - type:
+            - integer
+            - "null"
+          # gen: std::optional<std::int64_t>
+          # instance: 5      -> accept
+          # instance: null   -> accept
+          # instance: 1.5    -> reject
+      items:
+        type: integer
+        # gen: std::vector<std::int64_t>
+        # instance: ["a", null]           -> accept   (prefix positions 0,1)
+        # instance: ["a", null, 1, 2, 3]  -> accept   (prefix + remaining items)
+        # instance: ["a", null, 1, "x"]   -> reject   ("x" fails items)
+        # instance: [1, 2]                -> reject   (prefix[0] wants string)
+
+    # -------------------------------------------------------------------------
+    # const keyword — exact-value equality (Validation vocabulary, 2020-12).
+    # -------------------------------------------------------------------------
+    FixedStatus:
+      description: A schema that only matches the literal string "ACTIVE".
+      const: "ACTIVE"
+      # gen: std::string (enum-like single-value; constant emission)
+      # instance: "ACTIVE" -> accept
+      # instance: "active" -> reject   (const is a deep JSON equality check)
+      # instance: 1        -> reject

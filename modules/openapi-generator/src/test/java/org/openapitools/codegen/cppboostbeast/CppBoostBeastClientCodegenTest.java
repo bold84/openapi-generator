@@ -37,6 +37,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -4515,5 +4516,439 @@ public class CppBoostBeastClientCodegenTest {
             searchPosition += expectedText.length();
         }
         return occurrenceCount;
+    }
+
+    // ========================================================================
+    // Wave 0 — OAS 3.1 dialect detection and normative structure gate (S-V)
+    // ========================================================================
+
+    @Test
+    public void resolvesPinnedOas31Dialects() {
+        // Pinned revision + its OAS alias both map to OAS_31.
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.OAS_31,
+                CppBoostBeastClientCodegen.resolveEffectiveDialect(
+                        "https://spec.openapis.org/oas/3.1/dialect/2024-11-10", null));
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.OAS_31,
+                CppBoostBeastClientCodegen.resolveEffectiveDialect(
+                        "https://spec.openapis.org/oas/3.1/dialect/base", null));
+        // Root $schema takes precedence over jsonSchemaDialect.
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.DRAFT_2020_12_REC,
+                CppBoostBeastClientCodegen.resolveEffectiveDialect(
+                        "https://spec.openapis.org/oas/3.1/dialect/2024-11-10",
+                        "https://json-schema.org/draft/2020-12/schema"));
+        // Unrecognized dialect.
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.UNRECOGNIZED,
+                CppBoostBeastClientCodegen.resolveEffectiveDialect(
+                        "https://example.org/custom-dialect", null));
+        // No declaration.
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.UNSPECIFIED,
+                CppBoostBeastClientCodegen.resolveEffectiveDialect(null, null));
+    }
+
+    @Test
+    public void documentDialectDefaultsToOas31ForOas31Docs() {
+        io.swagger.v3.oas.models.OpenAPI oas31 = new io.swagger.v3.oas.models.OpenAPI();
+        oas31.setOpenapi("3.1.0");
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.OAS_31,
+                CppBoostBeastClientCodegen.resolveDocumentDialect(oas31));
+
+        io.swagger.v3.oas.models.OpenAPI oas30 = new io.swagger.v3.oas.models.OpenAPI();
+        oas30.setOpenapi("3.0.3");
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.UNSPECIFIED,
+                CppBoostBeastClientCodegen.resolveDocumentDialect(oas30));
+
+        io.swagger.v3.oas.models.OpenAPI custom = new io.swagger.v3.oas.models.OpenAPI();
+        custom.setOpenapi("3.1.0");
+        custom.setJsonSchemaDialect("https://example.org/custom-dialect");
+        Assert.assertEquals(
+                CppBoostBeastClientCodegen.OasDialect.UNRECOGNIZED,
+                CppBoostBeastClientCodegen.resolveDocumentDialect(custom));
+    }
+
+    @Test
+    public void normativeStructureGateFlagsMissingFields() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+
+        // Fully-normative OAS 3.1 document → no diagnostics.
+        io.swagger.v3.oas.models.OpenAPI valid = new io.swagger.v3.oas.models.OpenAPI();
+        valid.setOpenapi("3.1.0");
+        valid.setInfo(new io.swagger.v3.oas.models.info.Info()
+                .title("Test").version("1.0.0"));
+        valid.setPaths(new io.swagger.v3.oas.models.Paths());
+        valid.getPaths().addPathItem("/ping", new io.swagger.v3.oas.models.PathItem());
+        Assert.assertTrue(codegen.validateNormativeOas3Structure(valid).isEmpty());
+
+        // No info object → flagged.
+        io.swagger.v3.oas.models.OpenAPI noInfo = new io.swagger.v3.oas.models.OpenAPI();
+        noInfo.setOpenapi("3.1.0");
+        noInfo.setPaths(new io.swagger.v3.oas.models.Paths());
+        boolean foundNoInfo = false;
+        for (String d : codegen.validateNormativeOas3Structure(noInfo)) {
+            if (d.startsWith("missing root `info`")) foundNoInfo = true;
+        }
+        Assert.assertTrue(foundNoInfo);
+
+        // info without title/version → flagged.
+        io.swagger.v3.oas.models.OpenAPI noTitleVersion = new io.swagger.v3.oas.models.OpenAPI();
+        noTitleVersion.setOpenapi("3.1.0");
+        noTitleVersion.setInfo(new io.swagger.v3.oas.models.info.Info());
+        List<String> tv = codegen.validateNormativeOas3Structure(noTitleVersion);
+        Assert.assertTrue(tv.stream().anyMatch(d -> d.startsWith("missing `info.title`")));
+        Assert.assertTrue(tv.stream().anyMatch(d -> d.startsWith("missing `info.version`")));
+
+        // No paths/components/webhooks → flagged.
+        io.swagger.v3.oas.models.OpenAPI empty = new io.swagger.v3.oas.models.OpenAPI();
+        empty.setOpenapi("3.1.0");
+        empty.setInfo(new io.swagger.v3.oas.models.info.Info()
+                .title("T").version("1.0"));
+        boolean foundNoContainer = false;
+        for (String d : codegen.validateNormativeOas3Structure(empty)) {
+            if (d.contains("at least one of `paths`")) foundNoContainer = true;
+        }
+        Assert.assertTrue(foundNoContainer);
+    }
+
+    @Test
+    public void dialectPolicyRefusesUnrecognizedDialect() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+
+        io.swagger.v3.oas.models.OpenAPI oas31 = new io.swagger.v3.oas.models.OpenAPI();
+        oas31.setOpenapi("3.1.0");
+        oas31.setInfo(new io.swagger.v3.oas.models.info.Info()
+                .title("T").version("1.0"));
+        // Recognized/absent dialect → no refusal.
+        Assert.assertTrue(codegen.validateDialectPolicy(oas31).isEmpty());
+
+        io.swagger.v3.oas.models.OpenAPI custom = new io.swagger.v3.oas.models.OpenAPI();
+        custom.setOpenapi("3.1.0");
+        custom.setJsonSchemaDialect("https://example.org/not-known");
+        boolean refused = codegen.validateDialectPolicy(custom)
+                .stream().anyMatch(d -> d.contains("unrecognized jsonSchemaDialect"));
+        Assert.assertTrue(refused);
+    }
+
+    // ========================================================================
+    // Wave 0 (A-1): exhaustive schema-valued-position scanner + G-honest ledger
+    // ========================================================================
+
+    private static io.swagger.v3.oas.models.OpenAPI openApiWithSchemas(
+            String version, Map<String, Schema> schemas) {
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi(version);
+        io.swagger.v3.oas.models.Components components =
+                new io.swagger.v3.oas.models.Components();
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        return openAPI;
+    }
+
+    @Test
+    public void exhaustiveScannerIndexesNestedSchemaValuedPositions() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        Schema root = new Schema();
+        root.setType("object");
+
+        // properties -> array -> items -> object with string length assertion.
+        ArraySchema arr = new ArraySchema();
+        arr.setMinItems(1);
+        Schema itemObj = new ObjectSchema();
+        itemObj.setMinLength(2);
+        arr.setItems(itemObj);
+        Map<String, Schema> props = new HashMap<>();
+        props.put("arr", arr);
+        root.setProperties(props);
+        root.setRequired(Arrays.asList("arr"));
+
+        // Previously-missed schema-valued keywords (silent-skip gaps of plan §1.4).
+        Map<String, Schema> patternProps = new HashMap<>();
+        patternProps.put("^x-", new StringSchema());
+        root.setPatternProperties(patternProps);
+        Map<String, Schema> depSchemas = new HashMap<>();
+        depSchemas.put("credit_card", new ObjectSchema());
+        root.setDependentSchemas(depSchemas);
+        root.setMinProperties(1);
+        root.setMinContains(1);
+        root.setContains(new StringSchema());
+        root.setNot(new StringSchema());
+        root.setIf(new ObjectSchema());
+        root.setThen(new ObjectSchema());
+        root.setElse(new ObjectSchema());
+        root.setUnevaluatedItems(new StringSchema());
+        root.setUnevaluatedProperties(new ObjectSchema());
+        root.setContentSchema(new ObjectSchema());
+
+        Map<String, Schema> schemas = new HashMap<>();
+        schemas.put("Root", root);
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.1.0", schemas);
+
+        CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
+                codegen.scanSchemaKeywordOccurrences(openAPI);
+
+        // Every previously-missed / exhaustive position must be indexed.
+        Assert.assertTrue(ledger.hasKeyword("properties"), "properties indexed");
+        Assert.assertTrue(ledger.hasKeyword("minItems"), "minItems indexed");
+        Assert.assertTrue(ledger.hasKeyword("items"), "items indexed");
+        Assert.assertTrue(ledger.hasKeyword("patternProperties"), "patternProperties indexed");
+        Assert.assertTrue(ledger.hasKeyword("dependentSchemas"), "dependentSchemas indexed");
+        Assert.assertTrue(ledger.hasKeyword("minProperties"), "minProperties indexed");
+        Assert.assertTrue(ledger.hasKeyword("minContains"), "minContains indexed");
+        Assert.assertTrue(ledger.hasKeyword("contains"), "contains indexed");
+        Assert.assertTrue(ledger.hasKeyword("not"), "not indexed");
+        Assert.assertTrue(ledger.hasKeyword("if"), "if indexed");
+        Assert.assertTrue(ledger.hasKeyword("then"), "then indexed");
+        Assert.assertTrue(ledger.hasKeyword("else"), "else indexed");
+        Assert.assertTrue(ledger.hasKeyword("unevaluatedItems"), "unevaluatedItems indexed");
+        Assert.assertTrue(ledger.hasKeyword("unevaluatedProperties"), "unevaluatedProperties indexed");
+        Assert.assertTrue(ledger.hasKeyword("contentSchema"), "contentSchema indexed");
+        Assert.assertTrue(ledger.hasKeyword("required"), "required indexed");
+
+        // The scanner must walk nested schema-valued child positions.
+        boolean itemChildWalked = ledger.getOccurrences().stream()
+                .anyMatch(o -> o.getLocation().contains("/properties/arr/items"));
+        Assert.assertTrue(itemChildWalked, "items child schema location must be walked");
+        boolean contentChildWalked = ledger.getOccurrences().stream()
+                .anyMatch(o -> o.getLocation().contains("/contentSchema"));
+        Assert.assertTrue(contentChildWalked, "contentSchema child schema must be walked");
+        boolean propPatternWalked = ledger.getOccurrences().stream()
+                .anyMatch(o -> o.getLocation().contains("/patternProperties/"));
+        Assert.assertTrue(propPatternWalked, "patternProperties child schema must be walked");
+    }
+
+    @Test
+    public void previouslyMissedKeywordsAreFailClosedNotSilentSkip() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        Schema root = new Schema();
+        root.setType("object");
+        root.setPatternProperties(Collections.singletonMap("^x-", new StringSchema()));
+        root.setDependentSchemas(Collections.singletonMap("k", new ObjectSchema()));
+        root.setMinContains(1);
+        root.setMaxContains(3);
+        root.setUnevaluatedItems(new StringSchema());
+        root.setMinProperties(1);
+        root.setMaxProperties(5);
+        root.setNot(new ObjectSchema());
+        root.setContentSchema(new ObjectSchema());
+
+        Map<String, Schema> schemas = new HashMap<>();
+        schemas.put("Root", root);
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.1.0", schemas);
+
+        CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
+                codegen.scanSchemaKeywordOccurrences(openAPI);
+
+        // These keywords were previously not scanned at all -> silent-skip gaps.
+        // The exhaustive scanner must classify them as fail-closed, never silent.
+        java.util.List<String> previouslyMissed = Arrays.asList(
+                "patternProperties", "dependentSchemas", "minContains",
+                "maxContains", "unevaluatedItems");
+        for (String k : previouslyMissed) {
+            Assert.assertTrue(ledger.hasKeyword(k),
+                    "previously-missed keyword '" + k + "' must now be indexed");
+            boolean allFailClosed = ledger.forKeyword(k).stream()
+                    .allMatch(o -> o.getStatus()
+                            == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.FAIL_CLOSED);
+            Assert.assertTrue(allFailClosed,
+                    "'".concat(k).concat("' must be FAIL_CLOSED, not SILENT_SKIP"));
+        }
+
+        // contentSchema is a schema-valued *annotation* keyword — its child is
+        // indexed but its own status is ANNOTATION (never changes enclosing-instance
+        // validity), so it must be indexed and classified as annotation, not silent.
+        Assert.assertTrue(ledger.hasKeyword("contentSchema"),
+                "contentSchema must now be indexed");
+        boolean contentIsAnnotation = ledger.forKeyword("contentSchema").stream()
+                .allMatch(o -> o.getStatus()
+                        == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.ANNOTATION);
+        Assert.assertTrue(contentIsAnnotation,
+                "contentSchema must be ANNOTATION (schema-valued annotation), not silent");
+
+        // zero silent skips for this document
+        Assert.assertTrue(codegen.validateNoSilentSkips(ledger).isEmpty(),
+                "no silent skips expected for the known keyword set");
+        Assert.assertTrue(ledger.silentSkips().isEmpty());
+    }
+
+    @Test
+    public void supportedKeywordsAreClassifiedAsEmitted() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        Schema s = new Schema();
+        s.setType("string");
+        s.addEnumItemObject("a");
+        s.setConst("fixed");
+        s.setPattern("^a");
+        s.setMinLength(1);
+        s.setMaxLength(5);
+        s.setMinItems(1);
+        s.setMaxItems(3);
+        s.setUniqueItems(true);
+        s.setMultipleOf(java.math.BigDecimal.valueOf(2));
+        s.setMinimum(java.math.BigDecimal.valueOf(0));
+        s.setMaximum(java.math.BigDecimal.valueOf(10));
+
+        Map<String, Schema> schemas = new HashMap<>();
+        schemas.put("S", s);
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.1.0", schemas);
+
+        CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
+                codegen.scanSchemaKeywordOccurrences(openAPI);
+        for (String supported : Arrays.asList(
+                "type", "enum", "const", "pattern", "minLength", "maxLength",
+                "minItems", "maxItems", "uniqueItems", "multipleOf",
+                "minimum", "maximum")) {
+            boolean allEmitted = ledger.forKeyword(supported).stream()
+                    .allMatch(o -> o.getStatus()
+                            == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.EMITTED);
+            Assert.assertTrue(allEmitted,
+                    "'".concat(supported).concat("' must be EMITTED (validator present)"));
+        }
+    }
+
+    @Test
+    public void cleanlyPreservesOas30DualPathKeywords() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        // 3.0 dual-path: nullable, boolean exclusiveMin/Max, singular `example`.
+        Schema s = new Schema();
+        s.setType("number");
+        s.setNullable(true);
+        s.setExclusiveMinimum(true);
+        s.setExclusiveMaximum(true);
+        s.setMinimum(java.math.BigDecimal.valueOf(0));
+        s.setExample("sample");
+
+        Map<String, Schema> schemas = new HashMap<>();
+        schemas.put("S", s);
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.0.4", schemas);
+
+        CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
+                codegen.scanSchemaKeywordOccurrences(openAPI);
+        Assert.assertTrue(ledger.forKeyword("nullable").stream()
+                        .allMatch(o -> o.getStatus()
+                                == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.EMITTED),
+                "nullable must be treated as handled (3.0 dual-path)");
+        Assert.assertTrue(ledger.forKeyword("minimum").stream()
+                        .allMatch(o -> o.getStatus()
+                                == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.EMITTED),
+                "3.0 boolean exclusiveMinimum still emits numeric-range");
+        Assert.assertTrue(ledger.forKeyword("example").stream()
+                        .allMatch(o -> o.getStatus()
+                                == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.ANNOTATION),
+                "singular example must be annotation (3.0 dual-path)");
+        Assert.assertTrue(codegen.validateNoSilentSkips(ledger).isEmpty());
+    }
+
+    @Test
+    public void failClosedKeywordsSurfaceInLedger() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        Schema root = new Schema();
+        root.setType("object");
+        root.setMinProperties(1);
+        root.setPatternProperties(Collections.singletonMap(".", new StringSchema()));
+        root.setNot(new StringSchema());
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                openApiWithSchemas("3.1.0", Collections.singletonMap("Root", root));
+
+        java.util.Set<String> fc = codegen.failClosedKeywords(openAPI);
+        Assert.assertTrue(fc.contains("minProperties"), "minProperties must be fail-closed");
+        Assert.assertTrue(fc.contains("patternProperties"), "patternProperties must be fail-closed");
+        Assert.assertTrue(fc.contains("not"), "not must be fail-closed");
+        CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
+                codegen.scanSchemaKeywordOccurrences(openAPI);
+        Assert.assertTrue(ledger.failClosed().containsAll(Arrays.asList(
+                "minProperties", "patternProperties", "not")));
+    }
+
+    @Test
+    public void silentSkipEnforcementIsOptInByDefault() {
+        // A 3.1 schema with unsupported/nested keywords must NOT fail generation
+        // by default: the exhaustive scanner is opt-in and does not regress the
+        // existing fixture suite.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        Schema root = new Schema();
+        root.setType("object");
+        root.setMinProperties(1);
+        root.setNot(new ObjectSchema());
+        Map<String, Schema> schemas = new HashMap<>();
+        schemas.put("Root", root);
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.0.4", schemas);
+
+        // Must not throw (flag off).
+        codegen.preprocessOpenAPI(openAPI);
+    }
+
+    @Test
+    public void strictScannerFlagDoesNotFalselyFailOnCleanSchema() {
+        // With STRICT_SCANNER_OPTION enabled, a schema with zero silent skips
+        // (every validity keyword classified EMITTED or FAIL_CLOSED) must still
+        // generate cleanly — the gate proves no silent skip, it does not reject
+        // valid fail-closed handling.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.additionalProperties().put(
+                CppBoostBeastClientCodegen.STRICT_SCANNER_OPTION, "true");
+        codegen.processOpts();
+
+        Schema root = new Schema();
+        root.setType("object");
+        root.setMinProperties(1);
+        root.setPatternProperties(Collections.singletonMap(".", new StringSchema()));
+        Map<String, Schema> schemas = new HashMap<>();
+        schemas.put("Root", root);
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.1.0", schemas);
+
+        // Must not throw: fail-closed keywords are not silent skips.
+        codegen.preprocessOpenAPI(openAPI);
+        Assert.assertTrue(codegen.validateNoSilentSkips(openAPI).isEmpty());
+    }
+
+    @Test
+    public void parserGapReportHonestlyListsNonIndexablePositions() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        List<String> gaps = codegen.parserGapReport();
+        Assert.assertFalse(gaps.isEmpty(), "parserGapReport must not be empty");
+        Assert.assertTrue(gaps.stream().anyMatch(g -> g.contains("$defs")),
+                "$defs must be honestly reported as a non-indexable schema-valued position");
+    }
+
+    @Test
+    public void nestedCompositionBranchPositionsAreScanned() {
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        ComposedSchema schema = new ComposedSchema();
+        ObjectSchema branch = new ObjectSchema();
+        branch.setMinProperties(1);
+        schema.addOneOfItem(branch);
+        schema.addOneOfItem(new StringSchema());
+
+        Map<String, Schema> schemas = new HashMap<>();
+        schemas.put("Composed", schema);
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.0.4", schemas);
+
+        CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
+                codegen.scanSchemaKeywordOccurrences(openAPI);
+        Assert.assertTrue(ledger.hasKeyword("oneOf"), "oneOf must be indexed");
+        boolean branchLocation = ledger.getOccurrences().stream()
+                .anyMatch(o -> o.getLocation().contains("/oneOf/0") && o.getKeyword().equals("minProperties"));
+        Assert.assertTrue(branchLocation,
+                "minProperties on a composition branch must be scanned at its branch location");
     }
 }

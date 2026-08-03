@@ -539,145 +539,149 @@ run_semantic_cases() {
         return 2
     fi
 
-    local classify_py
-    classify_py="$(mktemp)" || { echo -e "  ${RED}ERROR${NC}  mktemp failed"; exit 2; }
-    cat > "${classify_py}" << 'SEMEOF'
-#!/usr/bin/env python3
-"""
-Classify every semantic case row into outcome buckets.
-
-For entries with `cases[]`, each case is its own row with its own `expected`.
-Top-level `expected` is used only when there is no `cases[]` list.
-
-accept vs reject distinction: both require the model header to exist.
-If the header is missing, any decode_accept or decode_reject FAILS rather
-than PASS.  Accept and reject are not yet distinguished at runtime — that
-requires the Phase 2 runner — but they are reported in distinct buckets.
-"""
-import os, sys, yaml
-
-compliance_dir = os.environ.get("SCRIPT_DIR", os.path.abspath("."))
-output_dir = os.environ.get("OUTPUT_DIR", "")
-semantic_file = os.path.join(compliance_dir, "semantic-cases.yaml")
-tsv_file = os.path.join(compliance_dir, "semantic-results.tsv")
-model_dir = os.path.join(output_dir, "model") if output_dir else ""
-
-with open(semantic_file) as f:
-    spec = yaml.safe_load(f) or []
-
-results = []
-buckets = {"generation_failure": 0, "compile_failure": 0,
-           "decode_accept": 0, "decode_reject": 0, "round_trip": 0}
-bucket_errors = {"generation_failure": 0, "compile_failure": 0,
-                 "decode_accept": 0, "decode_reject": 0, "round_trip": 0}
-
-def row_outcome(case_id, expected, schema_name, note, case_spec=None):
-    """Classify a single (expanded) row."""
-    schema_header = ""
-    if schema_name:
-        schema_header = os.path.join(model_dir, f"{schema_name}.h")
-
-    result = "PASS"
-    detail = ""
-
-    if expected == "generation_failure":
-        result = "DEFERRED"
-        detail = "negative fixture case (checked in Step 2b)"
-        buckets["generation_failure"] += 1
-        return (case_id, expected, result, detail, note)
-
-    if expected == "compile_failure":
-        result = "DEFERRED"
-        detail = "compile check requires C++ toolchain (deferred)"
-        buckets["compile_failure"] += 1
-        return (case_id, expected, result, detail, note)
-
-    if expected in ("decode_accept", "decode_reject", "round_trip"):
-        if case_spec:
-            # Case references a spec file generated separately from Gate A's
-            # primary spec.  Defer to the per-spec test; this entry documents
-            # the expected wiring.
-            result = "DEFERRED"
-            detail = f"exercised via spec '{case_spec}' (separate test)"
-            buckets[expected] += 1
-        elif schema_name:
-            if os.path.exists(schema_header):
-                # Model header exists — runtime decode/round-trip requires
-                # the Phase 2 runner.  Record as DEFERRED, not PASS.
-                result = "DEFERRED"
-                detail = f"header found ({expected} — runtime decode deferred)"
-                buckets[expected] += 1
-            else:
-                # Schema referenced but header missing → the row is bound
-                # to a schema that should exist in the generated output.
-                result = "FAIL"
-                detail = f"schema header {schema_name}.h not found — cannot verify"
-                bucket_errors[expected] += 1
-        else:
-            # No schema, no spec → unbound row.  Document the gap.
-            result = "FAIL"
-            detail = "unbound semantic case — no schema or spec reference"
-            bucket_errors[expected] += 1
-    else:
-        result = "FAIL"
-        detail = f"unknown expected outcome: {expected}"
-        bucket_errors[expected] = bucket_errors.get(expected, 0) + 1
-
-    return (case_id, expected, result, detail, note)
-
-for entry in spec:
-    case_id = entry.get("id", "?")
-    schema_name = entry.get("schema", "")
-    entry_spec = entry.get("spec", "")
-    cases_list = entry.get("cases", [])
-
-    if cases_list:
-        # Expand each nested case as its own row
-        for idx, c in enumerate(cases_list):
-            payload_desc = str(c.get("payload", c.get("response", "")))
-            sub_id = f"{case_id}[{idx}]"
-            exp = c.get("expected", entry.get("expected", "?"))
-            note = c.get("note", entry.get("note", f"payload {idx}"))
-            # Use per-case spec override, then entry-level spec, then default
-            case_spec = c.get("spec", entry_spec if entry_spec else None)
-            results.append(row_outcome(sub_id, exp, schema_name, note, case_spec))
-    else:
-        # Top-level expected only (no cases list)
-        exp = entry.get("expected", "?")
-        note = entry.get("note", "")
-        case_spec = entry_spec if entry_spec else None
-        results.append(row_outcome(case_id, exp, schema_name, note, case_spec))
-
-# Write TSV
-with open(tsv_file, "w") as f:
-    f.write("case_id\texpected\tresult\tdetail\tnote\n")
-    for r in results:
-        f.write("\t".join(str(v) for v in r) + "\n")
-
-# Bucket summary
-print(f"\nOutcome buckets:")
-for bucket in ("generation_failure", "compile_failure", "decode_accept", "decode_reject", "round_trip"):
-    count = buckets.get(bucket, 0)
-    errors = bucket_errors.get(bucket, 0)
-    if count > 0 or errors > 0:
-        status = "OK" if errors == 0 else f"{errors} FAIL"
-        print(f"  {bucket}: {count} cases ({status})")
-
-total_errors = sum(bucket_errors.values())
-if total_errors > 0:
-    print(f"\n__SEMANTIC_ERRORS__={total_errors}")
-    sys.exit(1)
-
-print(f"\n__SEMANTIC_ERRORS__=0")
-SEMEOF
-
     export SCRIPT_DIR="${SCRIPT_DIR}"
     export OUTPUT_DIR="${OUTPUT_DIR}"
+    # Optional Phase-2 raw-instance evidence (case_id -> PASS/FAIL). When
+    # populated, concrete decode_accept/decode_reject rows with evidence are
+    # classified PASS/FAIL instead of DEFERRED (real accept/reject proof).
+    export BOOST_PHASE2_RESOLVED="${BOOST_PHASE2_RESOLVED:-}"
 
     local sem_exit=0
-    python3 "${classify_py}" || sem_exit=$?
-    rm -f "${classify_py}"
+    local sem_deferred=0
+    python3 "${SCRIPT_DIR}/phase2_classify.py" | tee "${SEMANTIC_OUT}" || sem_exit=$?
+    sem_deferred=$(grep -o '__SEMANTIC_DEFERRED__=[0-9]*' "${SEMANTIC_OUT}" | head -1 | tr -cd '0-9' || true)
+    if [[ -z "${sem_deferred}" ]]; then sem_deferred=0; fi
+    export SEMANTIC_DEFERRED="${sem_deferred}"
     return ${sem_exit}
+}
+
+# =============================================================================
+# Phase-2 compiled raw-instance validator runner (Wave-0 K-18 / GS4)
+# =============================================================================
+# When Boost.Beast/JSON is present, generate the Phase-2 case manifest from
+# semantic-cases.yaml, compile a C++17 harness against the GENERATED model
+# axis + Boost under -Werror, run it over every raw-instance case, and emit
+# semantic-resolved.tsv (case_id -> PASS/FAIL real accept/reject evidence).
+#
+# The runner reuses the generated raw-instance validation path
+# (fromJsonValue_<Schema> driving validate_<Schema>_branch_N membership
+# checks).  A single hand-written type:number check covers the inline
+# `type: number` request body (postNumberOnly); that row is reported as
+# 'handwritten', never masked.
+#
+# Returns 0 on success AND writes semantic-resolved.tsv; non-zero on any
+# failure (in which case no evidence file is produced and semantic rows stay
+# honestly DEFERRED).
+# =============================================================================
+run_phase2_runner() {
+    header "Step 4b: Phase-2 compiled raw-instance validator (Boost)"
+
+    local boost_include="${BOOST_INCLUDE_DIR:-/opt/homebrew/include}"
+    if [[ ! -d "${boost_include}/boost/beast" ]] || [[ ! -d "${boost_include}/boost/json" ]]; then
+        warn_msg "Boost.Beast/JSON not found under ${boost_include} — skipping Phase-2 runner."
+        return 1
+    fi
+
+    local gen_root="${PROJECT_ROOT}/generated-oas-client"
+    local model_dir="${gen_root}/model"
+    # Phase-2 needs the model headers produced by Step 2 (generate_client).
+    if [[ ! -d "${model_dir}" ]]; then
+        warn_msg "Generated model axis not found at ${model_dir} — skipping Phase-2 runner."
+        return 1
+    fi
+
+    local inc="${SCRIPT_DIR}/phase2_cases.inc"
+    local runner_src="${SCRIPT_DIR}/phase2_runner.cpp"
+    local gen_script="${SCRIPT_DIR}/phase2_gen_cases.py"
+    if [[ ! -f "${runner_src}" ]] || [[ ! -f "${gen_script}" ]]; then
+        warn_msg "Phase-2 runner sources missing (phase2_runner.cpp / phase2_gen_cases.py)."
+        return 1
+    fi
+
+    # 1. Generate the case manifest (phase2_cases.inc).
+    local gen_rc=0
+    SCRIPT_DIR="${SCRIPT_DIR}" PHASE2_INC="${inc}" python3 "${gen_script}" || gen_rc=$?
+    if [[ "${gen_rc}" -ne 0 ]]; then
+        echo -e "  ${RED}ERROR${NC}  phase2_gen_cases.py failed; keeping DEFERRED."
+        return 1
+    fi
+    if [[ ! -f "${inc}" ]]; then
+        echo -e "  ${RED}ERROR${NC}  phase2_cases.inc not produced; keeping DEFERRED."
+        return 1
+    fi
+
+    # 2. Build the runner in a scratch dir (never commit the binary).
+    local build_dir="${SCRIPT_DIR}/phase2-build"
+    rm -rf "${build_dir}"
+    mkdir -p "${build_dir}"
+    cp "${runner_src}" "${build_dir}/"
+    cp "${inc}" "${build_dir}/phase2_cases.inc"
+    printf '#include <boost/json/src.hpp>\n' > "${build_dir}/boost_json_src.cpp"
+
+    # Model translation units the runner links against (the composed schemas
+    # exercised by the resolvable semantic cases, plus their dependencies).
+    local model_units=(
+        ConstrainedNumber IntOrNumber AnyOfEnumUnion AllNullAnyOf
+        DuplicateNullOneOf OverlappingAnimal DiscriminatorOneOf
+        AllOfEnumIntersection OptionalImpossibleAllOf OneOfStringStringEnum
+        Mammal Bird OverlappingReptile
+    )
+    local unit_args=()
+    local m
+    for m in "${model_units[@]}"; do
+        unit_args+=("${model_dir}/${m}.cpp")
+    done
+
+    info_msg "Compiling Phase-2 runner under -Werror (C++17, Boost header-only)..."
+    local cc_rc=0
+    g++ -std=c++17 -Wall -Wextra -Werror         -I"${boost_include}" -I"${gen_root}" -I"${model_dir}"         "${build_dir}/phase2_runner.cpp" "${build_dir}/boost_json_src.cpp"         "${unit_args[@]}"         -o "${build_dir}/phase2_runner" 2>&1 | tee "${build_dir}/compile.log" || cc_rc=$?
+    if [[ "${cc_rc}" -ne 0 ]]; then
+        echo -e "  ${RED}ERROR${NC}  Phase-2 runner failed to compile under -Werror; keeping DEFERRED."
+        echo -e "  See ${build_dir}/compile.log"
+        return 1
+    fi
+
+    # 3. Run the runner over the raw-instance cases -> semantic-resolved.tsv.
+    local resolved="${SCRIPT_DIR}/semantic-resolved.tsv"
+    local run_log="${SCRIPT_DIR}/phase2-results.log"
+    local run_rc=0
+    "${build_dir}/phase2_runner" "${resolved}" 2>&1 | tee "${run_log}" || run_rc=$?
+    if [[ "${run_rc}" -ne 0 ]] || [[ ! -f "${resolved}" ]]; then
+        echo -e "  ${RED}ERROR${NC}  Phase-2 runner did not complete cleanly; keeping DEFERRED."
+        return 1
+    fi
+
+    local total pass fail
+    total=$(grep -oE '__PHASE2_TOTAL__=[0-9]+' "${run_log}" | head -1 | cut -d= -f2 || true)
+    pass=$(grep -oE '__PHASE2_PASS__=[0-9]+' "${run_log}" | head -1 | cut -d= -f2 || true)
+    fail=$(grep -oE '__PHASE2_FAIL__=[0-9]+' "${run_log}" | head -1 | cut -d= -f2 || true)
+    echo -e "  ${GREEN}PASS${NC}  Phase-2 runner: ${total:-0} raw-instance cases, ${pass:-0} PASS, ${fail:-0} FAIL (evidence: ${resolved})"
+    return 0
+}
+
+
+# =============================================================================
+# Detect the C++ compilation toolchain required by the Phase-2 raw-instance
+# runner (Wave-0 K-18). In this environment Boost/Beast may be absent, in
+# which case runtime accept/reject cannot be proven and semantic rows stay
+# DEFERRED. This is reported as a tracked shortfall, never a silent pass.
+# =============================================================================
+toolchain_status() {
+    local missing=()
+    # Boost include dir: the plan's environment installs Boost to
+    # /opt/homebrew/include (Homebrew on macOS arm64).  Overridable.
+    local boost_include="${BOOST_INCLUDE_DIR:-/opt/homebrew/include}"
+    command -v cmake >/dev/null 2>&1 || missing+=("cmake")
+    command -v g++ >/dev/null 2>&1 || missing+=("g++")
+    if [[ ! -d "${boost_include}/boost/beast" ]] || \
+       ! (echo '#include <boost/beast.hpp>' | g++ -x c++ -std=c++17 -fsyntax-only -I"${boost_include}" - 2>/dev/null); then
+        missing+=("Boost.Beast headers")
+    fi
+    if [[ "${#missing[@]}" -eq 0 ]]; then
+        echo "OK"
+    else
+        echo "MISSING: ${missing[*]}"
+    fi
 }
 
 # =============================================================================
@@ -689,6 +693,7 @@ main() {
     local INVENTORY_EXIT=0
     local NEGATIVE_EXIT=0
     local SEMANTIC_EXIT=0
+    local SEMANTIC_LOG="$(mktemp)" || { echo -e "  ${RED}ERROR${NC}  mktemp failed"; exit 2; }
 
     for arg in "$@"; do
         case "$arg" in
@@ -742,13 +747,58 @@ main() {
 
     inventory_schemas || INVENTORY_EXIT=$?
     generate_negative_fixtures || NEGATIVE_EXIT=$?
+    export SEMANTIC_OUT="${SEMANTIC_LOG}"
+
+    # ---- Step 4a: baseline classification (no Phase-2 evidence).  Records the
+    #      honest Wave-0 K-18 shortfall: every runtime-decode row is DEFERRED
+    #      until the compiled C++ Phase-2 raw-instance runner proves it. ----
+    unset BOOST_PHASE2_RESOLVED || true
     run_semantic_cases || SEMANTIC_EXIT=$?
+    local deferred_before deferred_after phase2_ok resolved_rows
+    deferred_before="${SEMANTIC_DEFERRED:-0}"
+    deferred_after="${deferred_before}"
+    phase2_ok=false
+    resolved_rows=0
+
+    # ---- Step 4b: Phase-2 compiled raw-instance runner (Boost present only).
+    #      Replaces the DEFERRED classification with real accept/reject evidence
+    #      for every resolveable semantic row; rows it cannot cover stay honestly
+    #      DEFERRED (external specs / round-trip M / response-dispatch / wire). ----
+    local toolchain
+    toolchain="$(toolchain_status)"
+    if [[ "${toolchain}" == "OK" ]]; then
+        if run_phase2_runner; then
+            phase2_ok=true
+            export BOOST_PHASE2_RESOLVED="${SCRIPT_DIR}/semantic-resolved.tsv"
+            run_semantic_cases || SEMANTIC_EXIT=$?
+            deferred_after="${SEMANTIC_DEFERRED:-0}"
+        fi
+    fi
+    resolved_rows=$(( deferred_before - deferred_after ))
+    if [[ "${resolved_rows}" -lt 0 ]]; then resolved_rows=0; fi
 
     header "Summary"
     echo ""
     echo "  Type inventory:  ${SCRIPT_DIR}/composed-schemas.tsv"
     echo "  Semantic cases:  ${SCRIPT_DIR}/semantic-results.tsv"
+    echo "  Phase-2 evidence: ${SCRIPT_DIR}/semantic-resolved.tsv"
     echo ""
+
+    if [[ "${toolchain}" != "OK" ]]; then
+        echo -e "  ${YELLOW}WARN${NC}  C++ toolchain/Boost not available for the Phase-2 raw-instance runner: ${toolchain}"
+        echo -e "  ${YELLOW}WARN${NC}  ${deferred_after} semantic row(s) remain DEFERRED (Wave-0 K-18). This is a tracked gap, not a proof."
+        echo -e "  ${YELLOW}WARN${NC}  Resolve on a Boost-equipped host: run the Phase-2 runner so zero resolveable semantic rows are DEFERRED."
+    elif [[ "${phase2_ok}" == "true" ]]; then
+        echo -e "  ${GREEN}PASS${NC}  Phase-2 raw-instance runner resolved ${resolved_rows} DEFERRED row(s) with real accept/reject evidence (-Werror compile)."
+        echo -e "  ${BLUE}INFO${NC}  Wave-0 K-18 shortfall accounting: DEFERRED before=${deferred_before} -> after=${deferred_after}."
+        if [[ "${deferred_after}" -gt 0 ]]; then
+            echo -e "  ${YELLOW}WARN${NC}  ${deferred_after} row(s) remain DEFERRED (external specs / round-trip M / response-dispatch / wire cases). Tracked honestly, not silently passed."
+        fi
+    else
+        echo -e "  ${YELLOW}WARN${NC}  C++ toolchain present but Phase-2 runner did not run; ${deferred_after} row(s) remain DEFERRED (Wave-0 K-18)."
+    fi
+    rm -f "${SEMANTIC_LOG}"
+
 
     local any_fail=false
     if [[ "${INVENTORY_EXIT}" -ne 0 ]]; then

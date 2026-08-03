@@ -1,0 +1,84 @@
+# =============================================================================
+# JSON Schema Test Suite — Exclusion Ledger (cpp-boost-beast-client / GS2)
+# =============================================================================
+# Machine-readable exclusion contract for the pinned JSON Schema Test Suite
+# (see plan §8.1 and this directory's README.md).
+#
+# Rules enforced by CI / the GS2 gate:
+#   * suiteCommit MUST be a real 40-hex SHA of a commit on the 2020-12 branch
+#     of github.com/json-schema-org/JSON-Schema-Test-Suite before any run is
+#     accepted.
+#   * runnerVersion identifies the JSTS runner (L2/L5 direct + L6 OAS-wrapped)
+#     that produced these numbers; bump it whenever the runner changes.
+#   * exclusions[] is a BOUNDED ledger: every entry must still match a
+#     discovered JSTS test (file + case), and NONE may classify a
+#     required-vocabulary test.
+#   * Required-vocabulary semantic JSTS exclusions MUST be zero for
+#     G-full-schema. Harness/runner defects belong in a separate blocking
+#     runner-issues report, NOT here.
+
+suiteCommit: "fb7372e8763a1417bddc65fa4c911b3e79b57b65"
+# ^ REAL commit SHA — recorded 2026-08-03 via `git ls-remote`. This is the
+#   commit whose tree carries the 2020-12 dialect corpus at
+#   `tests/draft2020-12/` plus the `remotes/` tree.
+#
+#   Branch-name note (Wave-0 finding): upstream no longer exposes a branch
+#   literally named `2020-12` (checked 2026-08-03). The current suite keeps
+#   every dialect under `tests/<dialect>/` on `main`; the 2020-12 corpus is
+#   `tests/draft2020-12/`. The SHA above is `main` HEAD at record time and is
+#   the byte-for-byte source of truth for vendoring (see README.md "How to
+#   vendor the suite" and tools/vendor.sh). GS2 acceptance requires a real
+#   SHA of the tree containing the 2020-12 corpus; this is it.
+
+dialect: "https://spec.openapis.org/oas/3.1/dialect/2024-11-10"
+# Pinned OAS 3.1 schema dialect (alias /base); resolves to JSON Schema
+# Draft 2020-12. The underlying metaschema dialect for the vendored JSTS pack
+# is JSON Schema Draft 2020-12 (the 2020-12 branch).
+
+runnerVersion: "0.1.0-wave0"
+# Version of the L2/L5/L6 JSTS runner (compiled C++ Boost raw-instance
+# validator + OAS-wrapped adapter). Bump whenever the runner's discovery,
+# evaluation, or reporting behaviour changes so recorded numbers stay
+# meaningful against the baseline.
+
+# =============================================================================
+# Exclusion entry schema (documentation only — the ledger is currently empty)
+# =============================================================================
+# Every element of exclusions[] MUST have exactly these keys:
+#
+#   file:           <path of the JSTS test file, relative to tests/, e.g.
+#                   "allOf.json" or "optional/format/email.json">
+#   case:           <description of the specific test case being excluded; must
+#                   uniquely match one entry in `file`>
+#   profile:        <the optional profile this exclusion falls under, e.g. the
+#                   JSTS optional group or a named product profile>. Required
+#                   vocabularies are NOT eligible; see rule below.
+#   classification: "optional-profile"   <the ONLY permitted value. Per plan
+#                   §8.1/§10, `classification` for any exclusion must be
+#                   "optional-profile". Required-vocabulary tests may NOT be
+#                   excluded.>
+#   reason:         <free-text: why this optional-profile test is demonstrably
+#                   inapplicable to the claimed C profile (e.g. it depends on a
+#                   non-required format/annotation vocabulary the C profile
+#                   does not claim).>
+#   owner:          <owning team/individual responsible for re-reviewing>
+#   expiry:         <YYYY-MM-DD date after which the exclusion is invalid and
+#                   must be re-validated or removed>
+#
+# RULE — REQUIRED VOCABULARY TESTS MAY NOT BE EXCLUDED:
+#   Any keyword in a required vocabulary of the pinned OAS 3.1 dialect (Core,
+#   Applicator, Unevaluated, Validation, Meta-Data, Format-Annotation, Content)
+#   is NOT eligible for exclusion. Required-vocabulary semantic JSTS exclusions
+#   MUST be zero for G-full-schema. A skipped/failed/crashed required test is a
+#   harness defect tracked in the separate blocking runner-issues report, never
+#   an exclusion. Optional-profile exclusions never count as support toward
+#   G-full-schema.
+
+exclusions: []
+# Empty ledger — bounded and intentionally empty in Wave 0:
+#   * every non-empty entry would have to match a discovered JSTS test and be
+#     classified "optional-profile" only;
+#   * required-vocabulary tests must remain 100% with zero exclusions.
+# Per plan §10, "Required-vocabulary semantic JSTS exclusions must be zero for
+# G-full-schema." Add entries ONLY for demonstrably inapplicable optional
+# profiles, and keep this list as small as possible.
