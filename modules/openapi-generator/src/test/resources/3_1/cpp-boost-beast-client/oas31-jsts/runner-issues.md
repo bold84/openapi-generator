@@ -66,6 +66,21 @@ of the discovery manifest; run it canonically with `--slice numeric-boolean`.
 numeric/boolean target nor anything below is a GS2 / G-full-schema claim (slice
 contract §0: GS2/GS4/Wave-1-full-fidelity are out of scope — never claim them).
 
+> **[Wave-1 GENERATED-path successor — see the subset report].** The measured result
+> below in this ledger is the **Wave-0 decode-based** baseline (`jsts_runner.py`,
+> typed `fromJsonValue*` path: PASS 32 / FAIL 20 / BLOCKED 229). Wave 1 landed the
+> ADR Option-B **GENERATED** path (`schema_ir.generated.*` + `schema_validate.generated.cpp`,
+> `validate_<id>` dispatch, driven by **`tools/jsts_genpath_slice.py`**). The current,
+> authoritative measurement of this numeric/boolean slice through **that** path is
+> **`wave1-numeric-subset-report.md`** (committed, real run: **PASS 193 / FAIL 22 /
+> BLOCKED 66 of 281**). The two baselines are **not interchangeable**. Both agree on the
+> honest bottom line: **full GS2 is NOT claimed**, and the **zero-BLOCKED / zero-FAIL
+> targets are NOT met** by the GENERATED path either (`boolean_schema` 18 + `not` 40
+> still fail-closed in Generator Phase 2; `enum` G1 5 object-enum emit compile defect,
+> G2 3 hetero-enum-with-null run gap; plus 22 FAIL in non-scalar `const`/`enum`/`type`-
+> null cases). Those residual caps are tracked in the FAIL/BLOCKED ledgers of the subset
+> report and below.
+
 ### [executed] Measured result (`--slice numeric-boolean`, real run)
 
 Ran the production pipeline (generator jar → g++ with Boost → run) on all **10**

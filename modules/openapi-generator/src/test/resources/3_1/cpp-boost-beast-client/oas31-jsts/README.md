@@ -203,6 +203,21 @@ Per-file PASS / FAIL / BLOCKED (`/tmp/jsts-slice-report.json`, reproduced via
 
 **Full GS2 is explicitly NOT claimed by this slice.**
 
+> **[Wave-1 GENERATED-path successor — see the subset report].** The numbers above
+> are the **Wave-0 decode-based** baseline (`jsts_runner.py`, typed `fromJsonValue*`
+> path). Wave 1 landed the ADR Option-B **GENERATED** path — the real generator emits
+> `schema_ir.generated.{hpp,cpp}` + `schema_validate.generated.cpp` (`validate_<id>`
+> dispatch) — and the current, authoritative measurement of this numeric/boolean slice
+> through **that** path is in **`wave1-numeric-subset-report.md`** (committed in this
+> directory, real executed run: **PASS 193 / FAIL 22 / BLOCKED 66 of 281**). It is
+> driven by **`tools/jsts_genpath_slice.py`** (same OAS-wrap → generate → compile → run
+> contract, GENERATED dispatch). The Wave-0 decode baselines in this README and in
+> `runner-issues.md` are **not interchangeable** with it; the subset report is the
+> authority for the implemented-keyword rows it marks supported. **Both** reports agree
+> on the anti-greenwash bottom line: **full GS2 is NOT claimed** and the zero-BLOCKED
+> target is **NOT met** (`boolean_schema`/`not` still fail-closed in Generator Phase 2;
+> `enum` G1 still hits an object-enum emit compile defect).
+
 - The slice contains **229 BLOCKED** cases, so the **zero-BLOCKED target is
   NOT met** (`targetZeroBlocked = false`).
 - The **entire** required-vocabulary corpus (44 files / 1292 cases) — i.e.
@@ -315,7 +330,9 @@ pass.
 | `jsts-exclusions.yaml` | Pinned `suiteCommit`/`dialect`/`runnerVersion` and the bounded optional-only exclusion ledger (see §8.1). |
 | `runner-issues.md` | **Blocking runner-issues report** (arm's-length from the ledger) — the **authoritative defect ledger** for Wave-0 required-vocabulary shortfalls that block GS2, split into (A) harness/pipeline defects and (B) semantic shortfalls. |
 | `tools/vendor.sh` | Reproducible vendor script bound to `suiteCommit`. |
-| `tools/jsts_runner.py` | L2/L5 direct + L6 OAS-wrapped runner: discover + generate/compile/run. |
+| `tools/jsts_runner.py` | L2/L5 direct + L6 OAS-wrapped runner (Wave-0 decode path): discover + generate/compile/run. |
+| `tools/jsts_genpath_slice.py` | **Wave-1 GENERATED-path** numeric/boolean slice runner (drives emitted `validate_<id>` dispatch; see `wave1-numeric-subset-report.md`). |
+| `wave1-numeric-subset-report.md` | **Wave-1 GENERATED-path** numeric/boolean **subset report** (authoritative result for the implemented-keyword rows; GS2 NOT claimed). |
 | `vendor/` (created by `tools/vendor.sh`, not committed) | The checked-out 2020-12 tests + `remotes` tree. |
 
 ## Relationship to other suites
