@@ -20,7 +20,25 @@
 #   K-01 `not` subschema inversion (n.notSchema),
 #   K-30 const-as-json (n.constJson), K-34 enum-as-json (n.enumJson),
 #   K-22 array uniqueItems (n.hasUniqueItems),
-#   K-29 local $ref (n.applicator = ApplicatorKind::ref, n.children).
+#   K-29 local $ref (n.applicator = ApplicatorKind::ref, n.children),
+# and the Wave-2 object/array structural slice (FROZEN oas31_ir.hpp §10):
+#   n.properties / n.required / n.minProperties / n.maxProperties /
+#   n.additionalProperties (allowed/reject/<schema>) + n.additionalSchema,
+#   n.prefixItems (indexed) / n.items (remainder) / n.minItems / n.maxItems,
+#   string-valued enum members (".enumStrings").
+#
+# NUMERIC_SLICES entries may now carry the following EXTRA keys:
+#   properties      : list of (property-name, subschema-node-name)
+#   required        : list of property names that must be present
+#   minProperties / maxProperties / minItems / maxItems : exact lexeme string
+#   additionalProperties : 'allowed' | 'reject' | <subschema-node-name>
+#   prefixItems     : list of subschema-node-names (index-aligned)
+#   items           : subschema-node-name for the remainder (indices >= prefix)
+#   not             : subschema-node-name (deep `not` at ANY point in the tree)
+#   ref             : subschema-node-name (local $defs//$ref resolution)
+# A zero-member enumJson list renders an EMPTY enum: true (reject-all).
+# uniqueItems:False is simply never emitted (hasUniqueItems stays false ->
+# the engine treats it as a no-op, which is correct JSON Schema semantics).
 # Containers are stored as real boost::json::value literals and compared via
 # the engine's deepInstanceEqual / deepRawEqual (ExactNumber for every number).
 #
@@ -62,7 +80,8 @@ OUT_IR = os.environ.get("PHASE2_NUM_IR",
 #   booleanValue: 'true' | 'false'  (K-03 boolean value-schema)
 #   not         : name of a subschema node (K-01 inversion target)
 #   ref         : name of a schema node (K-29 local $ref target)
-#   uniqueItems : True (K-22 array-uniqueness)
+#   uniqueItems : True (K-22 array-uniqueness) / False (no-op, omitted)
+#   enum        : list of (kind, value)  kind in {'number','bool','string'}
 # ---------------------------------------------------------------------------
 NUMERIC_SLICES = {
     # ---- scalar numeric/boolean slice (exact-number core) ----
@@ -177,6 +196,142 @@ NUMERIC_SLICES = {
         "type": "number",
         "const": ("number", "5"),
     },
+
+    # =======================================================================
+    # Wave-2 object/array structural slice (this pass) — hand-built IR in
+    # the identical frozen format the ir-gen agent emits (see header comment).
+    # Sub-schemas are named helper nodes in the SAME registry pool so
+    # properties/prefixItems/not/ref can reference them by SchemaIndex, which
+    # is exactly what the generation-time resolution step would have done.
+    # =======================================================================
+
+    # ---- helper value-subschema nodes (referenced by structural ancestors) --
+    "TypeStringNode": {"type": "string"},
+    "TypeBooleanNode": {"type": "boolean"},
+    "NumberAnyNode": {"type": "number"},
+    "AdditionalStringNode": {"type": "string"},
+    "FalseSchemaNode": {"booleanValue": "false"},
+    "EmptySchemaNode": {},
+    "PriceMulNode": {"type": "number", "multipleOf": "0.1"},
+    "DefsPositiveNode": {"type": "number", "exclusiveMinimum": "0"},
+    "EnumFooNode": {"enumJson": ['"foo"']},
+    "EnumBarNode": {"enumJson": ['"bar"']},
+
+    # ---- object traversal: properties + required (enum.json G3 „enums in
+    #      properties“ — the 4-FAIL group; per-property enum subschemas and
+    #      `required` are both enforced by the generated validator) ----------
+    "ObjectPropsRequired": {
+        "type": "object",
+        "properties": [("foo", "EnumFooNode"), ("bar", "EnumBarNode")],
+        "required": ["bar"],
+    },
+
+    # ---- object traversal: additionalProperties tri-state ------------------
+    "ObjectAdditionalAllowed": {
+        "type": "object",
+        "properties": [("a", "NumberAnyNode")],
+        "additionalProperties": "allowed",
+    },
+    "ObjectAdditionalFalse": {
+        "type": "object",
+        "properties": [("a", "NumberAnyNode")],
+        "additionalProperties": "reject",
+    },
+    "ObjectAdditionalSchema": {
+        "type": "object",
+        "properties": [("a", "NumberAnyNode")],
+        "additionalProperties": "AdditionalStringNode",
+    },
+
+    # ---- object traversal: minProperties / maxProperties (exact bounds) ----
+    "ObjectMinProperties": {"type": "object", "minProperties": "2.0"},
+    "ObjectMaxProperties": {"type": "object", "maxProperties": "2"},
+
+    # ---- object traversal: required + additionalProperties together --------
+    "ObjectReqAddFalse": {
+        "type": "object",
+        "properties": [("id", "NumberAnyNode")],
+        "required": ["id"],
+        "additionalProperties": "reject",
+    },
+
+    # ---- object traversal: `$ref` as a LITERAL property name (ref.json G7) --
+    "RefPropertyName": {
+        "type": "object",
+        "properties": [("$ref", "TypeStringNode")],
+    },
+
+    # ---- enum: empty enum [] reject-all (enum.json G14) --------------------
+    "EnumEmptyRejectAll": {"enumJson": []},
+
+    # ---- enum: $ref object used as a literal enum member (ref.json G14) ----
+    "EnumRefLiteral": {"enumJson": ['{"$ref":"#/$defs/a_string"}']},
+
+    # ---- $ref + siblings BOTH apply (2020-12; ref.json G7-adjacent) --------
+    "RefWithSibling": {"ref": "NumberAnyNode", "type": "integer"},
+
+    # ---- deep `not` into object properties (not.json G2/G3 FAIL groups) ----
+    "NotComplexRoot": {"not": "NotComplexSub"},
+    "NotComplexSub": {
+        "type": "object",
+        "properties": [("foo", "TypeStringNode")],
+    },
+    "ObjectPropNotAllowed": {
+        "type": "object",
+        "properties": [("foo", "FooNotNode")],
+    },
+    "FooNotNode": {"not": "EmptySchemaNode"},
+    "NotPropertyNumber": {
+        "type": "object",
+        "properties": [("id", "NotNumberNode")],
+    },
+    "NotNumberNode": {"not": "NumberAnyNode"},
+
+    # ---- local $defs $ref resolution (ref.json $defs-scoped family) --------
+    "ObjectDefsRef": {
+        "type": "object",
+        "properties": [("a", "DefsPositiveNode")],
+        "required": ["a"],
+    },
+
+    # ---- array traversal: uniqueItems true/false (uniqueItems.json G0/G3) --
+    "UniqueItemsFalseNoOp": {"type": "array", "uniqueItems": False},
+    "UniqueItemsDeep": {"type": "array", "uniqueItems": True},
+
+    # ---- array traversal: prefixItems indexed + uniqueItems (G1/G2/G4) -----
+    "PrefixItemsUnique": {
+        "type": "array",
+        "prefixItems": ["TypeBooleanNode", "TypeBooleanNode"],
+        "uniqueItems": True,
+    },
+    "PrefixItemsItemsFalse": {
+        "type": "array",
+        "prefixItems": ["TypeBooleanNode", "TypeBooleanNode"],
+        "uniqueItems": True,
+        "items": "FalseSchemaNode",
+    },
+    "PrefixItemsFalse": {
+        "type": "array",
+        "prefixItems": ["TypeBooleanNode", "TypeBooleanNode"],
+        "uniqueItems": False,
+    },
+
+    # ---- array traversal: items remainder (2020-12 semantics) -------------- 
+    "PrefixItemsItemsRemainder": {
+        "type": "array",
+        "prefixItems": ["TypeBooleanNode"],
+        "items": "NumberAnyNode",
+    },
+
+    # ---- array traversal: minItems / maxItems ------------------------------
+    "ArrayMinItems": {"type": "array", "minItems": "2"},
+    "ArrayMaxItems": {"type": "array", "maxItems": "2"},
+
+    # ---- container-depth EXACT numeric lexemes (multipleOf discriminator) --
+    "NestedPrice": {
+        "type": "object",
+        "properties": [("price", "PriceMulNode")],
+    },
 }
 
 SCHEMA_ORDER = list(NUMERIC_SLICES.keys())   # deterministic IR node order
@@ -244,12 +399,16 @@ def render_node(schema_name, sd):
     if "enum" in sd:
         nums = [v for k, v in sd["enum"] if k == "number"]
         bools = [v for k, v in sd["enum"] if k == "bool"]
+        strs = [v for k, v in sd["enum"] if k == "string"]
         if nums:
             lems = ", ".join(f'ExactNumber::parseLexeme("{c_quote(x)}")' for x in nums)
             lines.append(f"            n.enumNumbers = {{ {lems} }};")
         if bools:
             bs = ", ".join("true" if b else "false" for b in bools)
             lines.append(f"            n.enumBooleans = {{ {bs} }};")
+        if strs:
+            sstrs = ", ".join(f'std::string("{c_quote(x)}")' for x in strs)
+            lines.append(f"            n.enumStrings = {{ {sstrs} }};")
     if "enumJson" in sd:
         vals = ", ".join(render_json_parse(j) for j in sd["enumJson"])
         lines.append("            n.hasEnumJson = true;")
@@ -269,11 +428,49 @@ def render_node(schema_name, sd):
         lines.append("            n.hasUniqueItems = true;")
 
     if "not" in sd:
-        lines.append(f"            n.notSchema = {INDEX_OF[sd['not']]};  // K-01")
+        lines.append(f"            n.notSchema = {INDEX_OF[sd['not']]};  // K-01 / deep `not` at any tree point")
 
     if "ref" in sd:
-        lines.append("            n.applicator = ApplicatorKind::ref;  // K-29")
-        lines.append(f"            n.children = {{ {INDEX_OF[sd['ref']]} }};  // local $ref target")
+        lines.append("            n.applicator = ApplicatorKind::ref;  // K-29 local $ref (siblings apply)")
+        lines.append(f"            n.children = {{ {INDEX_OF[sd['ref']]} }};  // generation-time-resolved target")
+
+    # ---- Wave-2 object structural (frozen oas31_ir.hpp fields) ------------
+    if "properties" in sd:
+        for pname, target in sd["properties"]:
+            lines.append("            n.properties.push_back("
+                         f'PropertyBinding{{"{c_quote(pname)}", {INDEX_OF[target]}}});')
+    if "required" in sd:
+        for rn in sd["required"]:
+            lines.append(f'            n.required.push_back("{c_quote(rn)}");')
+    if "additionalProperties" in sd:
+        av = sd["additionalProperties"]
+        if av == "allowed":
+            lines.append("            n.additionalProperties = AdditionalPropertiesKind::allowed;")
+        elif av == "reject":
+            lines.append("            n.additionalProperties = AdditionalPropertiesKind::reject;")
+        else:
+            # schema-form: validate unlisted values against this subschema node
+            lines.append("            n.additionalProperties = AdditionalPropertiesKind::schema;")
+            lines.append(f"            n.additionalSchema = {INDEX_OF[av]};")
+    if "minProperties" in sd:
+        lines.append("            n.hasMinProperties = true;")
+        lines.append(f"            n.minProperties = ExactNumber::parseLexeme(\"{c_quote(sd['minProperties'])}\");")
+    if "maxProperties" in sd:
+        lines.append("            n.hasMaxProperties = true;")
+        lines.append(f"            n.maxProperties = ExactNumber::parseLexeme(\"{c_quote(sd['maxProperties'])}\");")
+
+    # ---- Wave-2 array structural (frozen oas31_ir.hpp fields) -------------
+    if "prefixItems" in sd:
+        idxs = ", ".join(str(INDEX_OF[x]) for x in sd["prefixItems"])
+        lines.append(f"            n.prefixItems = {{ {idxs} }};  // prefixItems[i] applies to index i")
+    if "items" in sd:
+        lines.append(f"            n.items = {INDEX_OF[sd['items']]};  // applies to indices >= prefixItems.size()")
+    if "minItems" in sd:
+        lines.append("            n.hasMinItems = true;")
+        lines.append(f"            n.minItems = ExactNumber::parseLexeme(\"{c_quote(sd['minItems'])}\");")
+    if "maxItems" in sd:
+        lines.append("            n.hasMaxItems = true;")
+        lines.append(f"            n.maxItems = ExactNumber::parseLexeme(\"{c_quote(sd['maxItems'])}\");")
 
     lines.append("            r.nodes.push_back(std::move(n));")
     lines.append("        }")

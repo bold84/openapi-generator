@@ -546,6 +546,309 @@
       expected: decode_accept
 
 # =============================================================================
+# Wave-2 object/array structural slice (gate-a Phase-2 driver) — properties /
+# required / additionalProperties tri-state / min-maxProperties / prefixItems /
+# items remainder / min-maxItems / deep not into properties / enum with object
+# + string members / uniqueItems true+false with container-depth exactness /
+# local $defs $ref.  These map to the exact JSTS FAIL/BLOCKED rows of the
+# Wave-1 COMPLETE report (not.json G2,G3 · enum.json G3,G14 ·
+# uniqueItems.json G0,G1,G2,G3,G4 · ref.json G7,G14).  The schema names have NO
+# Wave-0 model headers; they are proven exclusively by the compiled
+# phase2_numeric_driver through validate_<id> -> SchemaEvaluator (baseline
+# DEFERRED, flipped to real PASS only with on-disk evidence).
+# =============================================================================
+
+- id: object-props-required-enums
+  schema: ObjectPropsRequired
+  note: "enum.json G3 'enums in properties' — per-property enum + required enforced; the 4-FAIL group"
+  cases:
+    - payload: '{"foo":"foo","bar":"bar"}'
+      expected: decode_accept
+    - payload: '{"foo":"foot","bar":"bar"}'
+      expected: decode_reject
+    - payload: '{"foo":"foo","bar":"bart"}'
+      expected: decode_reject
+    - payload: '{"bar":"bar"}'
+      expected: decode_accept
+    - payload: '{"foo":"foo"}'
+      expected: decode_reject
+    - payload: '{}'
+      expected: decode_reject
+
+- id: object-additional-allowed
+  schema: ObjectAdditionalAllowed
+  note: "additionalProperties:true — unlisted keys are always allowed (no constraint)"
+  cases:
+    - payload: '{"a":1}'
+      expected: decode_accept
+    - payload: '{"a":1,"b":2}'
+      expected: decode_accept
+    - payload: '{"b":"x"}'
+      expected: decode_accept
+    - payload: '{"a":"x"}'
+      expected: decode_reject
+
+- id: object-additional-false
+  schema: ObjectAdditionalFalse
+  note: "additionalProperties:false — any unlisted key rejects; listed properties are never additionally evaluated"
+  cases:
+    - payload: '{"a":1}'
+      expected: decode_accept
+    - payload: '{"a":1,"b":2}'
+      expected: decode_reject
+    - payload: '{}'
+      expected: decode_accept
+
+- id: object-additional-schema
+  schema: ObjectAdditionalSchema
+  note: "additionalProperties:<schema> — unlisted values validated against the subschema (b must be a string)"
+  cases:
+    - payload: '{"a":1,"b":"x"}'
+      expected: decode_accept
+    - payload: '{"b":"x"}'
+      expected: decode_accept
+    - payload: '{"a":1,"b":2}'
+      expected: decode_reject
+
+- id: object-min-properties
+  schema: ObjectMinProperties
+  note: "minProperties:2.0 — decimal bound exact (2.0 == 2 via ExactNumber); 1-property and empty objects reject"
+  cases:
+    - payload: '{"a":1,"b":2}'
+      expected: decode_accept
+    - payload: '{"a":1}'
+      expected: decode_reject
+    - payload: '{}'
+      expected: decode_reject
+
+- id: object-max-properties
+  schema: ObjectMaxProperties
+  note: "maxProperties:2 — 3-property object rejects"
+  cases:
+    - payload: '{"a":1,"b":2}'
+      expected: decode_accept
+    - payload: '{"a":1,"b":2,"c":3}'
+      expected: decode_reject
+
+- id: object-required-addfalse
+  schema: ObjectReqAddFalse
+  note: "required + additionalProperties:false — missing id rejects; extra key rejects"
+  cases:
+    - payload: '{"id":1}'
+      expected: decode_accept
+    - payload: '{"id":1,"extra":2}'
+      expected: decode_reject
+    - payload: '{"extra":2}'
+      expected: decode_reject
+    - payload: '{}'
+      expected: decode_reject
+
+- id: ref-property-name
+  schema: RefPropertyName
+  note: "ref.json G7 'property named $ref' — literal property name, NOT a reference; type: string enforced"
+  cases:
+    - payload: '{"$ref":"a"}'
+      expected: decode_accept
+    - payload: '{"$ref":2}'
+      expected: decode_reject
+
+- id: enum-empty-reject-all
+  schema: EnumEmptyRejectAll
+  note: "enum.json G14 'empty enum' — enum:[] rejects every value of any kind"
+  cases:
+    - payload: '"foo"'
+      expected: decode_reject
+    - payload: '42'
+      expected: decode_reject
+    - payload: 'null'
+      expected: decode_reject
+    - payload: '{}'
+      expected: decode_reject
+    - payload: '[]'
+      expected: decode_reject
+    - payload: 'false'
+      expected: decode_reject
+
+- id: enum-ref-literal
+  schema: EnumRefLiteral
+  note: "ref.json G14 — the $ref inside an enum member is NOT evaluated; the literal object IS the member"
+  cases:
+    - payload: '"this is a string"'
+      expected: decode_reject
+    - payload: '{"$ref":"#/$defs/a_string"}'
+      expected: decode_accept
+
+- id: ref-siblings-apply
+  schema: RefWithSibling
+  note: "2020-12: $ref AND sibling keywords BOTH apply — ref->number so 1.5 satisfies the target, the integer sibling rejects it"
+  cases:
+    - payload: '1'
+      expected: decode_accept
+    - payload: '1.5'
+      expected: decode_reject
+    - payload: '"x"'
+      expected: decode_reject
+
+- id: not-complex-object
+  schema: NotComplexRoot
+  note: "not.json G2 'not more complex schema' — {not:{type:object,properties:{foo:{type:string}}}} inverted for non-object data and wrong-typed member"
+  cases:
+    - payload: '1'
+      expected: decode_accept
+    - payload: '{"foo":1}'
+      expected: decode_accept
+    - payload: '{"foo":"bar"}'
+      expected: decode_reject
+
+- id: not-empty-object-in-properties
+  schema: ObjectPropNotAllowed
+  note: "not.json G3 'forbidden property' — not:{} on a declared property rejects any present value; absent property is fine"
+  cases:
+    - payload: '{"foo":1,"bar":2}'
+      expected: decode_reject
+    - payload: '{"bar":1,"baz":2}'
+      expected: decode_accept
+
+- id: not-property-number
+  schema: NotPropertyNumber
+  note: "deep not into properties — {properties:{id:{not:{type:number}}}} — numbers reject, non-numbers accept"
+  cases:
+    - payload: '{"id":"x"}'
+      expected: decode_accept
+    - payload: '{"id":5}'
+      expected: decode_reject
+    - payload: '{}'
+      expected: decode_accept
+
+- id: object-defs-ref
+  schema: ObjectDefsRef
+  note: "local $defs $ref — property a -> $ref to a positive-number $def, required; negative rejects"
+  cases:
+    - payload: '{"a":5}'
+      expected: decode_accept
+    - payload: '{"a":-1}'
+      expected: decode_reject
+    - payload: '{}'
+      expected: decode_reject
+
+- id: unique-items-false-noop
+  schema: UniqueItemsFalseNoOp
+  note: "uniqueItems.json G3 — uniqueItems:false is a NO-OP: 1 == 1.0 duplicates and duplicate objects all ACCEPT"
+  cases:
+    - payload: '[1,1]'
+      expected: decode_accept
+    - payload: '[1,1.0]'
+      expected: decode_accept
+    - payload: '[{"foo":"bar"},{"foo":"bar"}]'
+      expected: decode_accept
+    - payload: '[1,2]'
+      expected: decode_accept
+
+- id: unique-items-deep-exact
+  schema: UniqueItemsDeep
+  note: "uniqueItems:true deep-equality — 1.0==1.0 duplicate; true != 1; {a:1}=={a:1.0}; key order ignored; container-depth EXACT big numbers (double would collide)"
+  cases:
+    - payload: '[1.0,1.0,1]'
+      expected: decode_reject
+    - payload: '[1,true]'
+      expected: decode_accept
+    - payload: '[0,false]'
+      expected: decode_accept
+    - payload: '[{"a":1},{"a":1.0}]'
+      expected: decode_reject
+    - payload: '[{"a":1,"b":2},{"b":2,"a":1}]'
+      expected: decode_reject
+    - payload: '[9007199254740993.0,9007199254740992.0]'
+      expected: decode_accept
+    - payload: '[9007199254740993.0,9007199254740993]'
+      expected: decode_reject
+
+- id: prefix-items-unique
+  schema: PrefixItemsUnique
+  note: "uniqueItems.json G1 — prefixItems indexed type subschemas + uniqueItems:true across ALL items"
+  cases:
+    - payload: '[false,true]'
+      expected: decode_accept
+    - payload: '[false,false]'
+      expected: decode_reject
+    - payload: '[false,true,"foo","bar"]'
+      expected: decode_accept
+    - payload: '[false,true,"foo","foo"]'
+      expected: decode_reject
+
+- id: prefix-items-items-false
+  schema: PrefixItemsItemsFalse
+  note: "uniqueItems.json G2 — items:false rejects any index >= prefixItems.size()"
+  cases:
+    - payload: '[false,true]'
+      expected: decode_accept
+    - payload: '[false,true,null]'
+      expected: decode_reject
+    - payload: '[false,false]'
+      expected: decode_reject
+
+- id: prefix-items-false
+  schema: PrefixItemsFalse
+  note: "uniqueItems.json G4 — prefixItems + uniqueItems:false: duplicates ACCEPT"
+  cases:
+    - payload: '[false,true]'
+      expected: decode_accept
+    - payload: '[false,false]'
+      expected: decode_accept
+    - payload: '[true,true]'
+      expected: decode_accept
+    - payload: '[false,true,"foo","foo"]'
+      expected: decode_accept
+
+- id: prefix-items-remainder
+  schema: PrefixItemsItemsRemainder
+  note: "prefixItems + items remainder — items applies ONLY to indices >= prefixItems.size(); prefix[0] must be boolean"
+  cases:
+    - payload: '[]'
+      expected: decode_accept
+    - payload: '[true]'
+      expected: decode_accept
+    - payload: '[true,1,2]'
+      expected: decode_accept
+    - payload: '[true,"x"]'
+      expected: decode_reject
+    - payload: '[1]'
+      expected: decode_reject
+
+- id: array-min-items
+  schema: ArrayMinItems
+  note: "minItems:2 — 1-item and empty arrays reject"
+  cases:
+    - payload: '[1,2]'
+      expected: decode_accept
+    - payload: '[1]'
+      expected: decode_reject
+    - payload: '[]'
+      expected: decode_reject
+
+- id: array-max-items
+  schema: ArrayMaxItems
+  note: "maxItems:2 — 3-item array rejects"
+  cases:
+    - payload: '[1,2]'
+      expected: decode_accept
+    - payload: '[1,2,3]'
+      expected: decode_reject
+
+- id: nested-multipleof-exact
+  schema: NestedPrice
+  note: "CRITICAL EXACTNESS — nested numbers with multipleOf:0.1: the raw lexeme must propagate into the container member. 0.3/0.7/0.25 are covered either way, but 10000000.7 is DISCRIMINATING: boost::json + fromDouble loses it (divmod fails -> would REJECT), only the container-depth lexeme accepts"
+  cases:
+    - payload: '{"price":0.3}'
+      expected: decode_accept
+    - payload: '{"price":0.7}'
+      expected: decode_accept
+    - payload: '{"price":10000000.7}'
+      expected: decode_accept
+    - payload: '{"price":0.25}'
+      expected: decode_reject
+
+# =============================================================================
 # OAS 3.0 regression cases (specified in separate spec files)
 # =============================================================================
 

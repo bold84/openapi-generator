@@ -96,14 +96,15 @@ def row_outcome(row_id, expected, schema_name, note, case_spec=None, is_phase2=F
             detail = f"exercised via spec '{case_spec}' (separate test)"
             buckets[expected] += 1
         elif schema_name in NUMERIC_SLICE_SCHEMAS:
-            # Wave-1 numeric/boolean slice schemas have NO Wave-0 model header;
-            # they are the shared SchemaEvaluator IR + ExactNumber engine and are
-            # proven exclusively by the compiled phase2_numeric_driver.  In the
-            # baseline (no Phase-2 evidence) they are honestly DEFERRED; with
-            # evidence from the numeric driver they flip to PASS via the resolved
-            # lookup above (never a silent pass).
+            # Wave-1/Wave-2 SchemaEvaluator slice schemas have NO Wave-0 model
+            # header; they are the shared SchemaEvaluator IR + ExactNumber
+            # engine and are proven exclusively by the compiled
+            # phase2_numeric_driver.  In the baseline (no Phase-2 evidence)
+            # they are honestly DEFERRED; with evidence from the numeric driver
+            # they flip to PASS via the resolved lookup above (never a silent
+            # pass).
             result = "DEFERRED"
-            detail = f"numeric/boolean slice ({expected} — needs Wave-1 SchemaEvaluator driver)"
+            detail = f"Wave-1/Wave-2 SchemaEvaluator slice ({expected} — needs compiled driver evidence)"
             buckets[expected] += 1
         elif schema_name:
             if os.path.exists(schema_header):
