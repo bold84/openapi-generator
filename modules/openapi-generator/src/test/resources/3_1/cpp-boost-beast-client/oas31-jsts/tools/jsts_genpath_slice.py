@@ -1,6 +1,23 @@
 #!/usr/bin/env python3
 """
-jsts_genpath_slice.py — Wave-1 numeric/boolean JSTS slice through the GENERATED path.
+jsts_genpath_slice.py — Wave-2 object/array-structural JSTS slice through the
+GENERATED path (successor to the Wave-1 numeric/boolean slice).
+
+Wave-2 (frozen contract §10) adds, over the Wave-1 driver:
+  * container-depth EXACT numeric lexemes: write_driver attaches an
+    `oas31::InstanceLexemeTable` (oas31_object_array.hpp) captured from the
+    payload STRING, so numbers nested inside objects/arrays keep their raw
+    lexeme (1 vs 1.0 vs 1e0) instead of degrading to the Boost.JSON value kind;
+  * `$defs`/`$id`/local-pointer ref surfacing: wrap_spec hoists every ref that
+    resolves within the group document (fragments against the nearest `$id`
+    resource, `$id`-matched qualified/URN bases) into synthetic composed
+    components.schemas and rewrites it to `#/components/schemas/<name>` — the
+    exact shape the Wave-2 engine's refTargetIdOf/refSimpleName resolve. The
+    upstream reader's OAS-3.1 `$id` NPE quirk is dodged by stripping `$id`
+    AFTER hoisting (the engine never reads source `$id`); unresolvable
+    remote/URN/metaschema refs are left as inert nodes (honest FAIL/PASS,
+    never BLOCKED) and `--skip-validate-spec` prevents the upstream validator
+    from fail-closing on them.
 
 This is the Wave-1 (generated-path) slice driver for `oas31-jsts/`. It is the
 honest successor report driver to the Wave-0 decode-based `jsts_runner.py`
@@ -82,9 +99,263 @@ def load_groups(path):
         return json.load(f)
 
 
+def _ptr_unescape(seg):
+    """RFC 6901 JSON-pointer segment decode: percent-decode first, then
+    unescape ~1 then ~0 (order matters)."""
+    try:
+        seg = __import__("urllib.parse", fromlist=["unquote"]).unquote(seg)
+    except Exception:
+        pass
+    return seg.replace("~1", "/").replace("~0", "~")
+
+
+def _hop_refs(branch):
+    """Wave-2 `$ref`/`$defs`/`$id` surfacing (FROZEN contract §10.3). Rewrites
+    every ref that RESOLVES WITHIN the current group doc into
+    `#/components/schemas/<name>` and returns {name: {"oneOf": [target]}} extra
+    components (synthetic composed components the engine densifies into
+    `<name>_branch_0` rows). Local JSON pointers (`#`, `#/$defs/...`,
+    `#/properties/...`, `#/prefixItems/...`, escaped pointers, bare-anchor
+    fragments) are resolved against the nearest enclosing `$id` resource;
+    relative/qualified bases are merged (urllib.parse.urljoin) against the
+    containing resource id and matched against in-doc `$id` values.
+
+    Refs that do NOT resolve inside the doc (remote `http(s)`, `urn:`, the
+    metaschema) are left untouched — the engine emits them as inert nodes and
+    the verdict is measured honestly (never BLOCKED, never fake-pass).
+
+    In-place on `branch`; returns the extra components dict.
+    """
+    import copy as _copy
+    import re as _re
+    from urllib.parse import urljoin as _urljoin
+
+    DOM = object()          # ctx marker for the document root
+    hoisted = {}            # name -> {oneOf: [deepcopy(target)]}
+    pending = {}            # name -> LIVE target (captured after pass 1 so
+                            # inner refs already rewritten in the tree)
+    id_index = {}           # resolved-resource-id -> target dict
+    id_name = {}            # resolved-resource-id -> preferred hoist name
+    used = set()
+
+    def capture(name, target):
+        """Register a live target for later capture (first-referenced wins)."""
+        if name not in pending:
+            pending[name] = target
+        elif pending[name] is not target:
+            # same hoist name resolved to a DIFFERENT live object — dedupe
+            k = 2
+            while "%s__%d" % (name, k) in used:
+                k += 1
+            nm = "%s__%d" % (name, k)
+            used.add(nm)
+            pending[nm] = target
+            return nm
+        return name
+
+    # ---- pass 0: index resources by RESOLVED $id (deep walk) ----------------
+    def idx_walk(node, ctx_id, hint):
+        if isinstance(node, dict):
+            rid = node.get("$id")
+            eff = ctx_id
+            if rid is not None and str(rid):
+                eff = _urljoin(str(ctx_id or ""), str(rid))
+                id_index.setdefault(eff, node)
+                id_name.setdefault(eff, hint)
+            for k, v in node.items():
+                if isinstance(v, str) and (k == "$id" or k == "$schema"):
+                    continue
+                if k == "$defs" and isinstance(v, dict):
+                    for dk, dv in v.items():
+                        idx_walk(dv, eff, str(dk))
+                elif isinstance(v, dict):
+                    idx_walk(v, eff, hint)
+                elif isinstance(v, list):
+                    for i2, vv in enumerate(v):
+                        idx_walk(vv, eff, None)
+        elif isinstance(node, list):
+            for i2, vv in enumerate(node):
+                idx_walk(vv, ctx_id, None)
+
+    idx_walk(branch, branch.get("$id") if isinstance(branch, dict) else None, None)
+
+    def navigate(base_obj, frag):
+        """Resolve a fragment ('' | '/a/b' | 'bare-anchor') against base_obj.
+        Returns a dict subschema or a bool, or None when unresolvable."""
+        if not frag:
+            return base_obj
+        if frag.startswith("/"):
+            cur = base_obj
+            for seg in frag[1:].split("/"):
+                dec = _ptr_unescape(seg)
+                if isinstance(cur, dict):
+                    if dec in cur:
+                        cur = cur[dec]
+                    else:
+                        return None
+                elif isinstance(cur, list):
+                    try:
+                        cur = cur[int(dec)]
+                    except (ValueError, IndexError):
+                        return None
+                else:
+                    return None
+            return cur
+        # bare anchor fragment (e.g. '#bigint') — scan subtree for $anchor in
+        # DOCUMENT ORDER (the first $anchor with that name wins in 2020-12;
+        # a LIFO stack would reverse sibling precedence and can pick the wrong
+        # $anchor when several schemas share a name).
+        if isinstance(base_obj, list):
+            base_obj = {"items": base_obj}
+        from collections import deque as _deque
+        dq = _deque([base_obj]) if isinstance(base_obj, dict) else _deque()
+        while dq:
+            n = dq.popleft()
+            if isinstance(n, dict):
+                if n.get("$anchor") == frag:
+                    return n
+                for v in n.values():
+                    if isinstance(v, (dict,)):
+                        dq.append(v)
+                    elif isinstance(v, list):
+                        dq.extend(x for x in v if isinstance(x, dict))
+        return None
+
+    def resolve_and_rewrite(node, ref, ctx_obj, ctx_id):
+        """Try to rewrite node['$ref'] (a local-or-$id-resolvable ref) to a
+        components ref. Returns True when rewritten (target hoisted)."""
+        if ref.startswith("#"):
+            base, frag = "", ref[1:]
+            base_obj = ctx_obj if ctx_obj is not None else branch
+        else:
+            base, frag = ref.split("#", 1) if "#" in ref else (ref, "")
+            full = _urljoin(str(ctx_id or ""), base) if ctx_id else base
+            if full in id_index:
+                base_obj = id_index[full]
+            elif base in id_index:
+                base_obj = id_index[base]
+            elif ctx_id and full == ctx_id:
+                # self-resource full ref -> the enclosing resource itself
+                base_obj = ctx_obj if ctx_obj is not None else branch
+            else:
+                return False
+            # 2020-12 root-self: a full URI identical to the ROOT resource id
+            root_eff = None
+            if isinstance(branch, dict) and branch.get("$id"):
+                root_eff = _urljoin("", str(branch["$id"]))
+            if base_obj is None and root_eff and full == root_eff:
+                base_obj = branch
+        if base_obj is None:
+            return False
+        target = navigate(base_obj, frag)
+        if target is None or not isinstance(target, (dict, bool)):
+            return False
+        nm = _hoist_name_of(ref, base_obj, frag, ctx_obj, ctx_id, target)
+        if nm is None:
+            return False
+        # component keys are dereferenced verbatim by the OAS-3.1 reader; keep
+        # only fragment-safe characters ('' '" ' break ModelUtils pointer walk)
+        nm = _re.sub(r"[^0-9A-Za-z_.~-]+", "_", nm) or "__empty"
+        nm = capture(nm, target)
+        node["$ref"] = "#/components/schemas/" + nm
+        return True
+
+    def _hoist_name_of(ref, base_obj, frag, ctx_obj, ctx_id, target):
+        # local pointer refs derive their name from the pointer leaf
+        if ref.startswith("#"):
+            if frag == "":
+                # self/root ref — only the root resource may alias __root
+                root_eff = None
+                if isinstance(branch, dict) and branch.get("$id"):
+                    root_eff = _urljoin("", str(branch["$id"]))
+                if ctx_obj is None or ctx_id in (None, DOM):
+                    return "__root"
+                if root_eff is not None and ctx_id == root_eff:
+                    return "__root"
+                tail = str(ctx_id or "res").split("/")[-1] or "res"
+                return "__res_" + _re.sub(r"[^0-9A-Za-z_]+", "_", tail)
+            if frag.startswith("/"):
+                return _ptr_unescape(frag.split("/")[-1]) or "__empty"
+            return "__anchor_" + frag
+        # qualified/base refs: name from the matched resource's $defs key
+        base_, frag_ = ref.split("#", 1) if "#" in ref else (ref, "")
+        full_ = _urljoin(str(ctx_id or ""), base_) if ctx_id else base_
+        hit_id = full_ if full_ in id_index else (base_ if base_ in id_index else None)
+        if hit_id is not None:
+            nm = id_name.get(hit_id)
+            if frag_.startswith("/"):
+                nm = _ptr_unescape(frag_.split("/")[-1]) or nm
+            if nm is None:
+                tail = str(hit_id or "res").split("/")[-1] or "res"
+                nm = "__res_" + _re.sub(r"[^0-9A-Za-z_]+", "_", tail)
+            return nm
+        return "__root"  # self/root alias (base resolves to the root resource)
+
+    # ---- pass 1: rewrite refs with context-aware resource tracking ----------
+    def walk(node, ctx_obj, ctx_id):
+        if isinstance(node, dict):
+            rid = node.get("$id")
+            if rid is not None and str(rid):
+                eff = _urljoin(str(ctx_id or ""), str(rid)) if ctx_id else str(rid)
+                ctx_obj, ctx_id = node, eff
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                resolve_and_rewrite(node, ref, ctx_obj, ctx_id)
+            for k, v in node.items():
+                if isinstance(v, str) and (k == "$ref" or k == "$schema"):
+                    continue
+                # enum/const members are literal JSON DATA, not schemas — a
+                # `$ref` inside them must NOT be dereferenced (2020-12: an enum
+                # member "{\$ref:...}" stays a literal value; e.g. ref.json
+                # "naive replacement of $ref with its destination" depends on
+                # the member being deep-equal to the verbatim object).
+                if k == "enum" or k == "const":
+                    continue
+                if isinstance(v, dict):
+                    walk(v, ctx_obj, ctx_id)
+                elif isinstance(v, list):
+                    for i2, vv in enumerate(v):
+                        walk(vv, ctx_obj, ctx_id)
+        elif isinstance(node, list):
+            for i2, vv in enumerate(node):
+                walk(vv, ctx_obj, ctx_id)
+
+    walk(branch, branch if isinstance(branch, dict) else None,
+         branch.get("$id") if isinstance(branch, dict) else None)
+    # Capture hoisted targets AFTER pass 1 so any inner refs inside a target
+    # were already rewritten in the live tree (never a stale copy).
+    for name in sorted(pending):
+        if name not in hoisted:
+            hoisted[name] = {"oneOf": [_copy.deepcopy(pending[name])]}
+    # HARD REQUIREMENT for the upstream reader: openapi-generator's OAS-3.1
+    # parsing NPEs when a composed oneOf branch carries a non-"file:" `$id`.
+    # The ENGINE never reads source `$id` (its resourceIdentity/baseUri comes
+    # from the emitted SchemaResource, and all refs were already rewritten to
+    # #/components/schemas/<name>), so stripping `$id` after hoisting is a
+    # safe, honest workaround that keeps the corpus GENERATED-path green.
+    def strip_ids(obj):
+        if isinstance(obj, dict):
+            obj.pop("$id", None)
+            for v in obj.values():
+                strip_ids(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                strip_ids(v)
+
+    strip_ids(branch)
+    for c in hoisted.values():
+        strip_ids(c)
+    return hoisted
+
+
 def wrap_spec(groups):
     """OAS-wrap each group's schema as a single-branch oneOf so the Wave-1 IR
-    emitter lowers it to a validate_G<i>_branch_0 dispatch."""
+    emitter lowers it to a validate_G<i>_branch_0 dispatch. Wave-2 (contract
+    §10.3): local `$defs`/pointer/`$id`-resolvable refs inside a group are
+    hoisted into synthetic composed `components.schemas` and the refs rewritten
+    to `#/components/schemas/<name>` (the engine's `refTargetIdOf`/`refSimpleName`
+    expect exactly this shape). Unresolvable remote/URN refs are left in place
+    (inert nodes — measured honestly)."""
     comp = {}
     for i, g in enumerate(groups):
         s = g.get("schema", {})
@@ -92,6 +363,8 @@ def wrap_spec(groups):
         if isinstance(branch, dict):
             branch.pop("$schema", None)
         comp["G%d" % i] = {"oneOf": [branch]}
+        if isinstance(branch, dict):
+            comp.update(_hop_refs(branch))
     return {"openapi": "3.1.0", "info": {"title": "jsts-genpath-slice",
                                          "version": "1.0.0"},
             "paths": {}, "components": {"schemas": comp}}
@@ -100,7 +373,8 @@ def wrap_spec(groups):
 def generate(jar, spec_path, out_dir):
     cmd = ["java", "-jar", jar, "generate", "--generator-name",
            "cpp-boost-beast-client", "--input-spec", spec_path,
-           "--output", out_dir, "--additional-properties", "packageName=Jsts",
+           "--output", out_dir, "--skip-validate-spec",
+           "--additional-properties", "packageName=Jsts",
            "--additional-properties", "modelPackage=model"]
     return subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
@@ -120,6 +394,7 @@ def write_driver(groups, work_dir, tag):
     lines.append('#include <cstdio>')
     lines.append('#include <string>')
     lines.append('#include "oas31_lexeme.hpp"')
+    lines.append('#include "oas31_object_array.hpp"')
     lines.append('#include "oas31_validator.hpp"')
     lines.append('#include "schema_ir.generated.hpp"')
     lines.append('using oas31::RawInstance; using oas31::ValidationContext;')
@@ -138,9 +413,11 @@ def write_driver(groups, work_dir, tag):
             exp = "true" if bool(t["valid"]) else "false"
             lines.append('  { std::string pl="%s"; std::string lx;' % payload_c)
             lines.append('    oas31::captureLeadingNumberLexeme(pl,lx);')
+            lines.append('    oas31::InstanceLexemeTable tbl;')
+            lines.append('    oas31::captureInstanceLexemes(pl,tbl);')
             lines.append('    try {')
             lines.append('      boost::json::value v=boost::json::parse(pl);')
-            lines.append('      RawInstance ri(&v,lx); ValidationPath p; '
+            lines.append('      RawInstance ri(&v,lx); ri.lexemes=&tbl; ValidationPath p; '
                          'ValidationContext c;')
             lines.append(f'      ValidationResult r=validate_G{i}_branch_0(ri,p,c);')
             lines.append('      bool ok=(r.success==%s);' % exp)
