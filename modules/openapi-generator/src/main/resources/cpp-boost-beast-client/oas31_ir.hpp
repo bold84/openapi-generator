@@ -47,9 +47,34 @@ enum class ApplicatorKind : std::uint8_t {
     dynamicRef  // $dynamicRef (Wave-2+, D4)
 };
 
+/// OAS/JSON-Schema `additionalProperties` tri-state (Wave-2).
+///   absent : keyword not present  -> unlisted properties are allowed (no-op),
+///   allowed: `additionalProperties: true`  -> allowed (no-op),
+///   reject : `additionalProperties: false` -> REJECT any unlisted key,
+///   schema : `additionalProperties: <schema>` -> validate unlisted values.
+/// Listed (declared `properties`) keys are NEVER additionally evaluated.
 /// Index into SchemaResourceRegistry::nodes. kNoSchema == "no schema".
 using SchemaIndex = std::int32_t;
 inline constexpr SchemaIndex kNoSchema = -1;
+
+/// OAS/JSON-Schema `additionalProperties` tri-state (Wave-2).
+///   absent : keyword not present  -> unlisted properties are allowed (no-op),
+///   allowed: `additionalProperties: true`  -> allowed (no-op),
+///   reject : `additionalProperties: false` -> REJECT any unlisted key,
+///   schema : `additionalProperties: <schema>` -> validate unlisted values.
+/// Listed (declared `properties`) keys are NEVER additionally evaluated.
+enum class AdditionalPropertiesKind : std::uint8_t {
+    absent,
+    allowed,
+    reject,
+    schema
+};
+
+/// One declared `properties` entry: property name -> child schema node index.
+struct PropertyBinding {
+    std::string name;
+    SchemaIndex node = kNoSchema;
+};
 
 /// OAS 3.1 boolean value-schema: true => always valid, false => never.
 enum class BooleanValue : std::uint8_t { notBoolean, true_, false_ };
@@ -94,6 +119,26 @@ struct SchemaNode {
     // Array uniqueItems (K-22): true => reject when any pair of items is
     // deep-equal (1 == 1.0 counts as a duplicate).
     bool hasUniqueItems = false;
+
+    // -- Wave-2 object structural (FROZEN §10.2) ---------------------------
+    bool                     hasObjectSchema = false;
+    std::vector<PropertyBinding> properties;   // declared property subschemas
+    std::vector<std::string> required;
+    AdditionalPropertiesKind additionalProperties = AdditionalPropertiesKind::absent;
+    SchemaIndex              additionalSchema = kNoSchema;  // schema-form child
+    ExactNumber              minProperties;  bool hasMinProperties = false;
+    ExactNumber              maxProperties;  bool hasMaxProperties = false;
+
+    // -- Wave-2 array structural (FROZEN §10.2) ----------------------------
+    std::vector<SchemaIndex> prefixItems;     // prefixItems[i] applies to index i
+    SchemaIndex              items = kNoSchema;  // applies to indices >= prefixItems.size()
+    ExactNumber              minItems;  bool hasMinItems = false;
+    ExactNumber              maxItems;  bool hasMaxItems = false;
+
+    // -- Wave-2 unevaluatedProperties (bool/absent + schema form, best-effort) --
+    bool         hasUnevaluatedProperties = false;
+    bool         unevaluatedPropertiesRejects = false;
+    SchemaIndex  unevaluatedSchema = kNoSchema;
 
     // -- applicators --
     ApplicatorKind         applicator = ApplicatorKind::none;

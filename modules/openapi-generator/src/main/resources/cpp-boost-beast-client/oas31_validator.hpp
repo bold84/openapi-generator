@@ -1,20 +1,25 @@
 // ============================================================================
-// oas31_validator.hpp — Wave-1 shared SchemaEvaluator + ValidationContext (ADR
+// oas31_validator.hpp — shared SchemaEvaluator + ValidationContext (ADR
 // D2/D3/D5, Option B). Thin validate_<id> dispatch dispatches into this shared
 // schema interpreter over the densified IR tables in oas31_ir.hpp.
 //
-// HEADER-ONLY. Built under -Werror with g++ -std=c++17.
+// Wave-1: boolean/type/exact-number/not/deep-const/deep-enum/uniqueItems/$ref.
+// Wave-2 (this pass, FROZEN §10): object traversal (properties/required/
+// min-maxProperties/additionalProperties tri-state), array traversal
+// (prefixItems-by-index + items-remainder + min-maxItems), applicator walk
+// (allOf/anyOf/oneOf, transactional annotations), best-effort
+// unevaluatedProperties, and container-depth EXACT numeric lexemes via the
+// optional InstanceLexemeTable (oas31_object_array.hpp). uniqueItems:false is
+// a no-op. $ref + siblings both apply (2020-12).
 //
-// Skeletal slice: RawInstance, ValidationContext, AnnotationStore and the
-// SchemaEvaluator API + basic boolean/type/exact-number/not handling are
-// implemented. Full applicator walk (allOf/anyOf/oneOf), annotation
-// transaction wiring, unevaluated* and $dynamicRef are LATER-agents' scope.
+// HEADER-ONLY. Built under -Werror with g++ -std=c++17.
 // ============================================================================
 #ifndef OAS31_VALIDATOR_HPP_
 #define OAS31_VALIDATOR_HPP_
 
 #include "oas31_ir.hpp"
 #include "oas31_deep_equal.hpp"
+#include "oas31_object_array.hpp"
 
 #include <boost/json.hpp>
 
@@ -79,19 +84,25 @@ struct ValidationResult {
 
 // ============================================================================
 // RawInstance — the ADR's raw-instance view. Holds the typed Boost.JSON view
-// (representability gate) PLUS an optional exact numeric lexeme captured by the
-// number-lexeme tokenizer (runner agent, later slice). When the lexeme is
-// present, asExactNumber() is exact; otherwise it degrades to the Boost.JSON
-// value kind (lossy) — recorded as an honest limitation until the tokenizer.
+// (representability gate) PLUS exact numeric lexemes. Exactness sources, in
+// priority order:
+//   1. this->numericLexeme (Wave-1 scalar-root capture),
+//   2. an attached InstanceLexemeTable entry at this->instancePath_ (Wave-2
+//      container-depth capture; atMember/atIndex propagate path+table),
+//   3. the Boost.JSON value kind (lossy fallback, unchanged Wave-1 behaviour).
 // ============================================================================
 struct RawInstance {
     boost::json::value const* value = nullptr;
     std::string numericLexeme;   // exact lexeme when this instance is a JSON number (may be empty)
+    InstanceLexemeTable const* lexemes = nullptr;  // optional container-depth table
+    std::string instancePath_;   // canonical JSON-pointer path ("" root)
 
     RawInstance() = default;
     explicit RawInstance(boost::json::value const* v) : value(v) {}
     RawInstance(boost::json::value const* v, std::string lexeme)
         : value(v), numericLexeme(std::move(lexeme)) {}
+    RawInstance(boost::json::value const* v, InstanceLexemeTable const* table)
+        : value(v), lexemes(table) {}
 
     bool isNull() const { return value == nullptr || value->is_null(); }
     bool isNumber() const {
@@ -129,11 +140,25 @@ struct RawInstance {
         return 0;
     }
 
+    bool hasMember(char const* key) const {
+        if (value != nullptr && value->is_object()) {
+            return value->as_object().find(key) != value->as_object().end();
+        }
+        return false;
+    }
+
     RawInstance atMember(char const* key) const {
         if (value != nullptr && value->is_object()) {
             auto const* obj = value->if_object();
             auto it = obj->find(key);
-            if (it != obj->end()) return RawInstance(&it->value());
+            if (it != obj->end()) {
+                RawInstance child(&it->value());
+                child.instancePath_ = instancePath_.empty()
+                    ? jsonPointerEscape(key)
+                    : instancePath_ + "/" + jsonPointerEscape(key);
+                child.lexemes = lexemes;
+                return child;
+            }
         }
         return RawInstance();
     }
@@ -141,14 +166,39 @@ struct RawInstance {
     RawInstance atIndex(std::size_t i) const {
         if (value != nullptr && value->is_array()) {
             auto const& arr = value->as_array();
-            if (i < arr.size()) return RawInstance(&arr[i]);
+            if (i < arr.size()) {
+                RawInstance child(&arr[i]);
+                child.instancePath_ = instancePath_ + "/" + std::to_string(i);
+                child.lexemes = lexemes;
+                return child;
+            }
         }
         return RawInstance();
     }
 
-    /// Exact number when a lexeme is available; otherwise converted (lossy).
+    /// Ordered list of object member KEYS (as decoded by Boost.JSON). The
+    /// instance keys are the authoritative enumeration source for the
+    /// additionalProperties / unevaluatedProperties passes.
+    std::vector<std::string> objectKeys() const {
+        std::vector<std::string> keys;
+        if (value != nullptr && value->is_object()) {
+            boost::json::object const& ob = value->as_object();
+            keys.reserve(ob.size());
+            for (auto const& kv : ob) {
+                keys.emplace_back(kv.key().data(), kv.key().size());
+            }
+        }
+        return keys;
+    }
+
+    /// Exact number: raw lexeme (node-local, then container-depth table),
+    /// degraded to the typed value kind only when no lexeme is available.
     ExactNumber asExactNumber() const {
         if (!numericLexeme.empty()) return ExactNumber::parseLexeme(numericLexeme);
+        if (lexemes != nullptr) {
+            std::string const* lx = lexemes->lexemeAt(instancePath_);
+            if (lx != nullptr) return ExactNumber::parseLexeme(*lx);
+        }
         if (value != nullptr) {
             if (value->is_int64()) return ExactNumber::fromInt(value->as_int64());
             if (value->is_uint64()) return ExactNumber::fromUint(value->as_uint64());
@@ -162,7 +212,8 @@ struct RawInstance {
 // EXACT deep JSON equality, instance vs. stored schema value (K-30/K-34/K-22).
 // Number equality is ALWAYS via ExactNumber (1 == 1.0 == 1e0); never double.
 // Objects compare by exact key set (missing key => not equal); arrays
-// positionally; the instance side is lexeme-first (exact), degrading to value
+// positionally; the instance side is lexeme-first (exact, INCLUDING at
+// container depths via the attached InstanceLexemeTable), degrading to value
 // kind only for container children that carry no captured lexeme.
 // ============================================================================
 inline bool deepInstanceEqual(RawInstance const& inst, boost::json::value const& sv) {
@@ -208,7 +259,8 @@ inline bool deepInstanceEqual(RawInstance const& inst, boost::json::value const&
 // ============================================================================
 // EXACT deep equality between TWO raw instances (used by uniqueItems, K-22).
 // Identical semantics to deepInstanceEqual but neither side is a stored schema
-// value; both sides may carry numeric lexemes, compared via ExactNumber.
+// value; BOTH sides may carry numeric lexemes (node-local and table), compared
+// via ExactNumber at container depth.
 // ============================================================================
 inline bool deepRawEqual(RawInstance const& a, RawInstance const& b) {
     JsonType const ka = a.kind();
@@ -234,9 +286,10 @@ inline bool deepRawEqual(RawInstance const& a, RawInstance const& b) {
             if (!a.value || !b.value || a.size() != b.size()) return false;
             boost::json::object const& ob = b.value->as_object();
             for (auto const& kv : ob) {
-                RawInstance m = a.atMember(kv.key().data());
-                if (m.value == nullptr) return false;   // a lacks this key
-                if (!deepRawEqual(m, RawInstance(&kv.value()))) return false;
+                RawInstance const ma = a.atMember(kv.key().data());
+                RawInstance const mb = b.atMember(kv.key().data());
+                if (ma.value == nullptr || mb.value == nullptr) return false;
+                if (!deepRawEqual(ma, mb)) return false;
             }
             return true;
         }
@@ -313,8 +366,7 @@ public:
         return validateSchemaNode(registry_.node(node), instance, path, ctx);
     }
 
-    /// Validate a single schema object. Later slices add applicator walking,
-    /// annotation emit, and unevaluated* tracking.
+    /// Validate a single schema object against one raw instance.
     ValidationResult validateSchemaNode(SchemaNode const& node, RawInstance const& instance,
                                         ValidationPath& path, ValidationContext& ctx) const {
         // Boolean value-schema (OAS 3.1).
@@ -322,10 +374,27 @@ public:
         if (node.booleanValue == BooleanValue::false_)
             return ValidationResult::invalidAt(path, "boolean value-schema false");
 
-        // K-29 $ref: transparent applicator to the generation-time-resolved target.
-        if (node.applicator == ApplicatorKind::ref && !node.children.empty()) {
-            return this->validate(node.children[0], instance, path, ctx);
+        // Wave-2 unevaluatedProperties: snapshot the evaluated-property set at
+        // ENTRY so the exit check only considers keys evaluated WITHIN this
+        // node's subtree (applicators / object traversal included). Best-effort
+        // subset of full annotation semantics (FROZEN §10.3).
+        std::set<std::string> unevalEntry;
+        if (node.hasUnevaluatedProperties && instance.isObject()) {
+            unevalEntry = ctx.evaluatedProperties;
         }
+
+        // K-29 $ref: validate the generation-time-resolved target first, then
+        // FALL THROUGH to this node's OWN sibling keywords (2020-12: $ref and
+        // siblings BOTH apply). Pure-ref nodes carry no siblings, so their
+        // behaviour is unchanged (transparent applicator).
+        if (node.applicator == ApplicatorKind::ref && !node.children.empty()) {
+            ValidationResult rr = this->validate(node.children[0], instance, path, ctx);
+            if (!rr.success) return rr;
+        }
+
+        // Applicator walk (allOf/anyOf/oneOf) with transactional annotations.
+        ValidationResult appRes = this->walkApplicators(node, instance, path, ctx);
+        if (!appRes.success) return appRes;
 
         // Type flags (type / type-array). `number` matches any JSON number;
         // `integer` matches only numbers whose exact mathematical value is an
@@ -360,10 +429,6 @@ public:
             if (node.hasExclusiveMaximum && !(n < node.exclusiveMaximum))
                 return ValidationResult::invalidAt(path, "at or above exclusive maximum");
             if (node.hasMultipleOf) {
-                // JSON Schema requires multipleOf > 0. With a non-positive
-                // divisor the exact divmod is undefined (0) or unrepresentable
-                // (negative); fail closed on the malformed schema rather than
-                // producing a bogus verdict or throwing.
                 if (isNonPositive(node.multipleOf))
                     return ValidationResult::invalidAt(
                         path, "invalid schema: multipleOf must be > 0");
@@ -375,13 +440,10 @@ public:
         }
 
         // Enum — EXACT deep JSON equality (K-30/K-34). The candidate list is:
-        //  1. node.enumNumbers — exact numeric lexemes (handles huge numbers
-        //     beyond uint64/double without any boost::json double round-trip),
-        //  2. node.enumJson — the full deep JSON member set (all kinds), compared
-        //     via deepInstanceEqual (ExactNumber for every number),
-        //  3. legacy scalar enumStrings / enumBooleans (backward-compat only).
-        // A numeric instance is matched against the EXACT numeric bucket first so a
-        // big const/enum is never decided by a lossy double.
+        //  1. node.enumNumbers — exact numeric lexemes,
+        //  2. node.enumJson — the full deep JSON member set (all kinds),
+        //  3. legacy scalar enumStrings / enumBooleans.
+        // An EMPTY enum (hasEnumJson with zero members) rejects everything.
         bool enumFound = false;
         if (instance.isNumber() && !node.enumNumbers.empty()) {
             ExactNumber const n = instance.asExactNumber();
@@ -423,7 +485,8 @@ public:
         }
 
         // K-22 uniqueItems: array items must be pairwise NOT deep-equal. Because
-        // 1 == 1.0 under ExactNumber, [1,2,1.0] is rejected (duplicate).
+        // 1 == 1.0 under ExactNumber, [1,2,1.0] is rejected (duplicate). This
+        // now runs at container depth with EXACT lexemes on both sides.
         if (node.hasUniqueItems && instance.isArray()) {
             std::size_t const n = instance.size();
             for (std::size_t i = 0; i < n; ++i) {
@@ -434,18 +497,51 @@ public:
             }
         }
 
-
-        // `not` subschema reference: valid iff the subschema does NOT match.
+        // `not` subschema: valid iff the subschema does NOT match. The
+        // subschema is evaluated in a fresh branch so no annotations (and no
+        // evaluated-coverage markers) leak into the outer evaluation.
         if (node.notSchema != kNoSchema) {
+            ValidationContext::Branch b = ctx.beginBranch();
             ValidationResult inner =
                 this->validate(node.notSchema, instance, path, ctx);
+            ctx.rollbackBranch(b);
             if (inner.success) return ValidationResult::invalidAt(path, "not subschema matched");
         }
 
-        // NOTE: allOf/anyOf/oneOf applicator walking, annotation transaction
-        // wiring, and unevaluated* tracking are LATER agents' scope (Wave-1).
-        // This skeletal slice returns valid for composing applicators.
-        (void)ctx;
+        // Object structural traversal (FROZEN §10.3).
+        ValidationResult objRes = this->validateObjectTraversal(node, instance, path, ctx);
+        if (!objRes.success) return objRes;
+
+        // Array structural traversal (FROZEN §10.3).
+        ValidationResult arrRes = this->validateArrayTraversal(node, instance, path, ctx);
+        if (!arrRes.success) return arrRes;
+
+        // Best-effort unevaluatedProperties (bool false-form rejects; schema
+        // form validates). Only object instances are considered. Any key NOT
+        // evaluated within this node's subtree is "unevaluated".
+        if (node.hasUnevaluatedProperties && instance.isObject()) {
+            std::set<std::string> localEval;
+            for (auto const& p : ctx.evaluatedProperties)
+                if (unevalEntry.count(p) == 0) localEval.insert(p);
+            if (node.unevaluatedPropertiesRejects) {
+                for (std::string const& k : instance.objectKeys()) {
+                    if (localEval.count(k) == 0)
+                        return ValidationResult::invalidAt(
+                            path, "unevaluated property '" + k + "'");
+                }
+            } else if (node.unevaluatedSchema != kNoSchema) {
+                for (std::string const& k : instance.objectKeys()) {
+                    if (localEval.count(k) == 0) {
+                        RawInstance const m = instance.atMember(k.c_str());
+                        ValidationPath childPath = path;
+                        childPath.enter(k);
+                        ValidationResult r =
+                            this->validate(node.unevaluatedSchema, m, childPath, ctx);
+                        if (!r.success) return r;
+                    }
+                }
+            }
+        }
 
         return ValidationResult::valid();
     }
@@ -465,6 +561,162 @@ private:
     /// True when n <= 0 (used to reject malformed multipleOf schemas).
     static bool isNonPositive(ExactNumber const& n) {
         return n.isZero() || n < ExactNumber();
+    }
+
+    /// Is `key` covered by a declared `properties` entry (never additionally
+    /// evaluated)?
+    static bool isListedProperty(SchemaNode const& node, std::string const& key) {
+        for (PropertyBinding const& pb : node.properties) {
+            if (pb.name == key) return true;
+        }
+        return false;
+    }
+
+    /// allOf/anyOf/oneOf applicator walk with transactional annotation merging.
+    /// Only SUCCESSFUL branches retain their evaluated-property/item coverage
+    /// and annotations (required for correct anyOf/oneOf + unevaluated*).
+    ValidationResult walkApplicators(SchemaNode const& node, RawInstance const& instance,
+                                     ValidationPath& path, ValidationContext& ctx) const {
+        switch (node.applicator) {
+            case ApplicatorKind::none:
+            case ApplicatorKind::ref:   // handled by the caller's fall-through
+                return ValidationResult::valid();
+            case ApplicatorKind::allOf: {
+                for (SchemaIndex c : node.children) {
+                    ValidationResult r = this->validate(c, instance, path, ctx);
+                    if (!r.success) return r;
+                }
+                return ValidationResult::valid();
+            }
+            case ApplicatorKind::anyOf: {
+                bool any = false;
+                for (SchemaIndex c : node.children) {
+                    ValidationContext::Branch b = ctx.beginBranch();
+                    ValidationResult r = this->validate(c, instance, path, ctx);
+                    if (r.success) { any = true; ctx.commitBranch(b); }
+                    else { ctx.rollbackBranch(b); }
+                }
+                if (any) return ValidationResult::valid();
+                return ValidationResult::invalidAt(path, "anyOf: no branch matched");
+            }
+            case ApplicatorKind::oneOf: {
+                std::size_t matches = 0;
+                for (SchemaIndex c : node.children) {
+                    ValidationContext::Branch b = ctx.beginBranch();
+                    ValidationResult r = this->validate(c, instance, path, ctx);
+                    if (r.success) { ++matches; ctx.commitBranch(b); }
+                    else { ctx.rollbackBranch(b); }
+                }
+                if (matches == 1) return ValidationResult::valid();
+                if (matches == 0)
+                    return ValidationResult::invalidAt(path, "oneOf: no branch matched");
+                return ValidationResult::invalidAt(path, "oneOf: more than one branch matched");
+            }
+            default:
+                break;
+        }
+        return ValidationResult::valid();
+    }
+
+    /// Object structural traversal. Only active for object instances; ignores
+    /// non-object kinds (as JSON Schema requires).
+    ValidationResult validateObjectTraversal(SchemaNode const& node, RawInstance const& instance,
+                                             ValidationPath& path, ValidationContext& ctx) const {
+        if (!instance.isObject()) return ValidationResult::valid();
+
+        // minProperties / maxProperties — ExactNumber from the instance size,
+        // never a double; a decimal bound (1.0) compares equal to 1.
+        std::size_t const n = instance.size();
+        if (node.hasMinProperties && ExactNumber::fromUint(n) < node.minProperties)
+            return ValidationResult::invalidAt(path, "object has fewer properties than minProperties");
+        if (node.hasMaxProperties && node.maxProperties < ExactNumber::fromUint(n))
+            return ValidationResult::invalidAt(path, "object has more properties than maxProperties");
+
+        // required: every listed name must be PRESENT (a null-valued member is
+        // present; absence is what fails).
+        for (std::string const& rn : node.required) {
+            if (!instance.hasMember(rn.c_str()))
+                return ValidationResult::invalidAt(path, "missing required property '" + rn + "'");
+        }
+
+        // Declared properties: validate each present member against its
+        // property subschema; absent members are not evaluated.
+        for (PropertyBinding const& pb : node.properties) {
+            RawInstance m = instance.atMember(pb.name.c_str());
+            if (m.value == nullptr) continue;
+            ValidationPath childPath = path;
+            childPath.enter(pb.name);
+            ValidationResult r = this->validate(pb.node, m, childPath, ctx);
+            if (!r.success) return r;
+            ctx.evaluatedProperties.insert(pb.name);
+        }
+
+        // additionalProperties tri-state. Listed properties are NEVER
+        // additionally evaluated: they are skipped. Unlisted keys are either
+        // allowed (absent/allowed), rejected (false), or validated against the
+        // additionalProperties schema.
+        if (node.additionalProperties == AdditionalPropertiesKind::reject ||
+            node.additionalProperties == AdditionalPropertiesKind::schema) {
+            for (std::string const& k : instance.objectKeys()) {
+                if (isListedProperty(node, k)) continue;
+                RawInstance m = instance.atMember(k.c_str());
+                if (node.additionalProperties == AdditionalPropertiesKind::reject)
+                    return ValidationResult::invalidAt(
+                        path, "additionalProperties:false rejects '" + k + "'");
+                if (node.additionalSchema != kNoSchema) {
+                    ValidationPath childPath = path;
+                    childPath.enter(k);
+                    ValidationResult r =
+                        this->validate(node.additionalSchema, m, childPath, ctx);
+                    if (!r.success) return r;
+                }
+                ctx.evaluatedProperties.insert(k);
+            }
+        } else if (node.additionalProperties == AdditionalPropertiesKind::allowed) {
+            for (std::string const& k : instance.objectKeys()) {
+                if (isListedProperty(node, k)) continue;
+                ctx.evaluatedProperties.insert(k);
+            }
+        }
+
+        return ValidationResult::valid();
+    }
+
+    /// Array structural traversal. Only active for array instances.
+    ValidationResult validateArrayTraversal(SchemaNode const& node, RawInstance const& instance,
+                                            ValidationPath& path, ValidationContext& ctx) const {
+        if (!instance.isArray()) return ValidationResult::valid();
+
+        std::size_t const n = instance.size();
+        if (node.hasMinItems && ExactNumber::fromUint(n) < node.minItems)
+            return ValidationResult::invalidAt(path, "array has fewer items than minItems");
+        if (node.hasMaxItems && node.maxItems < ExactNumber::fromUint(n))
+            return ValidationResult::invalidAt(path, "array has more items than maxItems");
+
+        // prefixItems: each schema applies to the item at ITS index.
+        std::size_t const prefixCount = node.prefixItems.size();
+        for (std::size_t i = 0; i < prefixCount && i < n; ++i) {
+            RawInstance m = instance.atIndex(i);
+            ValidationPath childPath = path;
+            childPath.enterIndex(i);
+            ValidationResult r = this->validate(node.prefixItems[i], m, childPath, ctx);
+            if (!r.success) return r;
+            ctx.evaluatedItems.insert(i);
+        }
+
+        // items: applies to the REMAINDER (indices >= prefixItems.size()).
+        if (node.items != kNoSchema) {
+            for (std::size_t i = prefixCount; i < n; ++i) {
+                RawInstance m = instance.atIndex(i);
+                ValidationPath childPath = path;
+                childPath.enterIndex(i);
+                ValidationResult r = this->validate(node.items, m, childPath, ctx);
+                if (!r.success) return r;
+                ctx.evaluatedItems.insert(i);
+            }
+        }
+
+        return ValidationResult::valid();
     }
 
     SchemaResourceRegistry const& registry_;

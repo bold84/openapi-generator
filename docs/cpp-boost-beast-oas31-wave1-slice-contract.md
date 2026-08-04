@@ -323,3 +323,113 @@ compare through `ExactNumber`). Object keys are compared unordered; arrays posit
 - `[out-of-slice]` Still later waves: allOf/anyOf/oneOf full applicator walk,
   unevaluated*, `$dynamicRef`, string length+pattern, annotations, contains,
   dependent/if-then-else, C-profile, Waves 5–6. NOT claimed.
+
+---
+
+## 10. OBJECT/ARRAY STRUCTURAL FROZEN CONTRACT (engine integration owner, THIS pass)
+
+Frozen by the **integration/engine owner** driving the Wave-2 object/array structural
+pass. This section FREEZES the additional IR fields, evaluator semantics and ownership
+map for object/array traversal, container-depth exact deep-equality, `$defs`/`$ref`
+surfacing, and the Wave-1 residual closes. It is additive to §3–§9; nothing is changed
+backwards. The GENERATED-path (real generator → `schema_ir.generated.*` →
+`validate_<id>` → `SchemaEvaluator`) remains the ONLY promotion authority.
+
+### 10.1 Freeze rule (file ownership for THIS pass)
+| Entity | Owner (THIS pass) | Deliverable |
+| --- | --- | --- |
+| `oas31_ir.hpp` (additive fields) | **engine (FROZEN)** | object/array structural IR (§10.2) |
+| `oas31_validator.hpp` (evaluator) | **engine (FROZEN)** | object/array traversal, applicator walk, unevaluatedProperties, ref-sibling semantics, container-depth lexeme propagation (§10.3) |
+| `oas31_object_array.hpp` (NEW) | **engine (FROZEN)** | instance lexeme table capture at container depth (exactness) |
+| `CppBoostBeastClientCodegen.java` (IR emission) | **engine (extended for THIS pass)** | emit §10.2 fields from the branch assertion scan; main-node indices 0..M-1 stay stable; extra child rows appended after |
+| `oas-compliance/gate-oastructural.sh` + `phase2_oastructural_driver.cpp` + `oas31-object-array-regression.yaml` | **engine (committed, SMOKE)** | -Werror regression proof of object/array/not/enum/uniqueItems/$defs through GENERATED `validate_<id>` |
+| `oas31-jsts/tools/jsts_genpath_slice.py` (`wrap_spec` + `write_driver`) | **engine (extended for THIS pass)** | `$defs`/local-pointer ref surfacing into OAS-wrap scope; container-depth lexeme capture in the generated driver |
+| `docs/cpp-boost-beast-oas31-wave1-slice-contract.md` §10 | **engine (FROZEN)** | this contract |
+
+### 10.2 Additional FROZEN IR fields (`oas31_ir.hpp`, additive; all default-inert)
+```cpp
+enum class AdditionalPropertiesKind : std::uint8_t { absent, allowed, reject, schema };
+struct PropertyBinding { std::string name; SchemaIndex node = kNoSchema; };
+
+struct SchemaNode {
+    // ...existing fields (unchanged)...
+    // object structural
+    bool hasObjectSchema = false;
+    std::vector<PropertyBinding> properties;      // declared property subschemas (order-preserving)
+    std::vector<std::string> required;
+    AdditionalPropertiesKind additionalProperties = AdditionalPropertiesKind::absent;
+    SchemaIndex           additionalSchema = kNoSchema;   // only when additionalProperties == schema
+    ExactNumber           minProperties;  bool hasMinProperties = false;
+    ExactNumber           maxProperties;  bool hasMaxProperties = false;
+    // array structural
+    std::vector<SchemaIndex> prefixItems;             // prefixItems[i] applies to index i (2020-12)
+    SchemaIndex              items = kNoSchema;       // items applies to indices >= prefixItems.size()
+    ExactNumber              minItems;  bool hasMinItems = false;
+    ExactNumber              maxItems;  bool hasMaxItems = false;
+    // applicator + unevaluated (best-effort, bool/absent forms)
+    bool hasUnevaluatedProperties = false;            // keyword present
+    bool unevaluatedPropertiesRejects = false;        // false => reject unevaluated; true => allow
+    SchemaIndex unevaluatedSchema = kNoSchema;        // schema form (validates unevaluated values)
+    // NOTE: uniqueItems has NO "false" IR field — `uniqueItems:false` is a no-op that still
+    // materialises the node (so the JSTS runner never reports "no validate_ emitted").
+};
+```
+Numbers helpers: bounds (`minProperties`, `maxProperties`, `minItems`, `maxItems`) are
+`ExactNumber` constructed from `ExactNumber::fromUint(instance size)` at compare time —
+never an `int`/`double` shortcut (a decimal `1.0` bound compares equal to `1`).
+
+### 10.3 Additional FROZEN evaluator semantics (`oas31_validator.hpp`)
+- **Object traversal** (only when `instance.isObject()`): (1) `minProperties`/`maxProperties`
+  via `ExactNumber::fromUint(size())`; (2) `required` member presence at the current level;
+  (3) each declared `properties[name]` subschema validated with `path.enter(name)`;
+  (4) `additionalProperties` tri-state — `allowed`/`absent` impose nothing, `reject`
+  rejects any UNLISTED key, `schema` validates unlisted values via `additionalSchema`;
+  **listed properties are NEVER additionally evaluated** (excluding them from the
+  additionalProperties pass). Evaluated property names are recorded in
+  `ValidationContext::evaluatedProperties` for applicator/unevaluated tracking.
+- **Array traversal** (only when `instance.isArray()`): (1) `minItems`/`maxItems` via
+  `ExactNumber::fromUint(size())`; (2) `prefixItems[i]` validated by index for
+  `i < min(prefixItems.size, size)`; (3) `items` applies to indices
+  `i >= prefixItems.size()` (2020-12 remainder semantics); recorded into
+  `evaluatedItems`.
+- **Container-depth EXACT lexemes:** `RawInstance` gains an optional instance-lexeme
+  table (`oas31_object_array.hpp`, `InstanceLexemeTable`). `atMember`/`atIndex` propagate
+  the canonical instance path + table to children; `asExactNumber()` consults the table
+  (path-keyed) BEFORE degrading to the Boost.JSON value kind. All container-depth
+  deep-equality (const/enum/uniqueItems/dynamic `not` children) therefore NEVER degrades
+  a nested number to `double`: `1 == 1.0 == 1e0` holds with the raw lexeme, even several
+  container levels down. When no table is attached (legacy drivers) behaviour is the
+  documented value-kind fallback.
+- **`uniqueItems:false` is a NO-OP** (blithely accepted; the node is still emitted so the
+  corpus never counts the case as BLOCKED-at-emission). `uniqueItems:true` keeps the
+  existing exact deep-uniqueness rejection.
+- **`$ref` + siblings (2020-12):** a node with `applicator == ref` FIRST validates the
+  resolved target node, then FALLS THROUGH to its own sibling keywords (type/enum/
+  uniqueItems/object/array/min-maxItems/…). Purely-ref nodes carry no siblings so their
+  behaviour is unchanged (transparent).
+- **`$defs`/local-pointer surfacing:** the JSTS OAS-wrap hoists `$defs` and local JSON
+  pointers (`#`, `#/properties/...`, `#/prefixItems/...`, escaped pointers) into
+  `components.schemas` as synthetic oneOf components and rewrites the refs to
+  `#/components/schemas/<hoisted>`. The Java emitter resolves local refs to the hoisted
+  branch rows; unresolvable external refs (remote `http(s)`, unresolvable `urn:`) are
+  emitted as inert nodes (honest FAIL/PASS measured, never BLOCKED).
+- **Applicator walk (best-effort, needed by deep `not` + unevaluated):** `allOf`/
+  `anyOf`/`oneOf` children are evaluated transactionally; annotations (evaluated
+  property/item sets) from SUCCESSFUL branches only are retained (anyOf/oneOf). A
+  node with `hasUnevaluatedProperties` snapshots the evaluated-property set at entry,
+  and, at exit, `unevaluatedPropertiesRejects` rejects object keys not evaluated within
+  that node's subtree. This is a pragmatic subset of annotation semantics; full
+  `unevaluatedItems`/`$dynamicRef` remain out of slice.
+
+### 10.4 Honest verification claims for this pass (measured, not estimated)
+- `[executed]` `g++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I/opt/homebrew/include`
+  on ALL engine headers including new `oas31_object_array.hpp` (rc=0).
+- `[executed]` SMOKE ONLY (NOT promotion authority): `oas-compliance/gate-oastructural.sh`
+  proves object/array/not/enum/uniqueItems/$defs verdicts through the GENERATED
+  `validate_<id>` dispatch under `-Werror`.
+- `[executed]` THE EXECUTED GENERATED-PATH JSTS CORPUS (the only promotion authority):
+  `oas31-jsts/tools/jsts_genpath_slice.py` re-run on the Wave-1 six files plus the
+  Wave-2 structural files; a keyword is supported only on zero-FAIL AND zero-BLOCKED.
+- `[open/partial, honestly reported]` `patternProperties`, `propertyNames`,
+  `dependentSchemas`, `contains`, if/then/else, string length+pattern, `unevaluatedItems`,
+  `$dynamicRef`/anchors, remote/URN `$ref` resolution partially; NOT claimed.
