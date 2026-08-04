@@ -332,7 +332,8 @@ pass.
 | `tools/vendor.sh` | Reproducible vendor script bound to `suiteCommit`. |
 | `tools/jsts_runner.py` | L2/L5 direct + L6 OAS-wrapped runner (Wave-0 decode path): discover + generate/compile/run. |
 | `tools/jsts_genpath_slice.py` | **Wave-1 GENERATED-path** numeric/boolean slice runner (drives emitted `validate_<id>` dispatch; see `wave1-numeric-subset-report.md`). |
-| `wave1-numeric-subset-report.md` | **Wave-1 GENERATED-path** numeric/boolean **subset report** (authoritative result for the implemented-keyword rows; GS2 NOT claimed). |
+| `wave1-numeric-subset-report.md` | **Wave-1 GENERATED-path** numeric/boolean **subset report** (authoritative result for the numeric/boolean keywords; GS2 NOT claimed). |
+| `wave1-complete-subset-report.md` | **Wave-1 GENERATED-path COMPLETE required-vocab subset report** — `boolean_schema`/`not`/`const`/`enum`/`uniqueItems`/`ref` measured after its engine rebuild (HEAD `36c11de5`): SUPPORTED = `boolean_schema` (18/0/0), `const` (54/0/0); `not` (36/4/0), `enum` (46/5/0), `uniqueItems` (28/0/41), `ref` (6/5/68) remain partial. GS2 NOT claimed. |
 | `vendor/` (created by `tools/vendor.sh`, not committed) | The checked-out 2020-12 tests + `remotes` tree. |
 
 ## Relationship to other suites
