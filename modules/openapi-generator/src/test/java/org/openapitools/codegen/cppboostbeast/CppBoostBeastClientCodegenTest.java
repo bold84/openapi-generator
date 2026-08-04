@@ -3770,6 +3770,9 @@ public class CppBoostBeastClientCodegenTest {
         // Contract test: CompositionBranchDescriptor.unsupportedAssertions
         // must be populated with known-unsupported keywords when present
         // in the resolved schema.
+        // Wave-2 (§10): conditional (if/then/else) is no longer fail-closed
+        // (emitted as validation-if/then/else-schema); `contains` remains
+        // unsupported and must still stop oneOf generation fail-closed.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -3781,7 +3784,7 @@ public class CppBoostBeastClientCodegenTest {
                 new io.swagger.v3.oas.models.Components();
         Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
 
-        // Schema with conditional + contains + content encoding
+        // Schema with conditional (now supported) + contains (still unsupported)
         ComposedSchema schema = new ComposedSchema();
         StringSchema conditionalBranch = new StringSchema();
         conditionalBranch.setMinLength(1);
@@ -3800,23 +3803,40 @@ public class CppBoostBeastClientCodegenTest {
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
-        // Phase 3: conditional (if/then/else) on a oneOf branch throws
-        // UnsupportedSchemaAssertionException. Catch it and verify the
-        // conditional assertion is present in the exception message.
+        // preprocessOpenAPI must still throw — but the FIRST unsupported
+        // keyword is `contains` (the only remaining fail-closed keyword on
+        // this schema). `conditional` is no longer unsupported.
+        // The descriptor map is populated BEFORE validateDescriptorAssertions
+        // throws, so we can inspect the branches afterwards.
         try {
             codegen.preprocessOpenAPI(openAPI);
+            org.testng.Assert.fail("expected UnsupportedSchemaAssertionException for 'contains'");
         } catch (CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException e) {
             String msg = e.getMessage();
-            Assert.assertTrue(msg.contains("conditional"),
-                    "Exception must mention 'conditional'. Got: " + msg);
-            return; // verified the assertion is detected
+            Assert.assertTrue(msg.contains("contains"),
+                    "Exception must mention 'contains'. Got: " + msg);
         }
 
-        // If no exception was thrown, verify descriptors are populated
         CppBoostBeastClientCodegen.CompositionDescriptor desc =
                 codegen.getCompositionDescriptor("SchemaWithUnsupported");
         Assert.assertNotNull(desc,
                 "SchemaWithUnsupported must have a descriptor");
+        // The conditional branch (branch 0) must NO LONGER list conditional as
+        // unsupported; the if schema must be surfaced for IR emission (§10).
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor conditionalBranchDesc =
+                desc.getBranches().get(0);
+        Assert.assertFalse(
+                conditionalBranchDesc.getUnsupportedAssertions().contains("conditional"),
+                "conditional must be supported (emitted as validation-if-schema)");
+        Assert.assertNotNull(
+                conditionalBranchDesc.getValidateParams().get("validation-if-schema"),
+                "validation-if-schema must be surfaced for the conditional branch");
+        // The contains branch (branch 1) must still be flagged unsupported.
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor containsBranchDesc =
+                desc.getBranches().get(1);
+        Assert.assertTrue(
+                containsBranchDesc.getUnsupportedAssertions().contains("contains"),
+                "contains must remain unsupported (fail-closed)");
     }
 
     @Test
@@ -4372,10 +4392,11 @@ public class CppBoostBeastClientCodegenTest {
 
     // --- Phase 2 strong review: additionalProperties false fail-closed ---
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void additionalPropertiesFalseOnOneOfBranchFailsGeneration() {
-        // additionalProperties: false on a composition branch rejects extra
-        // object properties and affects membership. Must fail generation.
+    @Test
+    public void additionalPropertiesFalseOnOneOfBranchSurfacesAsReject() {
+        // Wave-2 (§10): additionalProperties: false on a composition branch is
+        // NO LONGER fail-closed. It is emitted as the `reject` tri-state so the
+        // evaluator rejects unlisted keys; generation must proceed.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4393,7 +4414,22 @@ public class CppBoostBeastClientCodegenTest {
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
+        // Must NOT throw (no longer fail-closed).
         codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithAddPropsFalse");
+        Assert.assertNotNull(desc, "SchemaWithAddPropsFalse must have a descriptor");
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor branch =
+                desc.getBranches().get(0);
+        Assert.assertTrue(branch.getSupportedAssertions().contains("additional-properties"),
+                "additional-properties must be a supported assertion now");
+        Assert.assertEquals(
+                branch.getValidateParams().get("validation-additional-properties-kind"),
+                "reject",
+                "additionalProperties:false must surface the reject tri-state (§10)");
+        Assert.assertFalse(branch.getUnsupportedAssertions().contains("additional-properties"),
+                "additionalProperties must no longer be unsupported");
     }
 
     @Test
@@ -4508,8 +4544,12 @@ public class CppBoostBeastClientCodegenTest {
                 "Enum branch must have validation-enum-values");
     }
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void unsupportedAssertionOnOneOfThrows() {
+    @Test
+    public void conditionalIfOnOneOfBranchIsEmittedNotThrown() {
+        // Wave-2 (§10): a oneOf branch carrying if/then/else is NO LONGER
+        // fail-closed. The if schema is surfaced into the branch validateParams
+        // and generation proceeds (honest: a bare if-then-else without ref
+        // coverage is measured as FAIL downstream, never BLOCKED-at-emission).
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4529,8 +4569,19 @@ public class CppBoostBeastClientCodegenTest {
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
-        // validateDescriptorAssertions throws for oneOf with unsupported assertions
+        // Must NOT throw anymore.
         codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithUnsupportedAssertion");
+        Assert.assertNotNull(desc,
+                "SchemaWithUnsupportedAssertion must have a descriptor");
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor branch =
+                desc.getBranches().get(0);
+        Assert.assertNotNull(branch.getValidateParams().get("validation-if-schema"),
+                "validation-if-schema must be surfaced for IR emission");
+        Assert.assertFalse(branch.getUnsupportedAssertions().contains("conditional"),
+                "conditional must no longer be unsupported");
     }
 
     @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
@@ -5189,6 +5240,7 @@ public class CppBoostBeastClientCodegenTest {
                 "$defs must be honestly reported as a non-indexable schema-valued position");
     }
 
+
     @Test
     public void nestedCompositionBranchPositionsAreScanned() {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
@@ -5212,4 +5264,260 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertTrue(branchLocation,
                 "minProperties on a composition branch must be scanned at its branch location");
     }
+
+    // ======================================================================
+    // Wave-2 object/array structural IR (§10) — Java-side focused tests
+    // ======================================================================
+
+    @Test
+    public void wave2ObjectArrayStructuralKeywordsSurfaceIntoBranchParams() {
+        // §10.2: the branch assertion scan must surface the FULL object/array
+        // structural keyword set into validateParams — properties (per-property
+        // subschemas), required, additionalProperties tri-state, min/maxProperties,
+        // prefixItems (by index), items, min/maxItems, and uniqueItems PRESENCE
+        // (true AND false must both be surfaced, never dropped).
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+
+        Map<String, Schema> schemas = new HashMap<>();
+
+        ComposedSchema objectSchema = new ComposedSchema();
+        ObjectSchema objBranch = new ObjectSchema();
+        objBranch.addProperty("name", new StringSchema());
+        objBranch.addProperty("age", new IntegerSchema());
+        objBranch.addRequiredItem("name");
+        objBranch.addRequiredItem("age");
+        objBranch.setAdditionalProperties(Boolean.FALSE);
+        objBranch.setMinProperties(1);
+        objBranch.setMaxProperties(5);
+        objectSchema.addOneOfItem(objBranch);
+        schemas.put("ObjectStructural", objectSchema);
+
+        ComposedSchema arraySchema = new ComposedSchema();
+        ArraySchema arrayBranch = new ArraySchema();
+        java.util.List<Schema> prefix = new java.util.ArrayList<>();
+        prefix.add(new StringSchema());
+        prefix.add(new IntegerSchema());
+        arrayBranch.setPrefixItems(prefix);
+        arrayBranch.setItems(new io.swagger.v3.oas.models.media.BooleanSchema());
+        arrayBranch.setMinItems(1);
+        arrayBranch.setMaxItems(4);
+        arrayBranch.setUniqueItems(Boolean.FALSE);
+        arraySchema.addOneOfItem(arrayBranch);
+        schemas.put("ArrayStructural", arraySchema);
+
+        io.swagger.v3.oas.models.OpenAPI openAPI = openApiWithSchemas("3.1.0", schemas);
+        codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor objDesc =
+                codegen.getCompositionDescriptor("ObjectStructural");
+        Assert.assertNotNull(objDesc, "ObjectStructural must have a descriptor");
+        Map<String, Object> objParams = objDesc.getBranches().get(0).getValidateParams();
+        Assert.assertTrue(objParams.get("validation-properties") instanceof Map,
+                "validation-properties must carry the per-property schema map");
+        Map<?, ?> props = (Map<?, ?>) objParams.get("validation-properties");
+        Assert.assertTrue(props.containsKey("name") && props.containsKey("age"),
+                "both declared properties must be surfaced");
+        Assert.assertNotNull(objParams.get("validation-required"),
+                "required list must be surfaced");
+        java.util.List<String> reqNames = new java.util.ArrayList<>(
+                (java.util.List<String>) objParams.get("validation-required"));
+        java.util.Collections.sort(reqNames);
+        Assert.assertEquals(reqNames, java.util.Arrays.asList("age", "name"),
+                "required list must surface both required members");
+        Assert.assertEquals(objParams.get("validation-additional-properties-kind"),
+                "reject", "additionalProperties:false must surface as reject (§10)");
+        Assert.assertEquals(objParams.get("validation-min-properties").toString(),
+                "1", "minProperties must be surfaced");
+        Assert.assertEquals(objParams.get("validation-max-properties").toString(),
+                "5", "maxProperties must be surfaced");
+
+        CppBoostBeastClientCodegen.CompositionDescriptor arrDesc =
+                codegen.getCompositionDescriptor("ArrayStructural");
+        Assert.assertNotNull(arrDesc, "ArrayStructural must have a descriptor");
+        Map<String, Object> arrParams = arrDesc.getBranches().get(0).getValidateParams();
+        Assert.assertEquals(((java.util.List<?>) arrParams.get("validation-prefix-items")).size(), 2,
+                "prefixItems must be surfaced by index (2 entries)");
+        Assert.assertNotNull(arrParams.get("validation-items"),
+                "items schema must be surfaced");
+        Assert.assertEquals(arrParams.get("validation-min-items").toString(),
+                "1", "minItems must be surfaced");
+        Assert.assertEquals(arrParams.get("validation-max-items").toString(),
+                "4", "maxItems must be surfaced");
+        Assert.assertNotNull(arrParams.get("validation-unique-items"),
+                "uniqueItems PRESENCE must be surfaced");
+        Assert.assertEquals(arrParams.get("validation-unique-items"), Boolean.FALSE,
+                "uniqueItems:false must be preserved (no-op emission, never dropped)");
+    }
+
+    @Test
+    public void emitsWave2ObjectArrayStructuralIr() throws IOException {
+        // GENERATED-path guard: the REAL generator must densify the §10 object /
+        // array structural keyword set into schema_ir.generated.cpp rows —
+        // PropertyBinding node refs, required, additionalProperties tri-state
+        // (reject/schema/allowed), min/maxProperties, prefixItems/items node
+        // refs, min/maxItems, uniqueItems both forms, enum:[] reject-all, and
+        // container-depth EXACT numeric lexemes. The C++ side (compile + run
+        // verdicts through the GENERATED validate_<id> dispatch) is owned by the
+        // engine gate (oas-compliance/gate-oastructural.sh).
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-oa").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/oas31-wave2-structural-regression.yaml")
+                .setOutputDir(output.getAbsolutePath())
+                // The JSTS generated-path runner feeds the OAS-wrapped doc to the
+                // generator WITHOUT the OAS spec validator (#/$defs TODO pointer
+                // refs are JSON-Schema, not OAS components); mirror that here.
+                .setValidateSpec(false);
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path irSource = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Path dispatch = output.toPath().resolve("model/schema_validate.generated.cpp");
+        Assert.assertTrue(java.nio.file.Files.exists(irSource),
+                "schema_ir.generated.cpp must be emitted");
+        Assert.assertTrue(java.nio.file.Files.exists(dispatch),
+                "schema_validate.generated.cpp must be emitted");
+
+        String ir = java.nio.file.Files.readString(irSource);
+
+        // -- Object structural: properties / required / additionalProperties / counts --
+        Assert.assertTrue(ir.contains("n.hasObjectSchema = true;"),
+                "object branch must set hasObjectSchema");
+        Assert.assertTrue(java.util.regex.Pattern.compile(
+                        "b\\.name = \"age\"; b\\.node = \\d+;")
+                        .matcher(ir).find(),
+                "property-subschema child rows must be referenced by node index");
+        Assert.assertTrue(java.util.regex.Pattern.compile(
+                        "b\\.name = \"name\"; b\\.node = \\d+;")
+                        .matcher(ir).find(),
+                "property-subschema child rows must be referenced by node index");
+        TestUtils.assertFileContains(irSource,
+                "n.required.push_back(\"name\")",
+                "n.required.push_back(\"age\")",
+                "n.additionalProperties = AdditionalPropertiesKind::reject;",
+                "setExact(n.minProperties, n.hasMinProperties, \"1\")",
+                "setExact(n.maxProperties, n.hasMaxProperties, \"5\")");
+        // additionalProperties schema-form -> child node ref; true-form -> allowed.
+        TestUtils.assertFileContains(irSource,
+                "n.additionalProperties = AdditionalPropertiesKind::schema;",
+                "n.additionalProperties = AdditionalPropertiesKind::allowed;");
+        Assert.assertTrue(java.util.regex.Pattern.compile("n\\.additionalSchema = \\d+;")
+                        .matcher(ir).find(),
+                "schema-form additionalProperties must reference a densified child row");
+
+        // -- Array structural: prefixItems / items / min-maxItems / uniqueItems --
+        TestUtils.assertFileContains(irSource,
+                "n.prefixItems.push_back(",
+                "setExact(n.minItems, n.hasMinItems, \"1\")",
+                "setExact(n.maxItems, n.hasMaxItems, \"4\")",
+                "n.hasUniqueItems = true;");
+        Assert.assertTrue(java.util.regex.Pattern.compile("n\\.items = \\d+;")
+                        .matcher(ir).find(),
+                "items must be emitted as a node ref");
+        long prefixCount = java.util.regex.Pattern.compile("n\\.prefixItems\\.push_back").matcher(ir)
+                .results().count();
+        Assert.assertTrue(prefixCount >= 2, "prefixItems must emit at least 2 indexed child refs");
+        // uniqueItems:false must still materialise a dispatch (never BLOCKED-at-emission).
+        String dispatchContent = java.nio.file.Files.readString(dispatch);
+        TestUtils.assertFileContains(dispatch,
+                "validate_UniqueItemsFalse_branch_0",
+                "validate_ObjectBranch_branch_0",
+                "validate_ArrayBranch_branch_0");
+
+        // -- enum: [] reject-all (Wave-1 G14 close) --
+        Assert.assertTrue(ir.contains("n.hasEnumJson = true;"),
+                "empty-enum branch must emit the deep store guard");
+        Assert.assertTrue(ir.contains("R\"W1J([])W1J\""),
+                "enum:[] must emit a ZERO-member deep enumJson literal");
+
+        // -- Container-depth EXACT numeric lexemes (never a double round-trip) --
+        // The nested number lexemes survive VERBATIM (1.0 stays 1.0). Jackson's
+        // decimal renderer strips trailing zeros (2.500 -> 2.5), which is
+        // EXACT-EQUALITY-equivalent under JSON-Schema number semantics
+        // (1 == 1.0 == 1e0); a lossy double round-trip (e.g. 2.5000000000000004)
+        // would NOT be equivalent and must never appear.
+        Assert.assertTrue(ir.contains("R\"W1J([{\"amount\":1.0,\"tag\":\"x\"},[2.5,3]])W1J\""),
+                "nested numbers must survive verbatim inside the deep W1J literal");
+        Assert.assertTrue(ir.contains("1.0"),
+                "the nested 1.0 must appear as an exact lexeme (never 1.0000000000000002)");
+        Assert.assertFalse(ir.contains("2.5000000000000004"),
+                "a lossy double rendering of the nested decimal must never leak in");
+
+        // -- Root-node accounting: main rows 0..M-1 only; component/helper rows
+        // appended after M are NOT resource roots. 12 composed components =>
+        // last main root index 11. --
+        Assert.assertTrue(ir.contains("res.rootNodes.push_back(11);"),
+                "12 composed components => last main root index 11");
+        Assert.assertFalse(ir.contains("res.rootNodes.push_back(12);"),
+                "component/helper rows must not be resource roots");
+        Assert.assertTrue(dispatchContent.contains("validate_DefsNestedProperty_branch_0"),
+                "DefsNestedProperty must be dispatched");
+    }
+
+    @Test
+    public void refSiblingsAndDefsRefsEmitResolutionRows() throws IOException {
+        // §10.3: (a) $ref + sibling keywords (2020-12) — the ref node must keep
+        // its ref applicator AND densify the sibling keyword (minProperties)
+        // inline; (b) $defs-scope refs (JSTS hoists into components.schemas)
+        // must resolve to a densified <name>_component row; (c) refs to plain
+        // extracted components must resolve to their component row.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-refsib").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/oas31-wave2-structural-regression.yaml")
+                .setOutputDir(output.getAbsolutePath())
+                // The JSTS generated-path runner feeds the OAS-wrapped doc to the
+                // generator WITHOUT the OAS spec validator (#/$defs TODO pointer
+                // refs are JSON-Schema, not OAS components); mirror that here.
+                .setValidateSpec(false);
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path irSource = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Path dispatch = output.toPath().resolve("model/schema_validate.generated.cpp");
+        String ir = java.nio.file.Files.readString(irSource);
+        String dispatchContent = java.nio.file.Files.readString(dispatch);
+
+        // (a) $ref + siblings: RefWithSibling node is a ref applicator AND
+        // carries the sibling minProperties inline (both apply, 2020-12).
+        TestUtils.assertFileContains(irSource,
+                "n.applicator = ApplicatorKind::ref;",
+                "setExact(n.minProperties, n.hasMinProperties, \"2\")");
+        Assert.assertTrue(dispatchContent.contains("validate_RefWithSibling_branch_0"),
+                "RefWithSibling must be dispatched");
+
+        // (b) $defs-scope ref: DefsRef resolves to the hoisted hoistedDef
+        // component row (densified, enum members a/b).
+        Assert.assertTrue(ir.contains("hoistedDef_component"),
+                "defs-scope target must be surfaced as a densified component row");
+        Assert.assertTrue(dispatchContent.contains("validate_DefsRef_branch_0"),
+                "DefsRef must be dispatched");
+        Assert.assertTrue(dispatchContent.contains("validate_DefsNestedProperty_branch_0"),
+                "DefsNestedProperty must be dispatched");
+        // The nested #/$defs/% property child must be bound to a densified row
+        // (its ref maps to the hoisted component row, not an inert -1).
+        Assert.assertTrue(java.util.regex.Pattern.compile(
+                        "b\\.name = \"inner\"; b\\.node = \\d+;")
+                        .matcher(ir).find(),
+                "nested #/$defs/% ref property must resolve to a real row");
+
+        // (c) ref to a plain extracted component: PlainTarget_component row must
+        // be densified (hasObjectSchema + required id) and reachable via the
+        // RefToPlain ref node.
+        Assert.assertTrue(ir.contains("PlainTarget_component"),
+                "plain ref target must be surfaced as a densified component row");
+        TestUtils.assertFileContains(irSource,
+                "n.hasObjectSchema = true;",
+                "n.required.push_back(\"id\");");
+        Assert.assertTrue(dispatchContent.contains("validate_RefToPlain_branch_0"),
+                "RefToPlain must be dispatched");
+    }
 }
+

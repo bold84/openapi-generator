@@ -336,6 +336,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      *  in preprocessOpenAPI after inline model flattening. Replaces raw schema
      *  inspection as the semantic source for branch lowering. */
     final Map<String, CompositionDescriptor> compositionDescriptors = new LinkedHashMap<>();
+
+    // Wave-2: per-component "is composed (oneOf/anyOf/allOf)" snapshot captured
+    // at IR emission time (post-model-extraction), used to choose the ref-target
+    // row id suffix: composed components resolve via their branch row
+    // (`<name>_branch_0`), plain extracted components resolve via their own
+    // densified row (`<name>_component`).
+    private final java.util.Map<String, Boolean> irComponentComposed = new java.util.HashMap<>();
     /** Cached allOf intersections keyed by model name. Populated during
      *  preprocessOpenAPI and consumed by fromModel to build synthetic schemas. */
     final Map<String, AllOfIntersection> allOfIntersections = new LinkedHashMap<>();
@@ -371,6 +378,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     @Override
     public void preprocessOpenAPI(OpenAPI openAPI) {
         super.preprocessOpenAPI(openAPI);
+        // Wave-2 §10.2: recover prefixItems that the shared OAS-3.1 normalizer
+        // drops (NORMALIZE_31SPEC converts types:[array] JsonSchema to
+        // ArraySchema and does not copy prefixItems). Must run BEFORE the
+        // descriptor scan so the branch/child scan sees the pristine value.
+        restoreNormalizerDroppedPrefixItems(openAPI);
+        markPristineEmptyEnums(openAPI);
         // Opt-in / internally-gated Wave-0 silent-skip scanner. Default off so the
         // existing 30.x/3.1 fixture suite is never regressed; enabled only when the
         // oas31NoSilentSkip flag is set (plan §5 Wave 0 item 1 / GH).
@@ -419,6 +432,259 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     variantModels.add(schemaName);
                 }
             }
+        }
+    }
+
+    /**
+     * Wave-2 §10.2 recovery: the shared OAS-3.1 normalizer (NORMALIZE_31SPEC,
+     * enabled by DefaultGenerator for 3.1 specs) converts a
+     * {@code types:[array]} JsonSchema into an ArraySchema and DROPS
+     * {@code prefixItems} (only items/uniqueItems/minItems/maxItems are copied).
+     * This emitter densifies prefixItems into the IR, so the pristine value is
+     * recovered from a FRESH parse of the input spec and merged back into the
+     * MUTATED graph at the matching JSON-pointer position. Pointer-aligned
+     * traversal is safe because normalization preserves the schema tree SHAPE
+     * (it replaces schema objects at the same locations, never re-parents).
+     * When no input spec is available or the re-parse fails, nothing changes
+     * (arrays keep whatever survived — honest no-op).
+     */
+    private void restoreNormalizerDroppedPrefixItems(OpenAPI openAPI) {
+        if (openAPI == null || openAPI.getComponents() == null
+                || openAPI.getComponents().getSchemas() == null
+                || openAPI.getComponents().getSchemas().isEmpty()) {
+            return;
+        }
+        // NORMALIZE_31SPEC only activates for 3.1 docs; 3.0 in-memory unit specs
+        // never drop prefixItems and do not need the recovery parse.
+        if (openAPI.getOpenapi() == null || !openAPI.getOpenapi().startsWith("3.1")) {
+            return;
+        }
+        String specPath = getInputSpec();
+        if (specPath == null) {
+            return;
+        }
+        OpenAPI pristine = null;
+        try {
+            io.swagger.v3.parser.core.models.ParseOptions options =
+                    new io.swagger.v3.parser.core.models.ParseOptions();
+            options.setResolve(true);
+            options.setResolveResponses(true);
+            pristine = new io.swagger.v3.parser.OpenAPIV3Parser()
+                    .readLocation(specPath, null, options).getOpenAPI();
+        } catch (Exception e) {
+            // never fail generation over a best-effort recovery
+            return;
+        }
+        if (pristine == null || pristine.getComponents() == null
+                || pristine.getComponents().getSchemas() == null) {
+            return;
+        }
+        Map<String, Schema> mutatedSchemas = openAPI.getComponents().getSchemas();
+        for (Object compNameObj : new java.util.ArrayList<>(
+                pristine.getComponents().getSchemas().keySet())) {
+            String compName = String.valueOf(compNameObj);
+            Schema mutable = mutatedSchemas.get(compName);
+            if (mutable != null) {
+                mergePristineArrayStructure(
+                        (Schema) pristine.getComponents().getSchemas().get(compName),
+                        mutable, "$");
+            }
+        }    }
+
+    /**
+     * Recursively restores {@code prefixItems} from the pristine schema onto
+     * the normalized/mutated schema at the SAME structural position. Only
+     * fills the field when the mutated node is array-typed and lost it;
+     * never overrides a surviving value.
+     */
+    private static void mergePristineArrayStructure(
+            Schema pristine, Schema mutated, String path) {
+        if (pristine == null || mutated == null) {
+            return;
+        }
+        if (isArrayish(pristine) && pristine.getPrefixItems() != null
+                && !pristine.getPrefixItems().isEmpty()
+                && (mutated.getPrefixItems() == null
+                        || mutated.getPrefixItems().isEmpty())) {
+            mutated.setPrefixItems(pristine.getPrefixItems());
+        }
+        // Recurse along structural keys — normalization preserves tree SHAPE.
+        java.util.List<Schema> pristineMembers = new ArrayList<>();
+        java.util.List<Schema> mutatedMembers = new ArrayList<>();
+        if (pristine.getAllOf() != null) pristineMembers.addAll(pristine.getAllOf());
+        if (pristine.getAnyOf() != null) pristineMembers.addAll(pristine.getAnyOf());
+        if (pristine.getOneOf() != null) pristineMembers.addAll(pristine.getOneOf());
+        if (mutated.getAllOf() != null) mutatedMembers.addAll(mutated.getAllOf());
+        if (mutated.getAnyOf() != null) mutatedMembers.addAll(mutated.getAnyOf());
+        if (mutated.getOneOf() != null) mutatedMembers.addAll(mutated.getOneOf());
+        int limit = Math.min(pristineMembers.size(), mutatedMembers.size());
+        for (int i = 0; i < limit; i++) {
+            mergePristineArrayStructure(pristineMembers.get(i),
+                    mutatedMembers.get(i), path + "/" + i);
+        }
+        if (pristine.getProperties() != null && mutated.getProperties() != null) {
+            for (Object propKeyObj : new java.util.ArrayList<>(
+                    pristine.getProperties().keySet())) {
+                String propKey = String.valueOf(propKeyObj);
+                Schema mutatedProp = (Schema) mutated.getProperties().get(propKey);
+                if (mutatedProp != null) {
+                    mergePristineArrayStructure(
+                            (Schema) pristine.getProperties().get(propKey),
+                            mutatedProp, path + "/properties/" + propKey);
+                }
+            }
+        }
+        if (pristine.getPrefixItems() != null && mutated.getPrefixItems() != null) {
+            int pi = Math.min(pristine.getPrefixItems().size(),
+                    mutated.getPrefixItems().size());
+            for (int i = 0; i < pi; i++) {
+                mergePristineArrayStructure(
+                        (Schema) pristine.getPrefixItems().get(i),
+                        (Schema) mutated.getPrefixItems().get(i),
+                        path + "/prefixItems/" + i);
+            }
+        }
+        mergePristineArrayStructure(pristine.getItems(), mutated.getItems(),
+                path + "/items");
+        mergePristineArrayStructure(pristine.getNot(), mutated.getNot(),
+                path + "/not");
+        if (pristine.getAdditionalProperties() instanceof Schema
+                && mutated.getAdditionalProperties() instanceof Schema) {
+            mergePristineArrayStructure((Schema) pristine.getAdditionalProperties(),
+                    (Schema) mutated.getAdditionalProperties(),
+                    path + "/additionalProperties");
+        }
+        if (pristine.getUnevaluatedProperties() instanceof Schema
+                && mutated.getUnevaluatedProperties() instanceof Schema) {
+            mergePristineArrayStructure(
+                    (Schema) pristine.getUnevaluatedProperties(),
+                    (Schema) mutated.getUnevaluatedProperties(),
+                    path + "/unevaluatedProperties");
+        }
+    }
+
+    /** True for OAS 3.0 array schemas or OAS 3.1 schemas with array in types. */
+    private static boolean isArrayish(Schema s) {
+        if (s == null) return false;
+        if (ModelUtils.isArraySchema(s)) return true;
+        java.util.Set<String> types = s.getTypes();
+        return types != null && types.contains("array");
+    }
+
+    /** Vendor extension used to recover the swallowed `enum: []` keyword. */
+    private static final String EMPTY_ENUM_EXT = "x-oas31-empty-enum";
+
+    /** True when the raw spec marked this schema as an explicit empty enum. */
+    private static boolean isEmptyEnumMarked(Schema schema) {
+        if (schema == null || schema.getExtensions() == null) return false;
+        return Boolean.TRUE.equals(schema.getExtensions().get(EMPTY_ENUM_EXT));
+    }
+
+    /**
+     * Recover the OAS/JSON-Schema `enum: []` reject-all keyword that the
+     * swagger-parser swallows (an empty enum deserializes to enum=null and a
+     * default types=[string], which is NOT the same semantics: `enum: []` must
+     * reject every instance). The wrap and the corpus cannot express the intent
+     * through the model, so the raw spec text is inspected: every component
+     * whose YAML/JSON block contains an EMPTY enum array is marked with a
+     * vendor extension on its oneOf/anyOf/allOf members (or itself when it is
+     * not composed). The scan then treats the marker as an empty enum, and the
+     * emitter lowers it to a ZERO-member deep store (hasEnumJson with []).
+     * Best-effort: on any parsing failure nothing is marked (the group is then
+     * honestly measured as FAIL, never silently passed).
+     */
+    private void markPristineEmptyEnums(OpenAPI openAPI) {
+        if (openAPI == null || openAPI.getComponents() == null
+                || openAPI.getComponents().getSchemas() == null
+                || openAPI.getComponents().getSchemas().isEmpty()) {
+            return;
+        }
+        String specPath = getInputSpec();
+        if (specPath == null || openAPI.getOpenapi() == null
+                || !openAPI.getOpenapi().startsWith("3.1")) {
+            return;
+        }
+        String text;
+        try {
+            text = new String(java.nio.file.Files.readAllBytes(
+                    java.nio.file.Paths.get(specPath)),
+                    java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            return;
+        }
+        // Split the spec into per-component REGIONS by top-level 4-space-indented
+        // schema keys (the shape JSTS wraps and this repo's regression specs use:
+        // `components.schemas.<Name>:` at a fixed 4-space indent). Each region is
+        // the authoritative text for exactly one component, so an empty enum
+        // inside it cannot leak onto sibling components.
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "(?m)^\\s{4}([A-Za-z0-9_]+):\\s*$").matcher(text);
+        Map<String, Schema> schemas = openAPI.getComponents().getSchemas();
+        int lastStart = 0;
+        String lastName = null;
+        while (m.find()) {
+            if (lastName != null && hasEmptyEnumLiteral(
+                    text.substring(lastStart, m.start()))) {
+                markComponentEmptyEnum(schemas.get(lastName));
+            }
+            lastName = m.group(1);
+            lastStart = m.start();
+        }
+        if (lastName != null && hasEmptyEnumLiteral(text.substring(lastStart))) {
+            markComponentEmptyEnum(schemas.get(lastName));
+        }
+    }
+
+    /** True when the raw spec region contains an explicit EMPTY enum array. */
+    private static boolean hasEmptyEnumLiteral(String region) {
+        // Drop YAML comment lines first: a trailing comment like
+        // `# --- enum: [] reject-all ...` must not be mistaken for the keyword.
+        StringBuilder cleaned = new StringBuilder(region.length());
+        for (String line : region.split("\n")) {
+            if (line.trim().startsWith("#")) continue;
+            cleaned.append(line).append('\n');
+        }
+        String text = cleaned.toString();
+        // YAML: `enum: []`; JSON: `"enum": []`. (A multiline enum body is
+        // NOT an empty enum holder: `enum:` without an inline [ ].)
+        return java.util.regex.Pattern.compile(
+                "enum\\s*:\\s*\\[\\s*\\]").matcher(text).find()
+            || java.util.regex.Pattern.compile(
+                "\\\"enum\\\"\\s*:\\s*\\[\\s*\\]").matcher(text).find();
+    }
+
+    /** Mark a component's schema (and its composition members) reject-all. */
+    private static void markComponentEmptyEnum(Schema schema) {
+        if (schema == null) return;
+        boolean markedAny = false;
+        java.util.List<?> members = null;
+        if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
+            members = schema.getOneOf();
+        } else if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+            members = schema.getAnyOf();
+        } else if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) {
+            members = schema.getAllOf();
+        }
+        if (members != null) {
+            for (Object member : members) {
+                if (member instanceof Schema) {
+                    Schema ms = (Schema) member;
+                    if (ms.getExtensions() == null) {
+                        ms.setExtensions(new java.util.LinkedHashMap<>());
+                    }
+                    ms.addExtension(EMPTY_ENUM_EXT, true);
+                    markedAny = true;
+                }
+            }
+        } else {
+            if (schema.getExtensions() == null) {
+                schema.setExtensions(new java.util.LinkedHashMap<>());
+            }
+            schema.addExtension(EMPTY_ENUM_EXT, true);
+            markedAny = true;
+        }
+        if (!markedAny && System.getenv("OAS31_DEBUG") != null) {
+            System.err.println("[empty-enum] no markable schema in component");
         }
     }
 
@@ -516,27 +782,89 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
             }
 
-            // Scan the resolved target schema for assertion keywords
+            // Scan the resolved target schema for assertion keywords.
+            // Wave-2 §10: $ref + sibling keywords (2020-12) BOTH apply. The
+            // surface scan resolves through the ref TARGET; when the branch is a
+            // $ref, the branch schema itself is scanned as a second surface so
+            // sibling object/array/applicator keywords on the ref node are
+            // densified inline (never silently dropped). Unsupported sibling
+            // keywords are recorded so they still fail-closed.
+            boolean refBranch = branchSchema != null && branchSchema.get$ref() != null;
             if (targetForAssertions != null) {
-                // Validation type — use the resolved type name or "type-array" for type arrays
-                if (targetForAssertions.getType() != null) {
-                    supported.add("type");
-                    validateParams.put("validation-type", targetForAssertions.getType());
+                scanSurfaceAssertions(targetForAssertions, openAPI,
+                        supported, unsupported, validateParams, refBranch);
+                if (refBranch && branchSchema != targetForAssertions) {
+                    // $ref with siblings: BOTH the resolved target and the branch's
+                    // own keyword set apply (2020-12). Ref-node applicator stays
+                    // branch-driven; sibling keywords are emitted inline.
+                    scanSurfaceAssertions(branchSchema, openAPI,
+                            supported, unsupported, validateParams, true);
                 }
-                if (targetForAssertions.getTypes() != null && !targetForAssertions.getTypes().isEmpty()) {
+            }
+
+            // Phase 2: generate a deterministic validatorId for each branch.
+            // The id is used as the base name for generated validate_<id>() functions.
+            String validatorId = toValidIdentifier(schemaName) + "_branch_" + index;
+
+            CompositionBranchDescriptor branch = new CompositionBranchDescriptor(
+                    index, sourceRef, resolvedName, null, validatorId,
+                    nullCap, supported, unsupported, validateParams);
+            branches.add(branch);
+        }
+
+        return new CompositionDescriptor(
+                schemaName, schemaLocation, keyword, branches,
+                discriminatorDescriptor);
+    }
+
+    /**
+     * Scans one schema surface for branch assertion keywords, populating the
+     * branch supported/unsupported lists and validateParams. Called for the
+     * RESOLVED branch target and, for $ref branches, again for the branch
+     * schema itself so $ref siblings are preserved (2020-12: a $ref node
+     * validates its target AND its own sibling keywords). `refBranchExcluded`
+     * suppresses the nested oneOf/anyOf/allOf applicator scan for $ref
+     * branches (the ref applicator is resolved via the registry instead).
+     */
+    private void scanSurfaceAssertions(
+            io.swagger.v3.oas.models.media.Schema surface,
+            io.swagger.v3.oas.models.OpenAPI openAPI,
+            java.util.List<String> supported,
+            java.util.List<String> unsupported,
+            java.util.Map<String, Object> validateParams,
+            boolean refBranchExcluded) {
+                // Validation type — use the resolved type name or "type-array" for type arrays
+                if (surface.getType() != null) {
+                    supported.add("type");
+                    validateParams.put("validation-type", surface.getType());
+                }
+                if (surface.getTypes() != null && !surface.getTypes().isEmpty()) {
                     supported.add("type");
                     validateParams.put("validation-type", "type-array");
                     // OAS 3.1 type arrays: store as List<String> for template iteration;
                     // has-validation-type-array is a boolean flag for outer section guard.
                     validateParams.put("validation-type-array",
-                            new ArrayList<>(targetForAssertions.getTypes()));
+                            new ArrayList<>(surface.getTypes()));
                     validateParams.put("has-validation-type-array", true);
                 }
-                if (targetForAssertions.getEnum() != null && !targetForAssertions.getEnum().isEmpty()) {
+                // enum — an EMPTY enum (enum: []) is a reject-all schema handled
+                // by the deep JSON store (hasEnumJson with zero members). The
+                // swagger-parser models `enum: []` as enum=null + types=[string]
+                // (information lost), so preprocessOpenAPI recovers the original
+                // keyword from the raw spec and marks the branch via the
+                // x-oas31-empty-enum vendor extension; the marker is treated as
+                // an empty enum here (a real, non-empty enum takes precedence).
+                if (surface.getEnum() != null || isEmptyEnumMarked(surface)) {
                     supported.add("enum");
+                    // For a recovered `enum: []` the parser yields enum=null; use
+                    // the empty list so the deep store emits ZERO members.
+                    java.util.List<?> enumMembers = surface.getEnum();
+                    if (enumMembers == null) {
+                        enumMembers = java.util.Collections.emptyList();
+                    }
                     List<String> enumStrs = new ArrayList<>();
                     String predominantKind = "string";
-                    for (Object e : targetForAssertions.getEnum()) {
+                    for (Object e : enumMembers) {
                         String es = e != null ? e.toString() : "null";
                         if ("string".equals(predominantKind)) {
                             es = escapeCppStringContent(es);
@@ -559,12 +887,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     validateParams.put("has-validation-enum", true);
                     // Keep the RAW swagger enum (deep JSON members) for Wave-1
                     // exact deep-equality IR emission (K-34).
-                    validateParams.put("validation-enum-raw", targetForAssertions.getEnum());
+                    validateParams.put("validation-enum-raw", enumMembers);
                 }
                 // Const: detect JSON kind for the validator template
-                if (targetForAssertions.getConst() != null) {
+                if (surface.getConst() != null) {
                     supported.add("const");
-                    Object constVal = targetForAssertions.getConst();
+                    Object constVal = surface.getConst();
                     if (constVal instanceof Number) {
                         validateParams.put("validation-const-type", "number");
                         validateParams.put("validation-const-value", constVal.toString());
@@ -579,15 +907,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     validateParams.put("has-validation-const", true);
                     // Keep the RAW swagger const value (deep JSON, K-30) for
                     // Wave-1 exact deep-equality IR emission.
-                    validateParams.put("validation-const-raw", targetForAssertions.getConst());
+                    validateParams.put("validation-const-raw", surface.getConst());
                 }
                 // Use ModelUtils.resolveMinimumBound / resolveMaximumBound for
                 // proper OAS 3.0→3.1 resolution (boolean → numeric conversion,
                 // allOf intersection, $ref traversal).
-                ModelUtils.ResolvedMinBound resolvedMin = ModelUtils.resolveMinimumBound(openAPI, targetForAssertions);
-                ModelUtils.ResolvedMaxBound resolvedMax = ModelUtils.resolveMaximumBound(openAPI, targetForAssertions);
+                ModelUtils.ResolvedMinBound resolvedMin = ModelUtils.resolveMinimumBound(openAPI, surface);
+                ModelUtils.ResolvedMaxBound resolvedMax = ModelUtils.resolveMaximumBound(openAPI, surface);
                 if (resolvedMin != null || resolvedMax != null
-                        || targetForAssertions.getMultipleOf() != null) {
+                        || surface.getMultipleOf() != null) {
                     supported.add("numeric-range");
                     if (resolvedMin != null) {
                         validateParams.put("validation-min", resolvedMin.minBound);
@@ -601,92 +929,134 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                             validateParams.put("validation-exclusive-max", resolvedMax.maxBound);
                         }
                     }
-                    if (targetForAssertions.getMultipleOf() != null) {
+                    if (surface.getMultipleOf() != null) {
                         validateParams.put("validation-multiple-of",
-                                targetForAssertions.getMultipleOf());
+                                surface.getMultipleOf());
                     }
                     validateParams.put("has-validation-numeric", true);
                 }
-                if (targetForAssertions.getMinLength() != null
-                        || targetForAssertions.getMaxLength() != null) {
+                if (surface.getMinLength() != null
+                        || surface.getMaxLength() != null) {
                     supported.add("string-length");
-                    if (targetForAssertions.getMinLength() != null) {
+                    if (surface.getMinLength() != null) {
                         validateParams.put("validation-min-length",
-                                targetForAssertions.getMinLength());
+                                surface.getMinLength());
                     }
-                    if (targetForAssertions.getMaxLength() != null) {
+                    if (surface.getMaxLength() != null) {
                         validateParams.put("validation-max-length",
-                                targetForAssertions.getMaxLength());
+                                surface.getMaxLength());
                     }
                     validateParams.put("has-validation-string-length", true);
                 }
-                if (targetForAssertions.getPattern() != null) {
+                if (surface.getPattern() != null) {
                     supported.add("pattern");
                     validateParams.put("validation-pattern",
-                            escapeCppStringContent(targetForAssertions.getPattern()));
+                            escapeCppStringContent(surface.getPattern()));
                     validateParams.put("has-validation-pattern", true);
                 }
-                if (targetForAssertions.getPrefixItems() != null) {
-                    // prefixItems validation affects membership but is not
-                    // yet implemented in the validator template. Fail-closed for
-                    // oneOf/anyOf; allOf exempted (non-not unsupported).
-                    unsupported.add("array-prefix-items");
+                if (surface.getPrefixItems() != null
+                        && !surface.getPrefixItems().isEmpty()) {
+                    supported.add("array-prefix-items");
+                    validateParams.put("validation-prefix-items",
+                            surface.getPrefixItems());
+                    validateParams.put("has-validation-prefix-items", true);
                 }
-                // items is not added to unsupported because OAS requires it on
-                // every array type; its presence alone does not affect
-                // composition membership beyond type validation.
-                if (targetForAssertions.getMinItems() != null
-                        || targetForAssertions.getMaxItems() != null) {
+                // items: OAS requires it on every array type; its presence alone
+                // does not affect composition membership beyond type validation,
+                // and the Wave-2 evaluator enforces it on the remainder indices.
+                if (surface.getItems() != null) {
+                    validateParams.put("validation-items", surface.getItems());
+                }
+                if (surface.getMinItems() != null
+                        || surface.getMaxItems() != null) {
                     supported.add("array-length");
-                    if (targetForAssertions.getMinItems() != null) {
+                    if (surface.getMinItems() != null) {
                         validateParams.put("validation-min-items",
-                                targetForAssertions.getMinItems());
+                                surface.getMinItems());
                     }
-                    if (targetForAssertions.getMaxItems() != null) {
+                    if (surface.getMaxItems() != null) {
                         validateParams.put("validation-max-items",
-                                targetForAssertions.getMaxItems());
+                                surface.getMaxItems());
                     }
                     validateParams.put("has-validation-array-length", true);
                 }
-                if (Boolean.TRUE.equals(targetForAssertions.getUniqueItems())) {
+                // uniqueItems: PRESENCE (any value) so the keyword never
+                // fail-closes; `false` is a no-op that still emits the node.
+                if (surface.getUniqueItems() != null) {
                     supported.add("unique-items");
                     validateParams.put("has-validation-unique-items", true);
-                    validateParams.put("validation-unique-items", true);
+                    validateParams.put("validation-unique-items",
+                            surface.getUniqueItems());
                 }
                 // required: supported — presence check is generated in validator
-                if (targetForAssertions.getRequired() != null) {
+                if (surface.getRequired() != null) {
                     supported.add("object-properties");
                     validateParams.put("validation-required",
-                            targetForAssertions.getRequired());
+                            surface.getRequired());
                     validateParams.put("has-validation-object-props", true);
                 }
-                // properties: object branches are validated by the resolved
-                // model type, not the branch validator. property-level schemas
-                // on composition branches do not affect branch membership
-                // beyond type-object validation by the resolved model.
-                // additionalProperties: fail-closed unless no-op (true or absent).
-                // Handles both Schema (e.g. {type: string}) and Boolean (false).
-                if (targetForAssertions.getAdditionalProperties() != null) {
-                    boolean hasConstraint = false;
-                    if (targetForAssertions.getAdditionalProperties() instanceof Schema) {
-                        Schema addProp = (Schema) targetForAssertions.getAdditionalProperties();
-                        hasConstraint = Boolean.FALSE.equals(addProp.getBooleanSchemaValue())
-                                || addProp.getType() != null
-                                || (addProp.getEnum() != null && !addProp.getEnum().isEmpty());
-                    } else if (targetForAssertions.getAdditionalProperties() instanceof Boolean) {
-                        // OAS 3.0: additionalProperties: false rejects extra properties
-                        hasConstraint = Boolean.FALSE.equals(
-                                targetForAssertions.getAdditionalProperties());
-                    }
-                    if (hasConstraint) {
-                        unsupported.add("additional-properties");
+                // properties: densified into property-subschema child rows by the
+                // IR emitter (Wave-2). Property-level schemas DO affect branch
+                // membership, so they must be enforced, never silently skipped.
+                if (surface.getProperties() != null
+                        && !surface.getProperties().isEmpty()) {
+                    supported.add("object-properties");
+                    validateParams.put("validation-properties",
+                            surface.getProperties());
+                    validateParams.put("has-validation-properties", true);
+                }
+                // additionalProperties tri-state (Wave-2): absent/true -> allow,
+                // false -> reject, schema -> validate. No longer fail-closed.
+                Object addPropsVal = surface.getAdditionalProperties();
+                if (addPropsVal != null) {
+                    supported.add("additional-properties");
+                    if (addPropsVal instanceof Schema) {
+                        Schema addPropSchema = (Schema) addPropsVal;
+                        Boolean apBool = addPropSchema.getBooleanSchemaValue();
+                        if (apBool != null) {
+                            validateParams.put("validation-additional-properties-kind",
+                                    Boolean.TRUE.equals(apBool) ? "allowed" : "reject");
+                        } else {
+                            validateParams.put("validation-additional-properties-kind", "schema");
+                            validateParams.put("validation-additional-properties-schema", addPropSchema);
+                        }
+                    } else if (addPropsVal instanceof Boolean) {
+                        validateParams.put("validation-additional-properties-kind",
+                                Boolean.TRUE.equals(addPropsVal) ? "allowed" : "reject");
                     }
                 }
-                if (targetForAssertions.getMinProperties() != null
-                        || targetForAssertions.getMaxProperties() != null) {
-                    // minProperties/maxProperties affects membership but is not
-                    // yet implemented in the validator template. Fail-closed.
-                    unsupported.add("object-property-count");
+                if (surface.getMinProperties() != null) {
+                    supported.add("object-property-count");
+                    validateParams.put("validation-min-properties",
+                            surface.getMinProperties());
+                }
+                if (surface.getMaxProperties() != null) {
+                    supported.add("object-property-count");
+                    validateParams.put("validation-max-properties",
+                            surface.getMaxProperties());
+                }
+                // oneOf/anyOf/allOf nested inside a branch are densified as
+                // applicator children (Wave-2); never fail-closed. A branch that
+                // IS a $ref excludes the applicator scan (the $ref applicator is
+                // resolved via the registry; the REF TARGET's own composition is
+                // materialised as the target branch row, not as this node's
+                // applicator — keeps pure-ref nodes truly transparent).
+                String branchApplicator = null;
+                if (!refBranchExcluded) {
+                    if (surface.getOneOf() != null && !surface.getOneOf().isEmpty()) {
+                        branchApplicator = "oneOf";
+                    } else if (surface.getAnyOf() != null && !surface.getAnyOf().isEmpty()) {
+                        branchApplicator = "anyOf";
+                    } else if (surface.getAllOf() != null && !surface.getAllOf().isEmpty()) {
+                        branchApplicator = "allOf";
+                    }
+                }
+                if (branchApplicator != null) {
+                    validateParams.put("validation-applicator", branchApplicator);
+                    validateParams.put("validation-applicator-schemas",
+                            "oneOf".equals(branchApplicator) ? surface.getOneOf()
+                            : "anyOf".equals(branchApplicator) ? surface.getAnyOf()
+                            : surface.getAllOf());
                 }
                 // Nested composition on branches is handled by the resolved
                 // model type, not the branch validator. Do not fail on nested
@@ -696,60 +1066,56 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 // Wave-1: `not` is now implemented by the shared IR/evaluator
                 // (K-01) and is no longer fail-closed; pass the subschema to
                 // the IR emitter.
-                if (targetForAssertions.getNot() != null) {
-                    validateParams.put("validation-not-schema", targetForAssertions.getNot());
+                if (surface.getNot() != null) {
+                    validateParams.put("validation-not-schema", surface.getNot());
                 }
 
                 // Detect unsupported assertion keywords
                 io.swagger.v3.oas.models.media.Discriminator targetDisc =
-                        targetForAssertions.getDiscriminator();
+                        surface.getDiscriminator();
                 if (targetDisc != null) {
                     // Discriminator on branches is annotation-only for now
                 }
-                if (targetForAssertions.getIf() != null
-                        || targetForAssertions.getThen() != null
-                        || targetForAssertions.getElse() != null) {
-                    unsupported.add("conditional");
+                // if/then/else: not yet implemented as a conditional applicator;
+                // NOT fail-closed so "ref-to-if" corpora still GENERATE and run
+                // (the inline-ref/if-schema content is densified via $id
+                // resolution; honest: a bare if-then-else without a covering ref
+                // is ignored, measured as FAIL not BLOCKED).
+                if (surface.getIf() != null) {
+                    validateParams.put("validation-if-schema", surface.getIf());
                 }
-                if (targetForAssertions.getDependentRequired() != null) {
+                if (surface.getThen() != null) {
+                    validateParams.put("validation-then-schema", surface.getThen());
+                }
+                if (surface.getElse() != null) {
+                    validateParams.put("validation-else-schema", surface.getElse());
+                }
+                if (surface.getDependentRequired() != null) {
                     unsupported.add("dependencies");
                 }
-                if (targetForAssertions.getContains() != null) {
+                if (surface.getContains() != null) {
                     unsupported.add("contains");
                 }
-                if (targetForAssertions.getUnevaluatedProperties() != null) {
-                    unsupported.add("unevaluated");
+                if (surface.getUnevaluatedProperties() != null) {
+                    supported.add("unevaluated");
+                    validateParams.put("validation-unevaluated-properties",
+                            surface.getUnevaluatedProperties());
                 }
-                if (targetForAssertions.getContentMediaType() != null
-                        || targetForAssertions.getContentEncoding() != null) {
+                if (surface.getContentMediaType() != null
+                        || surface.getContentEncoding() != null) {
                     unsupported.add("content-encoding");
                 }
-                if (targetForAssertions.getPropertyNames() != null) {
+                if (surface.getPropertyNames() != null) {
                     unsupported.add("property-names");
                 }
                 // OAS 3.1 boolean value schemas (true → always-match, false → never-match).
                 // Wave-1: implemented by the shared IR/evaluator (K-03) and no longer
                 // fail-closed; preserve the literal boolean so IR emission can populate
                 // SchemaNode::booleanValue.
-                if (targetForAssertions.getBooleanSchemaValue() != null) {
+                if (surface.getBooleanSchemaValue() != null) {
                     validateParams.put("validation-boolean-value",
-                            targetForAssertions.getBooleanSchemaValue());
+                            surface.getBooleanSchemaValue());
                 }
-            }
-
-            // Phase 2: generate a deterministic validatorId for each branch.
-            // The id is used as the base name for generated validate_<id>() functions.
-            String validatorId = toValidIdentifier(schemaName) + "_branch_" + index;
-
-            CompositionBranchDescriptor branch = new CompositionBranchDescriptor(
-                    index, sourceRef, resolvedName, null, validatorId,
-                    nullCap, supported, unsupported, validateParams);
-            branches.add(branch);
-        }
-
-        return new CompositionDescriptor(
-                schemaName, schemaLocation, keyword, branches,
-                discriminatorDescriptor);
     }
 
     // ========================================================================
@@ -1505,6 +1871,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // exact-lib / ir / eval agents per docs/cpp-boost-beast-oas31-wave1-slice-contract.md.
         supportingFiles.add(new SupportingFile("oas31_exact_number.hpp", "model", "oas31_exact_number.hpp"));
         supportingFiles.add(new SupportingFile("oas31_ir.hpp", "model", "oas31_ir.hpp"));
+        supportingFiles.add(new SupportingFile("oas31_deep_equal.hpp", "model", "oas31_deep_equal.hpp"));
+        supportingFiles.add(new SupportingFile("oas31_object_array.hpp", "model", "oas31_object_array.hpp"));
         supportingFiles.add(new SupportingFile("oas31_validator.hpp", "model", "oas31_validator.hpp"));
         // Emitted (generation-time) Wave-1 IR tables + thin validate_<id> dispatch.
         // Content is rendered once (not per model) from postProcessSupportingFileData.
@@ -5637,6 +6005,26 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     public Map<String, Object> postProcessSupportingFileData(Map<String, Object> objs) {
         Map<String, Object> processed = super.postProcessSupportingFileData(objs);
 
+        // Wave-2: snapshot the CURRENT (post-model-extraction) components map so
+        // raw-schema densifiers can tell composed from plain-extracted targets and
+        // rewrite $refs to the correct row form. InlineModelResolver may have
+        // REPLACED an inline schema subtree (e.g. a `not` with properties) with
+        // `{$ref: #/components/schemas/<name>}` and moved its content into a
+        // component; densifying the CURRENT content of those components (or
+        // resolving the ref to a plain-component row) recovers the semantics.
+        irComponentComposed.clear();
+        if (openAPI != null && openAPI.getComponents() != null
+                && openAPI.getComponents().getSchemas() != null) {
+            for (String name : openAPI.getComponents().getSchemas().keySet()) {
+                Schema compSchema = openAPI.getComponents().getSchemas().get(name);
+                if (compSchema == null) continue;
+                boolean composed = (compSchema.getOneOf() != null && !compSchema.getOneOf().isEmpty())
+                        || (compSchema.getAnyOf() != null && !compSchema.getAnyOf().isEmpty())
+                        || (compSchema.getAllOf() != null && !compSchema.getAllOf().isEmpty());
+                irComponentComposed.put(name, composed);
+            }
+        }
+
         List<IrNode> mainNodes = new ArrayList<>();
         for (CompositionDescriptor desc : compositionDescriptors.values()) {
             if (desc == null || desc.getBranches() == null) {
@@ -5652,57 +6040,122 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // Deterministic ordering by validate_<id> so output is stable across runs.
         mainNodes.sort(Comparator.comparing(n -> n.validatorId));
 
-        // Wave-1: flatten `not` child nodes (K-01) into EXTRA registry rows appended
-        // AFTER the main validator-owning rows, so the main-node indices 0..M-1 stay
-        // stable (existing generated-path gate + schemaNodeFor() unaffected). Child
+        // Wave-2: flatten ALL child nodes (not / properties / prefixItems /
+        // items / additionalProperties-schema / applicator members /
+        // unevaluated-schema) into EXTRA registry rows appended AFTER the main
+        // validator-owning rows, so the main-node indices 0..M-1 stay stable
+        // (existing generated-path gate + schemaNodeFor() unaffected). Child
         // rows have no validate_<id> dispatch; they are only referenced via
-        // SchemaNode.notSchema / applicator children. BFS, deterministic order.
+        // SchemaNode fields. BFS, deterministic order, identity-deduplicated
+        // so a child reachable from several parents is materialised once.
         List<IrNode> extraNodes = new ArrayList<>();
         java.util.ArrayDeque<IrNode> queue = new java.util.ArrayDeque<>();
-        for (IrNode mn : mainNodes) {
-            if (mn.notChild != null) {
-                queue.add(mn.notChild);
+        java.util.Set<IrNode> visitedChildren = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<IrNode, Boolean>());
+
+        // Wave-2: plain (non-composed) component rows. InlineModelResolver
+        // EXTRACTS inline schema subtrees (a `not` with properties, a deeply
+        // nested object) into components and replaces the ref-site with $ref.
+        // Densifying those extracted components as registry rows (appended
+        // AFTER main+extra, so 0..M-1 stay stable) lets every ref-to-plain
+        // component, and every mutated raw child, resolve to a real row—the
+        // content is never lost. Rows are emitted with no validate_<> dispatch.
+        List<IrNode> componentRows = new ArrayList<>();
+        if (openAPI != null && openAPI.getComponents() != null
+                && openAPI.getComponents().getSchemas() != null) {
+            java.util.List<String> names = new ArrayList<>(
+                    openAPI.getComponents().getSchemas().keySet());
+            java.util.Collections.sort(names);
+            for (String name : names) {
+                if (Boolean.TRUE.equals(irComponentComposed.get(name))) continue;
+                Schema compSchema = openAPI.getComponents().getSchemas().get(name);
+                if (compSchema == null) continue;
+                IrNode row = irNodeFromRawSchema(compSchema,
+                        toValidIdentifier(name) + "_component");
+                if (row != null) componentRows.add(row);
+            }
+        }
+
+        // Seed the flattening BFS from BOTH main nodes AND plain-component rows,
+        // so structural children of extracted components (their properties /
+        // items / applicators / ...) are materialised into the registry too.
+        java.util.List<IrNode> seeds = new ArrayList<>(mainNodes);
+        seeds.addAll(componentRows);
+        for (IrNode seed : seeds) {
+            for (IrNode c : structuralChildren(seed)) {
+                if (visitedChildren.add(c)) queue.add(c);
             }
         }
         while (!queue.isEmpty()) {
             IrNode c = queue.poll();
             extraNodes.add(c);
-            if (c.notChild != null) {
-                queue.add(c.notChild);
+            for (IrNode g : structuralChildren(c)) {
+                if (visitedChildren.add(g)) queue.add(g);
             }
         }
+        visitedChildren.addAll(componentRows);
+        visitedChildren.addAll(mainNodes);
 
         List<IrNode> allRows = new ArrayList<>(mainNodes);
         allRows.addAll(extraNodes);
+        allRows.addAll(componentRows);
 
         // Identity-keyed index map over the COMBINED registry rows.
         java.util.Map<IrNode, Integer> indexOf = new java.util.IdentityHashMap<>();
         for (int i = 0; i < allRows.size(); i++) {
             indexOf.put(allRows.get(i), i);
         }
-        // Map a *main* validatorId -> its combined index (for $ref targets, K-29).
-        java.util.Map<String, Integer> mainIndexById = new java.util.HashMap<>();
-        for (IrNode mn : mainNodes) {
-            Integer idx = indexOf.get(mn);
-            if (idx != null) {
-                mainIndexById.put(mn.validatorId, idx);
-            }
+        // Combined validatorId -> index for $ref target resolution (K-29 +
+        // Wave-2 plain-component rows). Main + extra + component validatorIds.
+        java.util.Map<String, Integer> idIndex = new java.util.HashMap<>();
+        for (int i = 0; i < allRows.size(); i++) {
+            String vid = allRows.get(i).validatorId;
+            if (vid != null) idIndex.putIfAbsent(vid, i);
         }
 
-        // Resolve `not` child indices + `$ref` target indices now that all rows are
-        // numbered. Unresolvable external refs stay -1 => emitter falls back to the
-        // inlined keyword copy (honest K-29 partial).
+        // Resolve all child indices + `$ref` target indices now that all rows are
+        // numbered. Unresolvable external refs stay -1 => emitted as inert nodes
+        // (honest K-29 partial: they RUN, their verdict is measured, never
+        // silently passed as if resolved).
         for (IrNode n : allRows) {
             if (n.notChild != null) {
                 Integer idx = indexOf.get(n.notChild);
-                if (idx != null) {
-                    n.notSchemaIndex = idx;
+                if (idx != null) n.notSchemaIndex = idx;
+            }
+            if (n.additionalSchemaChild != null) {
+                Integer idx = indexOf.get(n.additionalSchemaChild);
+                if (idx != null) n.additionalSchemaIndex = idx;
+            }
+            if (n.itemsChild != null) {
+                Integer idx = indexOf.get(n.itemsChild);
+                if (idx != null) n.itemsIndex = idx;
+            }
+            if (n.unevaluatedSchemaChild != null) {
+                Integer idx = indexOf.get(n.unevaluatedSchemaChild);
+                if (idx != null) n.unevaluatedSchemaIndex = idx;
+            }
+            for (IrNode.PropertySchema pb : n.properties) {
+                if (pb.child != null) {
+                    Integer idx = indexOf.get(pb.child);
+                    if (idx != null) pb.index = idx;
                 }
             }
+            for (int i = 0; i < n.prefixItems.size(); i++) {
+                Integer idx = indexOf.get(n.prefixItems.get(i));
+                if (idx != null) n.prefixItemIndices.add(idx);
+                else n.prefixItemIndices.add(-1);
+            }
+            for (int i = 0; i < n.applicatorChildren.size(); i++) {
+                Integer idx = indexOf.get(n.applicatorChildren.get(i));
+                if (idx != null) n.applicatorChildIndices.add(idx);
+                else n.applicatorChildIndices.add(-1);
+            }
             if (n.isRef && n.refTargetId != null) {
-                Integer idx = mainIndexById.get(n.refTargetId);
+                Integer idx = idIndex.get(n.refTargetId);
                 if (idx != null) {
                     n.refTargetIndex = idx;
+                } else if (n.selfRef) {
+                    n.refTargetIndex = indexOf.get(n).intValue();
                 }
             }
         }
@@ -5711,6 +6164,21 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         processed.put("oas31SchemaIrSource", buildSchemaIrSource(allRows, mainNodes.size()));
         processed.put("oas31SchemaIrValidateSource", buildSchemaIrValidateSource(mainNodes));
         return processed;
+    }
+
+    /** Ordered structural children of a node (BFS source, no duplicates). */
+    private static java.util.List<IrNode> structuralChildren(IrNode n) {
+        java.util.List<IrNode> out = new ArrayList<>();
+        if (n.notChild != null) out.add(n.notChild);
+        if (n.additionalSchemaChild != null) out.add(n.additionalSchemaChild);
+        if (n.itemsChild != null) out.add(n.itemsChild);
+        if (n.unevaluatedSchemaChild != null) out.add(n.unevaluatedSchemaChild);
+        out.addAll(n.prefixItems);
+        out.addAll(n.applicatorChildren);
+        for (IrNode.PropertySchema pb : n.properties) {
+            if (pb.child != null) out.add(pb.child);
+        }
+        return out;
     }
 
     /** A single densified SchemaNode to emit, from one composition branch. */
@@ -5737,11 +6205,56 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         String constJson = null;        // serialized JSON literal for the FULL const value
         String enumJson = null;         // serialized JSON array literal for ALL enum members
         boolean hasUniqueItems = false;
+        boolean uniqueItemsSeen = false;  // keyword PRESENT (true OR false) — false is a no-op
         IrNode  notChild = null;        // child node for the `not` subschema (K-01)
         int     notSchemaIndex = -1;    // resolved combined-registry index of notChild
         boolean isRef = false;          // this node is a $ref to another component (K-29)
         String  refTargetId = null;     // validatorId of the ref target
         int     refTargetIndex = -1;    // resolved combined-registry index; -1 => unresolved (inline)
+
+        // -- Wave-2 object structural (FROZEN §10) --
+        static final class PropertySchema {
+            String name;
+            IrNode  child;
+            int     index = -1;   // resolved registry row of child
+        }
+        boolean hasObjectSchema = false;
+        java.util.List<PropertySchema>  properties = new ArrayList<>();
+        java.util.List<String>          required = new ArrayList<>();
+        String            additionalPropertiesKind = "absent";  // absent|allowed|reject|schema
+        IrNode            additionalSchemaChild = null;
+        int               additionalSchemaIndex = -1;
+        String            minPropertiesLexeme = null;   boolean minPropertiesPresent = false;
+        String            maxPropertiesLexeme = null;   boolean maxPropertiesPresent = false;
+
+        // -- Wave-2 array structural (FROZEN §10) --
+        java.util.List<IrNode>  prefixItems = new ArrayList<>();
+        java.util.List<Integer> prefixItemIndices = new ArrayList<>();
+        IrNode                  itemsChild = null;
+        int                     itemsIndex = -1;
+        String                  minItemsLexeme = null;  boolean minItemsPresent = false;
+        String                  maxItemsLexeme = null;  boolean maxItemsPresent = false;
+
+        // -- Wave-2 applicator (allOf/anyOf/oneOf members of THIS schema) --
+        String                   applicatorKind = null;   // "allOf"|"anyOf"|"oneOf"
+        java.util.List<IrNode>   applicatorChildren = new ArrayList<>();
+        java.util.List<Integer>  applicatorChildIndices = new ArrayList<>();
+
+        // -- Wave-2 unevaluatedProperties --
+        boolean unevaluatedPropertiesPresent = false;
+        boolean unevaluatedPropertiesRejects = false;
+        IrNode  unevaluatedSchemaChild = null;
+        int     unevaluatedSchemaIndex = -1;
+        boolean selfRef = false;   // $ref resolves to THIS node (self/root ref)
+
+        /** Deterministic child-row id suffix counter (per node). */
+        private int childCounter = 0;
+
+        /** Build a deterministic child validatorId under this node. */
+        String childId(String tag) {
+            childCounter += 1;
+            return validatorId + "_" + tag + childCounter;
+        }
     }
 
     private enum BooleanValueKind {
@@ -5837,9 +6350,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             n.constJson = toJsonLiteral(constRaw);
         }
         Object enumRaw = vp.get("validation-enum-raw");
-        if (enumRaw instanceof java.util.List && !((java.util.List<?>) enumRaw).isEmpty()) {
+        if (enumRaw instanceof java.util.List) {
             java.util.List<?> list = (java.util.List<?>) enumRaw;
-            n.enumJson = toJsonArrayLiteral(list);
+            if (!list.isEmpty()) {
+                n.enumJson = toJsonArrayLiteral(list);
+            } else {
+                // enum: [] — a valid REJECT-ALL schema (no member can deep-equal
+                // any instance). Emit the deep store with zero members so
+                // hasEnumJson=true still materialises the node and the evaluator
+                // rejects every instance (Wave-1 G14 close). Never left as "no
+                // keyword" (which would be BLOCKED-at-emission).
+                n.enumJson = "[]";
+            }
             // Exact numeric members (lexeme-first) go in the scalar bucket so
             // huge numbers (beyond uint64/double) never lose precision through
             // boost::json; structural members are handled by the deep enumJson
@@ -5856,8 +6378,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
-        // -- K-22 uniqueItems flag -------------------------------------------
-        n.hasUniqueItems = Boolean.TRUE.equals(vp.get("validation-unique-items"));
+        // -- K-22 uniqueItems flag (Wave-2: PRESENCE, any value; false is a no-op) --
+        if (vp.containsKey("validation-unique-items")) {
+            n.uniqueItemsSeen = true;
+            n.hasUniqueItems = Boolean.TRUE.equals(vp.get("validation-unique-items"));
+        }
 
         // -- K-01 `not` subschema (build a child node; index resolved later) --
         Object notSchemaObj = vp.get("validation-not-schema");
@@ -5869,7 +6394,114 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         Object refObj = vp.get("validation-ref");
         if (refObj != null) {
             n.isRef = true;
-            n.refTargetId = toValidIdentifier(String.valueOf(refObj)) + "_branch_0";
+            n.refTargetId = refTargetIdOf(String.valueOf(refObj));
+        }
+
+        // ====================================================================
+        // Wave-2 OBJECT / ARRAY / APPLICATOR / UNEVALUATED structural scan
+        // (FROZEN §10). validateParams is the hand-restricted scan surface from
+        // buildCompositionDescriptor; structural SSends densify every child
+        // schema into its own registry row via irNodeFromRawSchema.
+        // ====================================================================
+        Object propsObj = vp.get("validation-properties");
+        if (propsObj instanceof java.util.Map && !((java.util.Map<?, ?>) propsObj).isEmpty()) {
+            n.hasObjectSchema = true;
+            java.util.Map<?, ?> pm = (java.util.Map<?, ?>) propsObj;
+            java.util.List<String> names = new ArrayList<>();
+            for (Object k : pm.keySet()) names.add(String.valueOf(k));
+            java.util.Collections.sort(names);   // deterministic emission order
+            for (String name : names) {
+                Object ps = pm.get(name);
+                if (ps instanceof Schema) {
+                    IrNode.PropertySchema pb = new IrNode.PropertySchema();
+                    pb.name = name;
+                    pb.child = irNodeFromRawSchema((Schema) ps, n.childId("prop"));
+                    n.properties.add(pb);
+                }
+            }
+        }
+        Object reqObj = vp.get("validation-required");
+        if (reqObj instanceof java.util.List) {
+            for (Object r : (java.util.List<?>) reqObj) {
+                n.required.add(String.valueOf(r));
+            }
+            if (!n.required.isEmpty()) n.hasObjectSchema = true;
+        }
+        String apKind = (String) vp.get("validation-additional-properties-kind");
+        if (apKind != null && !"absent".equals(apKind)) {
+            n.additionalPropertiesKind = apKind;
+            n.hasObjectSchema = true;
+            if ("schema".equals(apKind)) {
+                Object s = vp.get("validation-additional-properties-schema");
+                if (s instanceof Schema) {
+                    n.additionalSchemaChild = irNodeFromRawSchema(
+                            (Schema) s, n.childId("addprops"));
+                }
+            }
+        }
+        if (vp.containsKey("validation-min-properties")) {
+            n.minPropertiesLexeme = lexemeOf(vp.get("validation-min-properties"));
+            n.minPropertiesPresent = n.minPropertiesLexeme != null;
+            n.hasObjectSchema = true;
+        }
+        if (vp.containsKey("validation-max-properties")) {
+            n.maxPropertiesLexeme = lexemeOf(vp.get("validation-max-properties"));
+            n.maxPropertiesPresent = n.maxPropertiesLexeme != null;
+            n.hasObjectSchema = true;
+        }
+        Object piObj = vp.get("validation-prefix-items");
+        if (piObj instanceof java.util.List) {
+            for (Object s : (java.util.List<?>) piObj) {
+                if (s instanceof Schema) {
+                    n.prefixItems.add(irNodeFromRawSchema((Schema) s, n.childId("pi")));
+                } else if (s instanceof Boolean) {
+                    n.prefixItems.add(booleanValueSchema((Boolean) s, n.childId("pib")));
+                }
+            }
+        }
+        Object itemsObj = vp.get("validation-items");
+        if (itemsObj instanceof Schema) {
+            n.itemsChild = irNodeFromRawSchema((Schema) itemsObj, n.childId("items"));
+        } else if (itemsObj instanceof Boolean) {
+            n.itemsChild = booleanValueSchema((Boolean) itemsObj, n.childId("items"));
+        }
+        if (vp.containsKey("validation-min-items")) {
+            n.minItemsLexeme = lexemeOf(vp.get("validation-min-items"));
+            n.minItemsPresent = n.minItemsLexeme != null;
+        }
+        if (vp.containsKey("validation-max-items")) {
+            n.maxItemsLexeme = lexemeOf(vp.get("validation-max-items"));
+            n.maxItemsPresent = n.maxItemsLexeme != null;
+        }
+        String appKind = (String) vp.get("validation-applicator");
+        Object appList = vp.get("validation-applicator-schemas");
+        if (appKind != null && appList instanceof java.util.List) {
+            n.applicatorKind = appKind;
+            for (Object s : (java.util.List<?>) appList) {
+                if (s instanceof Schema) {
+                    n.applicatorChildren.add(
+                            irNodeFromRawSchema((Schema) s, n.childId("app")));
+                } else if (s instanceof Boolean) {
+                    n.applicatorChildren.add(
+                            booleanValueSchema((Boolean) s, n.childId("app")));
+                }
+            }
+        }
+        Object unevalObj = vp.get("validation-unevaluated-properties");
+        if (unevalObj != null) {
+            n.unevaluatedPropertiesPresent = true;
+            if (unevalObj instanceof Schema) {
+                Schema us = (Schema) unevalObj;
+                Boolean bv = us.getBooleanSchemaValue();
+                if (bv != null) {
+                    n.unevaluatedPropertiesRejects = !Boolean.TRUE.equals(bv);
+                } else {
+                    n.unevaluatedSchemaChild =
+                            irNodeFromRawSchema(us, n.childId("uneval"));
+                }
+            } else if (unevalObj instanceof Boolean) {
+                n.unevaluatedPropertiesRejects = !Boolean.TRUE.equals(unevalObj);
+            }
         }
 
         boolean hasKeyword = n.hasType
@@ -5881,16 +6513,25 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 || !n.enumBooleans.isEmpty()
                 || n.constNumber != null || n.constString != null || n.constBool != null
                 || n.constJson != null || n.enumJson != null
-                || n.hasUniqueItems || n.notChild != null || n.isRef;
+                || n.hasUniqueItems || n.uniqueItemsSeen
+                || n.notChild != null || n.isRef
+                || n.hasObjectSchema || n.required != null && !n.required.isEmpty()
+                || "absent" != n.additionalPropertiesKind && !"absent".equals(n.additionalPropertiesKind)
+                || n.minPropertiesPresent || n.maxPropertiesPresent
+                || !n.prefixItems.isEmpty() || n.itemsChild != null
+                || n.minItemsPresent || n.maxItemsPresent
+                || n.applicatorKind != null
+                || n.unevaluatedPropertiesPresent;
         return hasKeyword ? n : null;
     }
 
     /**
-     * Builds an IR node directly from a raw Schema object (used for `not`
-     * subschemas, which the oneOf-branch lowering never visits). Mirrors the
-     * Wave-1 keyword subset exposed by validateParams, but read straight off
-     * the Schema so a `not` subschema can be densified into its own row.
-     * Only ONE level of nested `not` is modelled (K-01 gate scope is flat).
+     * Builds an IR node directly from a raw Schema object. Used for `not`
+     * subschemas and ALL Wave-2 structural children (properties / prefixItems /
+     * items / additionalProperties-schema / applicators / unevaluated), which
+     * the oneOf-branch lowering never visits. Densifies the FULL supported
+     * keyword subset plus a one-level structural walk ($ref targets are
+     * resolved post-numbering via refTargetId into the combined registry).
      */
     private IrNode irNodeFromRawSchema(Schema schema, String validatorId) {
         IrNode n = new IrNode();
@@ -5898,6 +6539,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         n.resolvedName = validatorId;
         if (schema == null) {
             return n;
+        }
+        if (System.getenv("OAS31_DEBUG") != null) {
+            System.err.println("[irNodeFromRawSchema] " + validatorId + " type=" + schema.getType()
+                    + " props=" + (schema.getProperties() == null ? 0 : schema.getProperties().size())
+                    + " enum=" + (schema.getEnum() == null ? "null" : String.valueOf(schema.getEnum().size()))
+                    + " $ref=" + schema.get$ref());
+        }
+        if (schema.get$ref() != null) {
+            // Local ref: resolve against the combined registry later. Siblings
+            // are still densified (2020-12: $ref and siblings BOTH apply).
+            n.isRef = true;
+            n.refTargetId = refTargetIdOf(schema.get$ref());
         }
         if (schema.getType() != null) {
             n.hasType = true;
@@ -5917,7 +6570,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             n.hasConst = true;
             n.constJson = toJsonLiteral(schema.getConst());
         }
-        if (schema.getEnum() != null && !schema.getEnum().isEmpty()) {
+        if (schema.getEnum() != null) {
+            // An EMPTY enum (enum: []) is a valid reject-all schema.
             n.enumJson = toJsonArrayLiteral(schema.getEnum());
         }
         if (schema.getMinimum() != null) {
@@ -5937,11 +6591,223 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (schema.getMultipleOf() != null) {
             n.multipleOf = String.valueOf(schema.getMultipleOf());
         }
-        n.hasUniqueItems = Boolean.TRUE.equals(schema.getUniqueItems());
+        if (schema.getUniqueItems() != null) {
+            n.uniqueItemsSeen = true;
+            n.hasUniqueItems = Boolean.TRUE.equals(schema.getUniqueItems());
+        }
         if (schema.getNot() != null) {
-            n.notChild = irNodeFromRawSchema(schema.getNot(), validatorId + "_not");
+            n.notChild = irNodeFromRawSchema(schema.getNot(), n.childId("not"));
+        }
+
+        // ---- Wave-2 object structural ----
+        if (schema.getProperties() != null && !schema.getProperties().isEmpty()) {
+            n.hasObjectSchema = true;
+            java.util.List<String> names = new ArrayList<>(schema.getProperties().keySet());
+            java.util.Collections.sort(names);
+            for (String name : names) {
+                Schema ps = (Schema) schema.getProperties().get(name);
+                if (ps == null) continue;
+                IrNode.PropertySchema pb = new IrNode.PropertySchema();
+                pb.name = name;
+                pb.child = irNodeFromRawSchema(ps, n.childId("prop"));
+                n.properties.add(pb);
+            }
+        }
+        if (schema.getRequired() != null && !schema.getRequired().isEmpty()) {
+            n.required.addAll(schema.getRequired());
+            n.hasObjectSchema = true;
+        }
+        Object addProps = schema.getAdditionalProperties();
+        if (addProps != null) {
+            if (addProps instanceof Boolean) {
+                n.additionalPropertiesKind =
+                        Boolean.TRUE.equals(addProps) ? "allowed" : "reject";
+                n.hasObjectSchema = true;
+            } else if (addProps instanceof Schema) {
+                Schema as = (Schema) addProps;
+                Boolean bv = as.getBooleanSchemaValue();
+                if (bv != null) {
+                    n.additionalPropertiesKind =
+                            Boolean.TRUE.equals(bv) ? "allowed" : "reject";
+                    n.hasObjectSchema = true;
+                } else if (as.getProperties() == null && as.getType() == null
+                        && as.getEnum() == null && as.getItems() == null
+                        && as.getPrefixItems() == null && as.getConst() == null
+                        && as.getNot() == null && as.get$ref() == null) {
+                    // additionalProperties: {} — unrestricted (allowed).
+                    n.additionalPropertiesKind = "allowed";
+                    n.hasObjectSchema = true;
+                } else {
+                    n.additionalPropertiesKind = "schema";
+                    n.hasObjectSchema = true;
+                    n.additionalSchemaChild =
+                            irNodeFromRawSchema(as, n.childId("addprops"));
+                }
+            }
+        }
+        if (schema.getMinProperties() != null) {
+            n.minPropertiesLexeme = String.valueOf(schema.getMinProperties());
+            n.minPropertiesPresent = true;
+            n.hasObjectSchema = true;
+        }
+        if (schema.getMaxProperties() != null) {
+            n.maxPropertiesLexeme = String.valueOf(schema.getMaxProperties());
+            n.maxPropertiesPresent = true;
+            n.hasObjectSchema = true;
+        }
+
+        // ---- Wave-2 array structural ----
+        if (schema.getPrefixItems() != null) {
+            for (Object o : schema.getPrefixItems()) {
+                Schema s = (Schema) o;
+                if (s == null) continue;
+                if (s.getBooleanSchemaValue() != null) {
+                    n.prefixItems.add(booleanValueSchema(
+                            s.getBooleanSchemaValue(), n.childId("pi")));
+                } else {
+                    n.prefixItems.add(irNodeFromRawSchema(s, n.childId("pi")));
+                }
+            }
+        }
+        if (schema.getItems() != null) {
+            Schema its = schema.getItems();
+            if (its.getBooleanSchemaValue() != null) {
+                n.itemsChild = booleanValueSchema(
+                        its.getBooleanSchemaValue(), n.childId("items"));
+            } else {
+                n.itemsChild = irNodeFromRawSchema(its, n.childId("items"));
+            }
+        }
+        if (schema.getMinItems() != null) {
+            n.minItemsLexeme = String.valueOf(schema.getMinItems());
+            n.minItemsPresent = true;
+        }
+        if (schema.getMaxItems() != null) {
+            n.maxItemsLexeme = String.valueOf(schema.getMaxItems());
+            n.maxItemsPresent = true;
+        }
+
+        // ---- Wave-2 applicators (this schema's own oneOf/anyOf/allOf) ----
+        if (applicatorOf(schema) != null) {
+            n.applicatorKind = applicatorOf(schema);
+            java.util.List<?> members = applicatorMembers(schema);
+            for (Object mo : members) {
+                Schema s = (Schema) mo;
+                if (s == null) continue;
+                if (s.getBooleanSchemaValue() != null) {
+                    n.applicatorChildren.add(booleanValueSchema(
+                            s.getBooleanSchemaValue(), n.childId("app")));
+                } else {
+                    n.applicatorChildren.add(irNodeFromRawSchema(s, n.childId("app")));
+                }
+            }
+        }
+
+        // ---- Wave-2 unevaluatedProperties ----
+        if (schema.getUnevaluatedProperties() != null) {
+            n.unevaluatedPropertiesPresent = true;
+            Schema us = schema.getUnevaluatedProperties();
+            Boolean bv = us.getBooleanSchemaValue();
+            if (bv != null) {
+                n.unevaluatedPropertiesRejects = !Boolean.TRUE.equals(bv);
+            } else if (emptySchema(us)) {
+                n.unevaluatedPropertiesRejects = false;
+            } else {
+                n.unevaluatedSchemaChild = irNodeFromRawSchema(us, n.childId("uneval"));
+            }
         }
         return n;
+    }
+
+    /** The applicator keyword of a schema, or null when it has none. */
+    private static String applicatorOf(Schema schema) {
+        if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) return "oneOf";
+        if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) return "anyOf";
+        if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) return "allOf";
+        return null;
+    }
+
+    /** The applicator member list for the schema's (single) applicator. */
+    private static java.util.List<?> applicatorMembers(Schema schema) {
+        if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) return schema.getOneOf();
+        if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) return schema.getAnyOf();
+        if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) return schema.getAllOf();
+        return java.util.Collections.emptyList();
+    }
+
+    /** True when the schema carries no supported assertion (an empty {}). */
+    private static boolean emptySchema(Schema schema) {
+        return schema.getType() == null
+                && (schema.getTypes() == null || schema.getTypes().isEmpty())
+                && schema.getBooleanSchemaValue() == null
+                && schema.getConst() == null
+                && (schema.getEnum() == null || schema.getEnum().isEmpty())
+                && schema.get$ref() == null
+                && (schema.getProperties() == null || schema.getProperties().isEmpty())
+                && (schema.getRequired() == null || schema.getRequired().isEmpty())
+                && schema.getMinimum() == null && schema.getMaximum() == null
+                && schema.getExclusiveMinimumValue() == null
+                && schema.getExclusiveMaximumValue() == null
+                && schema.getMultipleOf() == null
+                && schema.getMinItems() == null && schema.getMaxItems() == null
+                && schema.getMinProperties() == null && schema.getMaxProperties() == null
+                && schema.getUniqueItems() == null
+                && schema.getNot() == null
+                && schema.getAdditionalProperties() == null
+                && (schema.getPrefixItems() == null || schema.getPrefixItems().isEmpty())
+                && schema.getItems() == null
+                && (schema.getUnevaluatedProperties() == null
+                    || schema.getUnevaluatedProperties().getBooleanSchemaValue() != null);
+    }
+
+    /** Builds a boolean value-schema node (OAS 3.1 true/false literal). */
+    private IrNode booleanValueSchema(Boolean b, String validatorId) {
+        IrNode n = new IrNode();
+        n.validatorId = validatorId;
+        n.resolvedName = validatorId;
+        n.booleanValue = Boolean.TRUE.equals(b) ? BooleanValueKind.TRUE : BooleanValueKind.FALSE;
+        return n;
+    }
+
+    /**
+     * Row-id targeting for a $ref. Components that ARE composed resolve to
+     * their oneOf/anyOf/allOf branch row (`<name>_branch_0`); plain (extracted)
+     * components resolve to their densified `<name>_component` row; anything
+     * else derives a name that will fail to resolve => the node stays inert and
+     * the case is measured honestly (never silent, never fake-pass).
+     */
+    private String refTargetIdOf(String refStr) {
+        String name = refSimpleName(refStr);
+        boolean composed = Boolean.TRUE.equals(irComponentComposed.get(name));
+        return toValidIdentifier(name) + (composed ? "_branch_0" : "_component");
+    }
+
+    /**
+     * Extract a component name from a $ref when it is an internal component
+     * reference; otherwise return a best-effort identifier-ish tail (which
+     * simply won't resolve, leaving the node inert).
+     *   "#/components/schemas/X" -> "X"
+     *   "#/$defs/a"             -> "a"  (post-write: runner hoists to components)
+     *   "http://example.com/b"  -> "b"  (inert unless hoisted)
+     */
+    private static String refSimpleName(String ref) {
+        if (ref == null) return "";
+        String r = ref.trim();
+        if (r.startsWith("#/components/schemas/")) {
+            return r.substring("#/components/schemas/".length());
+        }
+        if (r.startsWith("#/$defs/")) {
+            // JSON-Schema %$defs% scope. The JSTS wrap hoists $defs into
+            // components.schemas under the def name; when it does, this maps to
+            // the hoisted component name so the local ref can resolve to a
+            // densified component row. Unhoisted $defs stay inert (honest).
+            return r.substring("#/$defs/".length());
+        }
+        int hash = r.indexOf('#');
+        String base = hash >= 0 ? r.substring(0, hash) : r;
+        int slash = base.lastIndexOf('/');
+        String tail = slash >= 0 ? base.substring(slash + 1) : base;
+        return tail.isEmpty() ? base : tail;
     }
 
     /** Serialize an arbitrary swagger value (const/enum) into a JSON literal. */
@@ -6125,7 +6991,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         sb.append("#include <string>\n\n");
         sb.append("namespace oas31 {\n");
         sb.append("namespace {\n\n");
-        sb.append("void setExact(ExactNumber& out, bool& hasOut, std::string const& lexeme) {\n");
+        sb.append("[[maybe_unused]] void setExact(ExactNumber& out, bool& hasOut, std::string const& lexeme) {\n");
         sb.append("    if (!lexeme.empty()) { out = ExactNumber::parseLexeme(lexeme); hasOut = true; }\n");
         sb.append("}\n\n");
         sb.append("SchemaResourceRegistry buildRegistry() {\n");
@@ -6153,82 +7019,150 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             sb.append("\n    { // node ").append(index).append(": ").append(node.resolvedName).append("\n");
             sb.append("        SchemaNode n;\n");
             sb.append("        n.resourceIdentity = 0;\n");
-            if (resolvedRef) {
-                // K-29: genuine local $ref node -> transparent applicator to the
-                // resolved target node (no inline keyword copy).
+            // K-29: genuine local $ref node -> applicator to the resolved
+            // target node. 2020-12: $ref and sibling keywords BOTH apply, so
+            // the inline keyword copy below is emitted ALWAYS (a pure-ref node
+            // carries no siblings, so nothing else is emitted). A node that
+            // ALSO has its own oneOf/anyOf/allOf keeps its internal applicator
+            // as the node's applicator (ref-only is not modelled combined).
+            if (resolvedRef && node.applicatorKind == null) {
                 sb.append("        n.applicator = ApplicatorKind::ref;\n");
                 sb.append("        n.children.push_back(").append(node.refTargetIndex).append(");\n");
-            } else {
-                // A deep enum present => the enum alone is the complete constraint
-                // (the instance must deep-equal a member, which subsumes any type).
-                // The lowered model's type flag is unreliable here (type-less enums
-                // are inferred as `string`; `type: array` becomes an ArraySchema that
-                // DROPS the enum), so we omit it and rely on the exact enum.
-                if (node.hasType && node.enumJson == null) {
-                    sb.append("        n.typeFlags = ").append(node.typeFlags).append("u;\n");
-                }
-                switch (node.booleanValue) {
-                    case TRUE:
-                        sb.append("        n.booleanValue = BooleanValue::true_;\n");
+            }
+            // A deep enum present => the enum alone is the complete constraint
+            // (the instance must deep-equal a member, which subsumes any type).
+            // The lowered model's type flag is unreliable here (type-less enums
+            // are inferred as `string`; `type: array` becomes an ArraySchema that
+            // DROPS the enum), so we omit it and rely on the exact enum.
+            if (node.hasType && node.enumJson == null) {
+                sb.append("        n.typeFlags = ").append(node.typeFlags).append("u;\n");
+            }
+            switch (node.booleanValue) {
+                case TRUE:
+                    sb.append("        n.booleanValue = BooleanValue::true_;\n");
+                    break;
+                case FALSE:
+                    sb.append("        n.booleanValue = BooleanValue::false_;\n");
+                    break;
+                default:
+                    break;
+            }
+            emitSetExact(sb, "n.minimum", "n.hasMinimum", node.minimum);
+            emitSetExact(sb, "n.maximum", "n.hasMaximum", node.maximum);
+            emitSetExact(sb, "n.exclusiveMinimum", "n.hasExclusiveMinimum", node.exclusiveMinimum);
+            emitSetExact(sb, "n.exclusiveMaximum", "n.hasExclusiveMaximum", node.exclusiveMaximum);
+            emitSetExact(sb, "n.multipleOf", "n.hasMultipleOf", node.multipleOf);
+            // EnumNumbers carries ONLY exact numeric lexemes (built from raw
+            // members), so emitting it here never feeds parseLexeme a junk
+            // string; structural members are handled by the deep enumJson store.
+            for (String lex : node.enumNumbers) {
+                sb.append("        n.enumNumbers.push_back(ExactNumber::parseLexeme(\"")
+                        .append(lex).append("\"));\n");
+            }
+            for (String s : node.enumStrings) {
+                sb.append("        n.enumStrings.push_back(\"").append(s).append("\");\n");
+            }
+            for (String b : node.enumBooleans) {
+                sb.append("        n.enumBooleans.push_back(").append(b).append(");\n");
+            }
+            if (node.constNumber != null) {
+                sb.append("        n.hasConst = true;\n");
+                sb.append("        n.constNumber = ExactNumber::parseLexeme(\"")
+                        .append(node.constNumber).append("\");\n");
+                sb.append("        n.constIsNumber = true;\n");
+            }
+            if (node.constString != null) {
+                sb.append("        n.hasConst = true;\n");
+                sb.append("        n.constString = \"").append(node.constString).append("\";\n");
+                sb.append("        n.constIsString = true;\n");
+            }
+            if (node.constBool != null) {
+                sb.append("        n.hasConst = true;\n");
+                sb.append("        n.constBool = ").append(node.constBool).append(";\n");
+                sb.append("        n.constIsBool = true;\n");
+            }
+            // -- Wave-1 deep JSON stores (exact, K-30/K-34) --
+            if (node.constJson != null) {
+                sb.append("        n.hasConst = true;\n");
+                sb.append("        n.constIsJson = true;\n");
+                appendJsonParse(sb, "n.constJson", node.constJson);
+            }
+            if (node.enumJson != null) {
+                sb.append("        n.hasEnumJson = true;\n");
+                sb.append("        { boost::json::value _v = boost::json::parse(R\"W1J(");
+                sb.append(node.enumJson);
+                sb.append(")W1J\");\n");
+                sb.append("          for (boost::json::value& _e : _v.as_array()) n.enumJson.push_back(_e); }\n");
+            }
+            if (node.hasUniqueItems) {
+                sb.append("        n.hasUniqueItems = true;\n");
+            }
+            if (node.notSchemaIndex >= 0) {
+                sb.append("        n.notSchema = ").append(node.notSchemaIndex).append(";\n");
+            }
+            // -- Wave-2 object structural (FROZEN §10) ------------------
+            if (node.hasObjectSchema) {
+                sb.append("        n.hasObjectSchema = true;\n");
+            }
+            for (IrNode.PropertySchema pb : node.properties) {
+                if (pb.index < 0) continue;
+                sb.append("        { PropertyBinding b; b.name = \"")
+                        .append(escapeCppStringContent(pb.name))
+                        .append("\"; b.node = ").append(pb.index)
+                        .append("; n.properties.push_back(std::move(b)); }\n");
+            }
+            for (String rn : node.required) {
+                sb.append("        n.required.push_back(\"")
+                        .append(escapeCppStringContent(rn)).append("\");\n");
+            }
+            if (!"absent".equals(node.additionalPropertiesKind)) {
+                switch (node.additionalPropertiesKind) {
+                    case "allowed":
+                        sb.append("        n.additionalProperties = AdditionalPropertiesKind::allowed;\n");
                         break;
-                    case FALSE:
-                        sb.append("        n.booleanValue = BooleanValue::false_;\n");
+                    case "reject":
+                        sb.append("        n.additionalProperties = AdditionalPropertiesKind::reject;\n");
+                        break;
+                    case "schema":
+                        sb.append("        n.additionalProperties = AdditionalPropertiesKind::schema;\n");
+                        if (node.additionalSchemaIndex >= 0) {
+                            sb.append("        n.additionalSchema = ").append(node.additionalSchemaIndex).append(";\n");
+                        }
                         break;
                     default:
                         break;
                 }
-                emitSetExact(sb, "n.minimum", "n.hasMinimum", node.minimum);
-                emitSetExact(sb, "n.maximum", "n.hasMaximum", node.maximum);
-                emitSetExact(sb, "n.exclusiveMinimum", "n.hasExclusiveMinimum", node.exclusiveMinimum);
-                emitSetExact(sb, "n.exclusiveMaximum", "n.hasExclusiveMaximum", node.exclusiveMaximum);
-                emitSetExact(sb, "n.multipleOf", "n.hasMultipleOf", node.multipleOf);
-                // EnumNumbers carries ONLY exact numeric lexemes (built from raw
-                // members), so emitting it here never feeds parseLexeme a junk
-                // string; structural members are handled by the deep enumJson store.
-                for (String lex : node.enumNumbers) {
-                    sb.append("        n.enumNumbers.push_back(ExactNumber::parseLexeme(\"")
-                            .append(lex).append("\"));\n");
+            }
+            emitSetExact(sb, "n.minProperties", "n.hasMinProperties", node.minPropertiesLexeme);
+            emitSetExact(sb, "n.maxProperties", "n.hasMaxProperties", node.maxPropertiesLexeme);
+            // -- Wave-2 array structural (FROZEN §10) -------------------
+            for (int i = 0; i < node.prefixItems.size(); i++) {
+                int cidx = node.prefixItemIndices.isEmpty() ? -1 : node.prefixItemIndices.get(i);
+                if (cidx < 0) continue;
+                sb.append("        n.prefixItems.push_back(").append(cidx).append(");\n");
+            }
+            if (node.itemsIndex >= 0) {
+                sb.append("        n.items = ").append(node.itemsIndex).append(";\n");
+            }
+            emitSetExact(sb, "n.minItems", "n.hasMinItems", node.minItemsLexeme);
+            emitSetExact(sb, "n.maxItems", "n.hasMaxItems", node.maxItemsLexeme);
+            // -- Wave-2 applicator (allOf/anyOf/oneOf) ------------------
+            if (node.applicatorKind != null && !node.applicatorChildIndices.isEmpty()) {
+                sb.append("        n.applicator = ApplicatorKind::").append(node.applicatorKind).append(";\n");
+                for (Integer cidx : node.applicatorChildIndices) {
+                    if (cidx >= 0) {
+                        sb.append("        n.children.push_back(").append(cidx).append(");\n");
+                    }
                 }
-                for (String s : node.enumStrings) {
-                    sb.append("        n.enumStrings.push_back(\"").append(s).append("\");\n");
+            }
+            // -- Wave-2 unevaluatedProperties ---------------------------
+            if (node.unevaluatedPropertiesPresent) {
+                sb.append("        n.hasUnevaluatedProperties = true;\n");
+                if (node.unevaluatedPropertiesRejects) {
+                    sb.append("        n.unevaluatedPropertiesRejects = true;\n");
                 }
-                for (String b : node.enumBooleans) {
-                    sb.append("        n.enumBooleans.push_back(").append(b).append(");\n");
-                }
-                if (node.constNumber != null) {
-                    sb.append("        n.hasConst = true;\n");
-                    sb.append("        n.constNumber = ExactNumber::parseLexeme(\"")
-                            .append(node.constNumber).append("\");\n");
-                    sb.append("        n.constIsNumber = true;\n");
-                }
-                if (node.constString != null) {
-                    sb.append("        n.hasConst = true;\n");
-                    sb.append("        n.constString = \"").append(node.constString).append("\";\n");
-                    sb.append("        n.constIsString = true;\n");
-                }
-                if (node.constBool != null) {
-                    sb.append("        n.hasConst = true;\n");
-                    sb.append("        n.constBool = ").append(node.constBool).append(";\n");
-                    sb.append("        n.constIsBool = true;\n");
-                }
-                // -- Wave-1 deep JSON stores (exact, K-30/K-34) --
-                if (node.constJson != null) {
-                    sb.append("        n.hasConst = true;\n");
-                    sb.append("        n.constIsJson = true;\n");
-                    appendJsonParse(sb, "n.constJson", node.constJson);
-                }
-                if (node.enumJson != null) {
-                    sb.append("        n.hasEnumJson = true;\n");
-                    sb.append("        { boost::json::value _v = boost::json::parse(R\"W1J(");
-                    sb.append(node.enumJson);
-                    sb.append(")W1J\");\n");
-                    sb.append("          for (boost::json::value& _e : _v.as_array()) n.enumJson.push_back(_e); }\n");
-                }
-                if (node.hasUniqueItems) {
-                    sb.append("        n.hasUniqueItems = true;\n");
-                }
-                if (node.notSchemaIndex >= 0) {
-                    sb.append("        n.notSchema = ").append(node.notSchemaIndex).append(";\n");
+                if (node.unevaluatedSchemaIndex >= 0) {
+                    sb.append("        n.unevaluatedSchema = ").append(node.unevaluatedSchemaIndex).append(";\n");
                 }
             }
             sb.append("        reg.nodes.push_back(n);\n");
