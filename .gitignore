@@ -356,6 +356,7 @@ openai-cpp-sdk/build-master-verification/
 # generator (gate-generated-path.sh regenerates them from the committed OAS 3.1
 # doc oas31-generated-path-regression.yaml) and are therefore NEVER committed.
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-wiregen-build/
+/modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/phase2-wave1build/
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/schema_ir.generated.hpp
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/schema_ir.generated.cpp
 /modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance/schema_validate.generated.cpp

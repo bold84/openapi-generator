@@ -14,6 +14,7 @@
 #define OAS31_VALIDATOR_HPP_
 
 #include "oas31_ir.hpp"
+#include "oas31_deep_equal.hpp"
 
 #include <boost/json.hpp>
 
@@ -158,6 +159,93 @@ struct RawInstance {
 };
 
 // ============================================================================
+// EXACT deep JSON equality, instance vs. stored schema value (K-30/K-34/K-22).
+// Number equality is ALWAYS via ExactNumber (1 == 1.0 == 1e0); never double.
+// Objects compare by exact key set (missing key => not equal); arrays
+// positionally; the instance side is lexeme-first (exact), degrading to value
+// kind only for container children that carry no captured lexeme.
+// ============================================================================
+inline bool deepInstanceEqual(RawInstance const& inst, boost::json::value const& sv) {
+    switch (inst.kind()) {
+        case JsonType::null_:
+            return sv.is_null();
+        case JsonType::boolean:
+            return sv.is_bool() && inst.asBool() == sv.as_bool();
+        case JsonType::number:
+            if (!(sv.is_int64() || sv.is_uint64() || sv.is_double())) return false;
+            return inst.asExactNumber() == exactValueOf(sv);
+        case JsonType::string: {
+            if (!sv.is_string()) return false;
+            boost::json::string const& ss = sv.as_string();
+            return inst.asString() ==
+                   std::string(ss.data(), ss.size());
+        }
+        case JsonType::array: {
+            if (!sv.is_array()) return false;
+            boost::json::array const& sa = sv.as_array();
+            if (inst.size() != sa.size()) return false;
+            for (std::size_t i = 0; i < sa.size(); ++i) {
+                if (!deepInstanceEqual(inst.atIndex(i), sa[i])) return false;
+            }
+            return true;
+        }
+        case JsonType::object: {
+            if (!sv.is_object()) return false;
+            boost::json::object const& so = sv.as_object();
+            if (inst.size() != so.size()) return false;
+            for (auto const& kv : so) {
+                RawInstance m = inst.atMember(kv.key().data());
+                if (m.value == nullptr) return false;   // instance lacks this key
+                if (!deepInstanceEqual(m, kv.value())) return false;
+            }
+            return true;
+        }
+        case JsonType::integer: /* not a raw-instance kind */ break;
+    }
+    return false;
+}
+
+// ============================================================================
+// EXACT deep equality between TWO raw instances (used by uniqueItems, K-22).
+// Identical semantics to deepInstanceEqual but neither side is a stored schema
+// value; both sides may carry numeric lexemes, compared via ExactNumber.
+// ============================================================================
+inline bool deepRawEqual(RawInstance const& a, RawInstance const& b) {
+    JsonType const ka = a.kind();
+    JsonType const kb = b.kind();
+    if (ka != kb) return false;
+    switch (ka) {
+        case JsonType::null_:
+            return true;
+        case JsonType::boolean:
+            return a.asBool() == b.asBool();
+        case JsonType::number:
+            return a.asExactNumber() == b.asExactNumber();
+        case JsonType::string:
+            return a.asString() == b.asString();
+        case JsonType::array: {
+            if (a.size() != b.size()) return false;
+            for (std::size_t i = 0; i < a.size(); ++i) {
+                if (!deepRawEqual(a.atIndex(i), b.atIndex(i))) return false;
+            }
+            return true;
+        }
+        case JsonType::object: {
+            if (!a.value || !b.value || a.size() != b.size()) return false;
+            boost::json::object const& ob = b.value->as_object();
+            for (auto const& kv : ob) {
+                RawInstance m = a.atMember(kv.key().data());
+                if (m.value == nullptr) return false;   // a lacks this key
+                if (!deepRawEqual(m, RawInstance(&kv.value()))) return false;
+            }
+            return true;
+        }
+        case JsonType::integer: /* not a raw-instance kind */ break;
+    }
+    return false;
+}
+
+// ============================================================================
 // Annotation + transactional branch support (D2/D3).
 // ============================================================================
 struct Annotation {
@@ -234,6 +322,11 @@ public:
         if (node.booleanValue == BooleanValue::false_)
             return ValidationResult::invalidAt(path, "boolean value-schema false");
 
+        // K-29 $ref: transparent applicator to the generation-time-resolved target.
+        if (node.applicator == ApplicatorKind::ref && !node.children.empty()) {
+            return this->validate(node.children[0], instance, path, ctx);
+        }
+
         // Type flags (type / type-array). `number` matches any JSON number;
         // `integer` matches only numbers whose exact mathematical value is an
         // integer (ADR D1) — so 1 and 1.0 both satisfy `type: integer`, 1.5 does
@@ -281,41 +374,66 @@ public:
             }
         }
 
-        // Enum / const (exact-number aware for numeric kinds).
-        // JSON Schema `enum` requires a deep-equal match on the ENTIRE instance.
-        // This slice's IR carries only scalar enum buckets (numbers/strings/
-        // booleans), so the instance must equal one of the entries of the bucket
-        // matching its kind — and, critically, an instance whose kind has no
-        // representable bucket (null/array/object) is NOT equal to any entry and
-        // therefore FAILS whenever the node declares any enum values.
-        if (!node.enumNumbers.empty() || !node.enumStrings.empty() ||
-            !node.enumBooleans.empty()) {
-            bool found = false;
-            if (instance.isNumber()) {
-                ExactNumber const n = instance.asExactNumber();
-                for (ExactNumber const& e : node.enumNumbers)
-                    if (n == e) { found = true; break; }
-            } else if (instance.kind() == JsonType::string) {
-                std::string const s = instance.asString();
-                for (std::string const& e : node.enumStrings)
-                    if (s == e) { found = true; break; }
-            } else if (kindIsBool(instance)) {
-                bool const b = instance.asBool();
-                for (bool e : node.enumBooleans)
-                    if (b == e) { found = true; break; }
-            }
-            if (!found) return ValidationResult::invalidAt(path, "not in enum");
+        // Enum — EXACT deep JSON equality (K-30/K-34). The candidate list is:
+        //  1. node.enumNumbers — exact numeric lexemes (handles huge numbers
+        //     beyond uint64/double without any boost::json double round-trip),
+        //  2. node.enumJson — the full deep JSON member set (all kinds), compared
+        //     via deepInstanceEqual (ExactNumber for every number),
+        //  3. legacy scalar enumStrings / enumBooleans (backward-compat only).
+        // A numeric instance is matched against the EXACT numeric bucket first so a
+        // big const/enum is never decided by a lossy double.
+        bool enumFound = false;
+        if (instance.isNumber() && !node.enumNumbers.empty()) {
+            ExactNumber const n = instance.asExactNumber();
+            for (ExactNumber const& e : node.enumNumbers)
+                if (n == e) { enumFound = true; break; }
         }
+        if (!enumFound && node.hasEnumJson) {
+            for (boost::json::value const& e : node.enumJson)
+                if (deepInstanceEqual(instance, e)) { enumFound = true; break; }
+        }
+        if (!enumFound && instance.kind() == JsonType::string && !node.enumStrings.empty()) {
+            std::string const s = instance.asString();
+            for (std::string const& e : node.enumStrings)
+                if (s == e) { enumFound = true; break; }
+        }
+        if (!enumFound && kindIsBool(instance) && !node.enumBooleans.empty()) {
+            bool const b = instance.asBool();
+            for (bool e : node.enumBooleans)
+                if (b == e) { enumFound = true; break; }
+        }
+        bool const hasAnyEnum = node.hasEnumJson || !node.enumNumbers.empty()
+                || !node.enumStrings.empty() || !node.enumBooleans.empty();
+        if (hasAnyEnum && !enumFound)
+            return ValidationResult::invalidAt(path, "not in enum");
         if (node.hasConst) {
-            bool match = false;
-            if (node.constIsNumber && instance.isNumber())
-                match = (instance.asExactNumber() == node.constNumber);
-            else if (node.constIsString && instance.kind() == JsonType::string)
-                match = (instance.asString() == node.constString);
-            else if (node.constIsBool && kindIsBool(instance))
-                match = (instance.asBool() == node.constBool);
-            if (!match) return ValidationResult::invalidAt(path, "const mismatch");
+            if (node.constIsJson) {
+                if (!deepInstanceEqual(instance, node.constJson))
+                    return ValidationResult::invalidAt(path, "const mismatch");
+            } else {
+                bool match = false;
+                if (node.constIsNumber && instance.isNumber())
+                    match = (instance.asExactNumber() == node.constNumber);
+                else if (node.constIsString && instance.kind() == JsonType::string)
+                    match = (instance.asString() == node.constString);
+                else if (node.constIsBool && kindIsBool(instance))
+                    match = (instance.asBool() == node.constBool);
+                if (!match) return ValidationResult::invalidAt(path, "const mismatch");
+            }
         }
+
+        // K-22 uniqueItems: array items must be pairwise NOT deep-equal. Because
+        // 1 == 1.0 under ExactNumber, [1,2,1.0] is rejected (duplicate).
+        if (node.hasUniqueItems && instance.isArray()) {
+            std::size_t const n = instance.size();
+            for (std::size_t i = 0; i < n; ++i) {
+                for (std::size_t j = i + 1; j < n; ++j) {
+                    if (deepRawEqual(instance.atIndex(i), instance.atIndex(j)))
+                        return ValidationResult::invalidAt(path, "duplicate item in uniqueItems array");
+                }
+            }
+        }
+
 
         // `not` subschema reference: valid iff the subschema does NOT match.
         if (node.notSchema != kNoSchema) {

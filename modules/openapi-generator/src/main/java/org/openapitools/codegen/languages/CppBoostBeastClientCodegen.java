@@ -477,6 +477,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 sourceRef = branchSchema.get$ref();
                 String refName = ModelUtils.getSimpleRef(branchSchema.get$ref());
                 resolvedName = refName;
+                // Stash the local $ref target name for Wave-1 K-29 IR emission.
+                validateParams.put("validation-ref", refName);
                 // Detect null type via $ref to null schema
                 if ("null".equals(refName)) {
                     nullCap = CompositionBranchDescriptor.NullCapability.ALWAYS;
@@ -555,6 +557,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     validateParams.put("validation-enum-kind-number", "number".equals(predominantKind));
                     validateParams.put("validation-enum-kind-bool", "bool".equals(predominantKind));
                     validateParams.put("has-validation-enum", true);
+                    // Keep the RAW swagger enum (deep JSON members) for Wave-1
+                    // exact deep-equality IR emission (K-34).
+                    validateParams.put("validation-enum-raw", targetForAssertions.getEnum());
                 }
                 // Const: detect JSON kind for the validator template
                 if (targetForAssertions.getConst() != null) {
@@ -572,6 +577,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                 escapeCppStringContent(constVal.toString()));
                     }
                     validateParams.put("has-validation-const", true);
+                    // Keep the RAW swagger const value (deep JSON, K-30) for
+                    // Wave-1 exact deep-equality IR emission.
+                    validateParams.put("validation-const-raw", targetForAssertions.getConst());
                 }
                 // Use ModelUtils.resolveMinimumBound / resolveMaximumBound for
                 // proper OAS 3.0→3.1 resolution (boolean → numeric conversion,
@@ -643,6 +651,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (Boolean.TRUE.equals(targetForAssertions.getUniqueItems())) {
                     supported.add("unique-items");
                     validateParams.put("has-validation-unique-items", true);
+                    validateParams.put("validation-unique-items", true);
                 }
                 // required: supported — presence check is generated in validator
                 if (targetForAssertions.getRequired() != null) {
@@ -684,8 +693,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 // composition; the model hierarchy validates it at decode time.
                 // `not` is always unsupported: it can flip any membership decision
                 // and no generated validator currently implements it.
+                // Wave-1: `not` is now implemented by the shared IR/evaluator
+                // (K-01) and is no longer fail-closed; pass the subschema to
+                // the IR emitter.
                 if (targetForAssertions.getNot() != null) {
-                    unsupported.add("not");
+                    validateParams.put("validation-not-schema", targetForAssertions.getNot());
                 }
 
                 // Detect unsupported assertion keywords
@@ -715,12 +727,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (targetForAssertions.getPropertyNames() != null) {
                     unsupported.add("property-names");
                 }
-                // OAS 3.1 boolean value schemas (true → always-match, false → never-match)
-                // affect oneOf/anyOf membership with no generated validator.
+                // OAS 3.1 boolean value schemas (true → always-match, false → never-match).
+                // Wave-1: implemented by the shared IR/evaluator (K-03) and no longer
+                // fail-closed; preserve the literal boolean so IR emission can populate
+                // SchemaNode::booleanValue.
                 if (targetForAssertions.getBooleanSchemaValue() != null) {
-                    unsupported.add("boolean-schema");
-                    // Preserve the literal boolean value so Wave-1 IR emission can
-                    // populate SchemaNode::booleanValue for the densified IR table.
                     validateParams.put("validation-boolean-value",
                             targetForAssertions.getBooleanSchemaValue());
                 }
@@ -5626,7 +5637,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     public Map<String, Object> postProcessSupportingFileData(Map<String, Object> objs) {
         Map<String, Object> processed = super.postProcessSupportingFileData(objs);
 
-        List<IrNode> nodes = new ArrayList<>();
+        List<IrNode> mainNodes = new ArrayList<>();
         for (CompositionDescriptor desc : compositionDescriptors.values()) {
             if (desc == null || desc.getBranches() == null) {
                 continue;
@@ -5634,16 +5645,71 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             for (CompositionBranchDescriptor branch : desc.getBranches()) {
                 IrNode node = irNodeFromBranch(branch);
                 if (node != null) {
-                    nodes.add(node);
+                    mainNodes.add(node);
                 }
             }
         }
         // Deterministic ordering by validate_<id> so output is stable across runs.
-        nodes.sort(Comparator.comparing(n -> n.validatorId));
+        mainNodes.sort(Comparator.comparing(n -> n.validatorId));
 
-        processed.put("oas31SchemaIrHeader", buildSchemaIrHeader(nodes));
-        processed.put("oas31SchemaIrSource", buildSchemaIrSource(nodes));
-        processed.put("oas31SchemaIrValidateSource", buildSchemaIrValidateSource(nodes));
+        // Wave-1: flatten `not` child nodes (K-01) into EXTRA registry rows appended
+        // AFTER the main validator-owning rows, so the main-node indices 0..M-1 stay
+        // stable (existing generated-path gate + schemaNodeFor() unaffected). Child
+        // rows have no validate_<id> dispatch; they are only referenced via
+        // SchemaNode.notSchema / applicator children. BFS, deterministic order.
+        List<IrNode> extraNodes = new ArrayList<>();
+        java.util.ArrayDeque<IrNode> queue = new java.util.ArrayDeque<>();
+        for (IrNode mn : mainNodes) {
+            if (mn.notChild != null) {
+                queue.add(mn.notChild);
+            }
+        }
+        while (!queue.isEmpty()) {
+            IrNode c = queue.poll();
+            extraNodes.add(c);
+            if (c.notChild != null) {
+                queue.add(c.notChild);
+            }
+        }
+
+        List<IrNode> allRows = new ArrayList<>(mainNodes);
+        allRows.addAll(extraNodes);
+
+        // Identity-keyed index map over the COMBINED registry rows.
+        java.util.Map<IrNode, Integer> indexOf = new java.util.IdentityHashMap<>();
+        for (int i = 0; i < allRows.size(); i++) {
+            indexOf.put(allRows.get(i), i);
+        }
+        // Map a *main* validatorId -> its combined index (for $ref targets, K-29).
+        java.util.Map<String, Integer> mainIndexById = new java.util.HashMap<>();
+        for (IrNode mn : mainNodes) {
+            Integer idx = indexOf.get(mn);
+            if (idx != null) {
+                mainIndexById.put(mn.validatorId, idx);
+            }
+        }
+
+        // Resolve `not` child indices + `$ref` target indices now that all rows are
+        // numbered. Unresolvable external refs stay -1 => emitter falls back to the
+        // inlined keyword copy (honest K-29 partial).
+        for (IrNode n : allRows) {
+            if (n.notChild != null) {
+                Integer idx = indexOf.get(n.notChild);
+                if (idx != null) {
+                    n.notSchemaIndex = idx;
+                }
+            }
+            if (n.isRef && n.refTargetId != null) {
+                Integer idx = mainIndexById.get(n.refTargetId);
+                if (idx != null) {
+                    n.refTargetIndex = idx;
+                }
+            }
+        }
+
+        processed.put("oas31SchemaIrHeader", buildSchemaIrHeader(allRows));
+        processed.put("oas31SchemaIrSource", buildSchemaIrSource(allRows));
+        processed.put("oas31SchemaIrValidateSource", buildSchemaIrValidateSource(mainNodes));
         return processed;
     }
 
@@ -5665,6 +5731,17 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         String constNumber = null;
         String constString = null;
         Boolean constBool = null;
+        boolean hasConst = false;
+
+        // -- Wave-1 deep-equality / not / uniqueItems / $ref (K-30/K-34/K-22/K-01/K-29) --
+        String constJson = null;        // serialized JSON literal for the FULL const value
+        String enumJson = null;         // serialized JSON array literal for ALL enum members
+        boolean hasUniqueItems = false;
+        IrNode  notChild = null;        // child node for the `not` subschema (K-01)
+        int     notSchemaIndex = -1;    // resolved combined-registry index of notChild
+        boolean isRef = false;          // this node is a $ref to another component (K-29)
+        String  refTargetId = null;     // validatorId of the ref target
+        int     refTargetIndex = -1;    // resolved combined-registry index; -1 => unresolved (inline)
     }
 
     private enum BooleanValueKind {
@@ -5745,6 +5822,56 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
+        // -- Wave-1 deep-equality stores (K-30/K-34) -------------------------
+        // Const + enum are kept ALSO as full JSON so the engine can do EXACT deep
+        // comparison across ALL JSON kinds (arrays / objects / mixed), never a
+        // scalar shortcut. The raw swagger values were stashed into validateParams
+        // by the assertion scan; we serialize them to JSON literals here.
+        Object constRaw = vp.get("validation-const-raw");
+        // Route NON-number consts through the deep JSON store (K-30). Number
+        // consts stay on the exact scalar lexeme path (constNumber) so huge
+        // values beyond uint64/double never round-trip through boost::json
+        // (big-const 2^70 regression guard).
+        if (constRaw != null && !(constRaw instanceof Number)) {
+            n.hasConst = true;
+            n.constJson = toJsonLiteral(constRaw);
+        }
+        Object enumRaw = vp.get("validation-enum-raw");
+        if (enumRaw instanceof java.util.List && !((java.util.List<?>) enumRaw).isEmpty()) {
+            java.util.List<?> list = (java.util.List<?>) enumRaw;
+            n.enumJson = toJsonArrayLiteral(list);
+            // Exact numeric members (lexeme-first) go in the scalar bucket so
+            // huge numbers (beyond uint64/double) never lose precision through
+            // boost::json; structural members are handled by the deep enumJson
+            // store instead. Only genuine numbers enter enumNumbers, so the
+            // emitted parseLexeme is never fed a non-numeric string.
+            n.enumNumbers = new ArrayList<>();
+            for (Object m : list) {
+                if (m instanceof Number) {
+                    n.enumNumbers.add(m.toString());
+                } else if (m instanceof com.fasterxml.jackson.databind.JsonNode
+                        && ((com.fasterxml.jackson.databind.JsonNode) m).isNumber()) {
+                    n.enumNumbers.add(((com.fasterxml.jackson.databind.JsonNode) m).asText());
+                }
+            }
+        }
+
+        // -- K-22 uniqueItems flag -------------------------------------------
+        n.hasUniqueItems = Boolean.TRUE.equals(vp.get("validation-unique-items"));
+
+        // -- K-01 `not` subschema (build a child node; index resolved later) --
+        Object notSchemaObj = vp.get("validation-not-schema");
+        if (notSchemaObj instanceof Schema) {
+            n.notChild = irNodeFromRawSchema((Schema) notSchemaObj, n.validatorId + "_not");
+        }
+
+        // -- K-29 $ref --------------------------------------------------------
+        Object refObj = vp.get("validation-ref");
+        if (refObj != null) {
+            n.isRef = true;
+            n.refTargetId = toValidIdentifier(String.valueOf(refObj)) + "_branch_0";
+        }
+
         boolean hasKeyword = n.hasType
                 || n.booleanValue != BooleanValueKind.NOT_BOOLEAN
                 || n.minimum != null || n.maximum != null
@@ -5752,8 +5879,157 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 || n.multipleOf != null
                 || !n.enumNumbers.isEmpty() || !n.enumStrings.isEmpty()
                 || !n.enumBooleans.isEmpty()
-                || n.constNumber != null || n.constString != null || n.constBool != null;
+                || n.constNumber != null || n.constString != null || n.constBool != null
+                || n.constJson != null || n.enumJson != null
+                || n.hasUniqueItems || n.notChild != null || n.isRef;
         return hasKeyword ? n : null;
+    }
+
+    /**
+     * Builds an IR node directly from a raw Schema object (used for `not`
+     * subschemas, which the oneOf-branch lowering never visits). Mirrors the
+     * Wave-1 keyword subset exposed by validateParams, but read straight off
+     * the Schema so a `not` subschema can be densified into its own row.
+     * Only ONE level of nested `not` is modelled (K-01 gate scope is flat).
+     */
+    private IrNode irNodeFromRawSchema(Schema schema, String validatorId) {
+        IrNode n = new IrNode();
+        n.validatorId = validatorId;
+        n.resolvedName = validatorId;
+        if (schema == null) {
+            return n;
+        }
+        if (schema.getType() != null) {
+            n.hasType = true;
+            n.typeFlags |= jsonTypeBit(String.valueOf(schema.getType()));
+        }
+        if (schema.getTypes() != null && !schema.getTypes().isEmpty()) {
+            n.hasType = true;
+            for (Object t : schema.getTypes()) {
+                n.typeFlags |= jsonTypeBit(String.valueOf(t));
+            }
+        }
+        if (schema.getBooleanSchemaValue() != null) {
+            n.booleanValue = Boolean.TRUE.equals(schema.getBooleanSchemaValue())
+                    ? BooleanValueKind.TRUE : BooleanValueKind.FALSE;
+        }
+        if (schema.getConst() != null) {
+            n.hasConst = true;
+            n.constJson = toJsonLiteral(schema.getConst());
+        }
+        if (schema.getEnum() != null && !schema.getEnum().isEmpty()) {
+            n.enumJson = toJsonArrayLiteral(schema.getEnum());
+        }
+        if (schema.getMinimum() != null) {
+            n.minimum = String.valueOf(schema.getMinimum());
+        }
+        if (schema.getMaximum() != null) {
+            n.maximum = String.valueOf(schema.getMaximum());
+        }
+        // Use the *Value* accessor (Number); getExclusiveMinimum() is a Boolean
+        // presence marker in OAS 3.0 and not a numeric bound.
+        if (schema.getExclusiveMinimumValue() != null) {
+            n.exclusiveMinimum = String.valueOf(schema.getExclusiveMinimumValue());
+        }
+        if (schema.getExclusiveMaximumValue() != null) {
+            n.exclusiveMaximum = String.valueOf(schema.getExclusiveMaximumValue());
+        }
+        if (schema.getMultipleOf() != null) {
+            n.multipleOf = String.valueOf(schema.getMultipleOf());
+        }
+        n.hasUniqueItems = Boolean.TRUE.equals(schema.getUniqueItems());
+        if (schema.getNot() != null) {
+            n.notChild = irNodeFromRawSchema(schema.getNot(), validatorId + "_not");
+        }
+        return n;
+    }
+
+    /** Serialize an arbitrary swagger value (const/enum) into a JSON literal. */
+    private static String toJsonLiteral(Object o) {
+        if (o == null) {
+            return "null";
+        }
+        // swagger exposes complex const/enum members as Jackson JsonNode whose
+        // toString() is ALREADY valid JSON (object/array/text/number/bool/null).
+        // Emit it verbatim — never re-quote it.
+        if (o instanceof com.fasterxml.jackson.databind.JsonNode) {
+            return o.toString();
+        }
+        if (o instanceof String) {
+            return jsonQuote((String) o);
+        }
+        if (o instanceof Boolean) {
+            return Boolean.TRUE.equals(o) ? "true" : "false";
+        }
+        if (o instanceof Number) {
+            return o.toString();
+        }
+        if (o instanceof java.util.Map<?, ?>) {
+            java.util.Map<?, ?> m = (java.util.Map<?, ?>) o;
+            StringBuilder sb = new StringBuilder("{");
+            boolean first = true;
+            for (java.util.Map.Entry<?, ?> e : m.entrySet()) {
+                if (!first) {
+                    sb.append(',');
+                }
+                first = false;
+                sb.append(jsonQuote(String.valueOf(e.getKey()))).append(':')
+                  .append(toJsonLiteral(e.getValue()));
+            }
+            return sb.append('}').toString();
+        }
+        if (o instanceof java.util.List<?>) {
+            return toJsonArrayLiteral((java.util.List<?>) o);
+        }
+        if (o.getClass().isArray()) {
+            int len = java.lang.reflect.Array.getLength(o);
+            StringBuilder sb = new StringBuilder("[");
+            for (int i = 0; i < len; i++) {
+                if (i > 0) {
+                    sb.append(',');
+                }
+                sb.append(toJsonLiteral(java.lang.reflect.Array.get(o, i)));
+            }
+            return sb.append(']').toString();
+        }
+        return jsonQuote(o.toString());
+    }
+
+    private static String toJsonArrayLiteral(java.util.List<?> list) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < list.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(toJsonLiteral(list.get(i)));
+        }
+        return sb.append(']').toString();
+    }
+
+    /** Minimal JSON string quote (escape \ " and control chars). */
+    private static String jsonQuote(String s) {
+        if (s == null) {
+            return "\"\"";
+        }
+        StringBuilder sb = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': sb.append("\\\\"); break;
+                case '"':  sb.append("\\\""); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (c < 0x20) {
+                        sb.append(String.format(Locale.ROOT, "\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                    break;
+            }
+        }
+        return sb.append('\"').toString();
     }
 
     /** Original numeric lexeme, or null when absent (BigDecimal.toString()). */
@@ -5822,52 +6098,87 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
 
         int index = 0;
         for (IrNode node : nodes) {
+            boolean resolvedRef = node.isRef && node.refTargetIndex >= 0;
             sb.append("\n    { // node ").append(index).append(": ").append(node.resolvedName).append("\n");
             sb.append("        SchemaNode n;\n");
             sb.append("        n.resourceIdentity = 0;\n");
-            if (node.hasType) {
-                sb.append("        n.typeFlags = ").append(node.typeFlags).append("u;\n");
-            }
-            switch (node.booleanValue) {
-                case TRUE:
-                    sb.append("        n.booleanValue = BooleanValue::true_;\n");
-                    break;
-                case FALSE:
-                    sb.append("        n.booleanValue = BooleanValue::false_;\n");
-                    break;
-                default:
-                    break;
-            }
-            emitSetExact(sb, "n.minimum", "n.hasMinimum", node.minimum);
-            emitSetExact(sb, "n.maximum", "n.hasMaximum", node.maximum);
-            emitSetExact(sb, "n.exclusiveMinimum", "n.hasExclusiveMinimum", node.exclusiveMinimum);
-            emitSetExact(sb, "n.exclusiveMaximum", "n.hasExclusiveMaximum", node.exclusiveMaximum);
-            emitSetExact(sb, "n.multipleOf", "n.hasMultipleOf", node.multipleOf);
-            for (String lex : node.enumNumbers) {
-                sb.append("        n.enumNumbers.push_back(ExactNumber::parseLexeme(\"")
-                        .append(lex).append("\"));\n");
-            }
-            for (String s : node.enumStrings) {
-                sb.append("        n.enumStrings.push_back(\"").append(s).append("\");\n");
-            }
-            for (String b : node.enumBooleans) {
-                sb.append("        n.enumBooleans.push_back(").append(b).append(");\n");
-            }
-            if (node.constNumber != null) {
-                sb.append("        n.hasConst = true;\n");
-                sb.append("        n.constNumber = ExactNumber::parseLexeme(\"")
-                        .append(node.constNumber).append("\");\n");
-                sb.append("        n.constIsNumber = true;\n");
-            }
-            if (node.constString != null) {
-                sb.append("        n.hasConst = true;\n");
-                sb.append("        n.constString = \"").append(node.constString).append("\";\n");
-                sb.append("        n.constIsString = true;\n");
-            }
-            if (node.constBool != null) {
-                sb.append("        n.hasConst = true;\n");
-                sb.append("        n.constBool = ").append(node.constBool).append(";\n");
-                sb.append("        n.constIsBool = true;\n");
+            if (resolvedRef) {
+                // K-29: genuine local $ref node -> transparent applicator to the
+                // resolved target node (no inline keyword copy).
+                sb.append("        n.applicator = ApplicatorKind::ref;\n");
+                sb.append("        n.children.push_back(").append(node.refTargetIndex).append(");\n");
+            } else {
+                // A deep enum present => the enum alone is the complete constraint
+                // (the instance must deep-equal a member, which subsumes any type).
+                // The lowered model's type flag is unreliable here (type-less enums
+                // are inferred as `string`; `type: array` becomes an ArraySchema that
+                // DROPS the enum), so we omit it and rely on the exact enum.
+                if (node.hasType && node.enumJson == null) {
+                    sb.append("        n.typeFlags = ").append(node.typeFlags).append("u;\n");
+                }
+                switch (node.booleanValue) {
+                    case TRUE:
+                        sb.append("        n.booleanValue = BooleanValue::true_;\n");
+                        break;
+                    case FALSE:
+                        sb.append("        n.booleanValue = BooleanValue::false_;\n");
+                        break;
+                    default:
+                        break;
+                }
+                emitSetExact(sb, "n.minimum", "n.hasMinimum", node.minimum);
+                emitSetExact(sb, "n.maximum", "n.hasMaximum", node.maximum);
+                emitSetExact(sb, "n.exclusiveMinimum", "n.hasExclusiveMinimum", node.exclusiveMinimum);
+                emitSetExact(sb, "n.exclusiveMaximum", "n.hasExclusiveMaximum", node.exclusiveMaximum);
+                emitSetExact(sb, "n.multipleOf", "n.hasMultipleOf", node.multipleOf);
+                // EnumNumbers carries ONLY exact numeric lexemes (built from raw
+                // members), so emitting it here never feeds parseLexeme a junk
+                // string; structural members are handled by the deep enumJson store.
+                for (String lex : node.enumNumbers) {
+                    sb.append("        n.enumNumbers.push_back(ExactNumber::parseLexeme(\"")
+                            .append(lex).append("\"));\n");
+                }
+                for (String s : node.enumStrings) {
+                    sb.append("        n.enumStrings.push_back(\"").append(s).append("\");\n");
+                }
+                for (String b : node.enumBooleans) {
+                    sb.append("        n.enumBooleans.push_back(").append(b).append(");\n");
+                }
+                if (node.constNumber != null) {
+                    sb.append("        n.hasConst = true;\n");
+                    sb.append("        n.constNumber = ExactNumber::parseLexeme(\"")
+                            .append(node.constNumber).append("\");\n");
+                    sb.append("        n.constIsNumber = true;\n");
+                }
+                if (node.constString != null) {
+                    sb.append("        n.hasConst = true;\n");
+                    sb.append("        n.constString = \"").append(node.constString).append("\";\n");
+                    sb.append("        n.constIsString = true;\n");
+                }
+                if (node.constBool != null) {
+                    sb.append("        n.hasConst = true;\n");
+                    sb.append("        n.constBool = ").append(node.constBool).append(";\n");
+                    sb.append("        n.constIsBool = true;\n");
+                }
+                // -- Wave-1 deep JSON stores (exact, K-30/K-34) --
+                if (node.constJson != null) {
+                    sb.append("        n.hasConst = true;\n");
+                    sb.append("        n.constIsJson = true;\n");
+                    appendJsonParse(sb, "n.constJson", node.constJson);
+                }
+                if (node.enumJson != null) {
+                    sb.append("        n.hasEnumJson = true;\n");
+                    sb.append("        { boost::json::value _v = boost::json::parse(R\"W1J(");
+                    sb.append(node.enumJson);
+                    sb.append(")W1J\");\n");
+                    sb.append("          for (boost::json::value& _e : _v.as_array()) n.enumJson.push_back(_e); }\n");
+                }
+                if (node.hasUniqueItems) {
+                    sb.append("        n.hasUniqueItems = true;\n");
+                }
+                if (node.notSchemaIndex >= 0) {
+                    sb.append("        n.notSchema = ").append(node.notSchemaIndex).append(";\n");
+                }
             }
             sb.append("        reg.nodes.push_back(n);\n");
             sb.append("    }\n");
@@ -5892,6 +6203,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         sb.append("}\n\n");
         sb.append("} // namespace oas31\n");
         return sb.toString();
+    }
+
+    /** Append `n.FIELD = boost::json::parse(R"W1J(<json>)W1J");` safely. */
+    private void appendJsonParse(StringBuilder sb, String field, String json) {
+        sb.append("        ").append(field).append(" = boost::json::parse(R\"W1J(");
+        sb.append(json);
+        sb.append(")W1J\");\n");
     }
 
     private void emitSetExact(StringBuilder sb, String field, String hasField, String lexeme) {

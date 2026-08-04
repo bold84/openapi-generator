@@ -3978,10 +3978,11 @@ public class CppBoostBeastClientCodegenTest {
                 "Float enum branch must have validation-enum-kind = number");
     }
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void notAssertionAlwaysFailsGenerationOnOneOf() {
-        // `not` always fails generation for oneOf: it can flip any membership
-        // decision and no generated validator implements it.
+    @Test
+    public void notAssertionNowSupportedOnOneOf() {
+        // Wave-1 K-01: `not` is implemented by the shared IR/evaluator, so
+        // generation no longer fail-closes; the subschema must be surfaced to
+        // the IR emitter via validation-not-schema.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4001,13 +4002,20 @@ public class CppBoostBeastClientCodegenTest {
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
-        // validateDescriptorAssertions throws for oneOf with not
+        // Must NOT throw; the branch must carry the `not` subschema for IR.
         codegen.preprocessOpenAPI(openAPI);
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithNotOnOneOf");
+        Assert.assertNotNull(desc, "SchemaWithNotOnOneOf must have a descriptor");
+        Assert.assertNotNull(
+                desc.getBranches().get(0).getValidateParams().get("validation-not-schema"),
+                "not subschema must be surfaced as validation-not-schema (K-01)");
     }
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void notAssertionAlwaysFailsGenerationOnAnyOf() {
-        // `not` always fails generation for anyOf as well
+    @Test
+    public void notAssertionNowSupportedOnAnyOf() {
+        // Wave-1 K-01: `not` is implemented; anyOf no longer fail-closes and the
+        // subschema is surfaced for IR emission.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4028,13 +4036,18 @@ public class CppBoostBeastClientCodegenTest {
         openAPI.setComponents(components);
 
         codegen.preprocessOpenAPI(openAPI);
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithNotOnAnyOf");
+        Assert.assertNotNull(desc, "SchemaWithNotOnAnyOf must have a descriptor");
+        Assert.assertNotNull(
+                desc.getBranches().get(0).getValidateParams().get("validation-not-schema"),
+                "not subschema must be surfaced as validation-not-schema (K-01)");
     }
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void notAssertionAlwaysFailsGenerationOnAllOf() {
-        // Unlike other unsupported assertions, `not` must ALWAYS fail generation
-        // even on allOf — because `not` flips membership and all branches of allOf
-        // must match (not changes whether a branch matches).
+    @Test
+    public void notAssertionNowSupportedOnAllOf() {
+        // Wave-1 K-01: `not` is implemented by the shared evaluator, so even
+        // allOf no longer fail-closes and the subschema is surfaced for IR.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4056,9 +4069,13 @@ public class CppBoostBeastClientCodegenTest {
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
-        // allOf normally exempts non-not unsupported assertions, but `not`
-        // must still throw.
         codegen.preprocessOpenAPI(openAPI);
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithNotOnAllOf");
+        Assert.assertNotNull(desc, "SchemaWithNotOnAllOf must have a descriptor");
+        Assert.assertNotNull(
+                desc.getBranches().get(0).getValidateParams().get("validation-not-schema"),
+                "not subschema must be surfaced as validation-not-schema (K-01)");
     }
 
     @Test
@@ -4206,9 +4223,11 @@ public class CppBoostBeastClientCodegenTest {
 
     // --- Phase 2 strong review: boolean schema fail-closed ---
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void booleanTrueSchemaOnOneOfBranchFailsGeneration() {
-        // OAS 3.1 true value schema (always-match) on a composition branch.
+    @Test
+    public void booleanTrueSchemaOnOneOfBranchNowSupported() {
+        // Wave-1 K-03: OAS 3.1 true value schema (always-match) is implemented
+        // by the shared IR/evaluator (BooleanValue::true_) and must surface the
+        // literal through validation-boolean-value instead of fail-closing.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4218,7 +4237,6 @@ public class CppBoostBeastClientCodegenTest {
         Map<String, Schema> schemas = new HashMap<>();
 
         ComposedSchema schema = new ComposedSchema();
-        // OAS 3.1 true schema — use generic Schema with booleanSchemaValue set
         Schema boolTrueBranch = new Schema();
         boolTrueBranch.booleanSchemaValue(true);
         schema.addOneOfItem(boolTrueBranch);
@@ -4227,11 +4245,19 @@ public class CppBoostBeastClientCodegenTest {
         openAPI.setComponents(components);
 
         codegen.preprocessOpenAPI(openAPI);
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithBoolTrue");
+        Assert.assertNotNull(desc, "SchemaWithBoolTrue must have a descriptor");
+        Assert.assertEquals(
+                desc.getBranches().get(0).getValidateParams().get("validation-boolean-value"),
+                Boolean.TRUE,
+                "boolean true value-schema must be surfaced (K-03)");
     }
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void booleanFalseSchemaOnOneOfBranchFailsGeneration() {
-        // OAS 3.1 false value schema (never-match) on a composition branch.
+    @Test
+    public void booleanFalseSchemaOnOneOfBranchNowSupported() {
+        // Wave-1 K-03: OAS 3.1 false value schema (never-match) is implemented
+        // by the shared IR/evaluator (BooleanValue::false_).
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4249,6 +4275,13 @@ public class CppBoostBeastClientCodegenTest {
         openAPI.setComponents(components);
 
         codegen.preprocessOpenAPI(openAPI);
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithBoolFalse");
+        Assert.assertNotNull(desc, "SchemaWithBoolFalse must have a descriptor");
+        Assert.assertEquals(
+                desc.getBranches().get(0).getValidateParams().get("validation-boolean-value"),
+                Boolean.FALSE,
+                "boolean false value-schema must be surfaced (K-03)");
     }
 
     // --- Phase 2 strong review: additionalProperties false fail-closed ---

@@ -12,6 +12,8 @@
 
 #include "oas31_exact_number.hpp"
 
+#include <boost/json.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -78,6 +80,20 @@ struct SchemaNode {
     ExactNumber        constNumber;       bool constIsNumber = false;
     std::string        constString;       bool constIsString = false;
     bool               constBool = false; bool constIsBool = false;
+
+    // -- Wave-1 deep-equality stores (K-30/K-34/K-22) --
+    // Full JSON CONST value for exact deep equality across ALL JSON kinds
+    // (const: {..}, const: [..], const: 1.0, ...). When constIsJson is set the
+    // evaluator compares the whole instance via deepInstanceEqual; the scalar
+    // const* buckets above remain for backward-compat only.
+    bool constIsJson = false;
+    boost::json::value constJson;
+    // Full JSON ENUM member list for exact deep equality (K-34).
+    bool hasEnumJson = false;
+    std::vector<boost::json::value> enumJson;
+    // Array uniqueItems (K-22): true => reject when any pair of items is
+    // deep-equal (1 == 1.0 counts as a duplicate).
+    bool hasUniqueItems = false;
 
     // -- applicators --
     ApplicatorKind         applicator = ApplicatorKind::none;

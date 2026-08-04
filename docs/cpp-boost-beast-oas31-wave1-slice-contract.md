@@ -248,3 +248,78 @@ Rules: no agent edits another agent's owned file. The Java generator must not be
 - `[unverified]` Exact-number validity on the Phase-2 raw path — blocked until the `runner`
   agent inserts the lexeme tokenizer; the current `boost::json::parse` path **destroys lexemes**.
 - **Out of scope (do not claim):** GS2, GS4, Wave-1-full-fidelity.
+
+---
+
+## 9. WAVE-1-COMPLETION FROZEN CONTRACT (engine owner, committed a8b7728..HEAD)
+
+Frozen by the **integration/engine owner** driving Wave-1 completion. This section
+FREEZES the exact additional IR fields and evaluator entry points shipped in this
+pass. It is additive to §3–§7 above; nothing in §0–§8 is changed. The Option-B
+GEnerated path (real generator -> `schema_ir.generated.*` -> `validate_<id>` ->
+`SchemaEvaluator`) remains the ONLY sanctioned Wave-1 semantic path.
+
+### 9.1 Freeze rule (file ownership for THIS pass)
+| Entity | Owner (THIS pass) | Deliverable |
+| --- | --- | --- |
+| `oas31_deep_equal.hpp` | **engine (new, FROZEN)** | exact deep JSON equality (ExactNumber + structural recursion) |
+| `oas31_ir.hpp` (additive fields) | **engine (FROZEN)** | K-30/K-34 const/enum JSON store, `hasUniqueItems` (K-22) |
+| `oas31_validator.hpp` (evaluator) | **engine (FROZEN)** | K-03 boolean, K-01 `not`, deep const/enum/uniqueItems, `$ref` walk |
+| `CppBoostBeastClientCodegen.java` (IR emission) | **engine (extended for THIS pass)** | emit the new fields; keep hand-template `validateParams` untouched; main node indices 0..M-1 stable |
+| `oas-compliance/gate-wave1-complete.sh` + driver + yaml | **engine (committed)** | regression proof of K-03/K-01/K-30/K-34/K-22/K-29 raw-instance verdicts |
+
+### 9.2 Additional FROZEN IR fields (`oas31_ir.hpp`, additive)
+Deep const/enum are stored as real JSON VALUES (booleans true/false are `BooleanValue`,
+not stored here). Numbers inside stored const/enum are canonicalized via
+`ExactNumber::from*` at compare time; the INSTANCE side keeps its raw lexeme, so
+`1 == 1.0 == 1e0` holds exactly (ADR D1).
+```cpp
+struct SchemaNode {
+    // ...existing fields (unchanged)...
+    bool hasUniqueItems = false;                 // K-22 (array uniquess, deep-equal)
+    bool constIsJson = false;  boost::json::value constJson;   // K-30 non-scalar const
+    bool hasEnumJson = false;  std::vector<boost::json::value> enumJson; // K-34 non-scalar enum
+};
+```
+`oas31_deep_equal.hpp` (NEW, FROZEN) exposes:
+```cpp
+namespace oas31 {
+ExactNumber exactValueOf(boost::json::value const&);            // number KIND -> ExactNumber
+bool deepJsonValueEqual(boost::json::value const&, boost::json::value const&); // stored-vs-stored
+}
+```
+The evaluator adds `bool deepInstanceEqual(RawInstance const&, boost::json::value const&)`
+(defined in `oas31_validator.hpp`, lexeme-first on the instance side; numbers only ever
+compare through `ExactNumber`). Object keys are compared unordered; arrays positionally;
+`null` == `null`.
+
+### 9.3 Additional FROZEN evaluator behaviour (`oas31_validator.hpp`)
+- **K-03 boolean value schemas:** node.booleanValue `true_` always-valid, `false_` never
+  valid (unchanged, now REACHABLE from generated IR for literal boolean components).
+- **K-01 `not`:** `node.notSchema != kNoSchema` -> invert subschema verdict; no subschema
+  annotations are retained (annotations remain stubbed). FROZEN unconditional inversion.
+- **Deep equality K-30/K-34:** when `hasEnumJson`/`constIsJson` is set the evaluator uses
+  `deepInstanceEqual` over ALL JSON kinds (scalar + array + object); the legacy scalar
+  buckets (`enumNumbers/Strings/Booleans`, `constNumber/String/Bool`) remain for backward
+  compat and are used ONLY when the JSON store is absent.
+- **K-22 uniqueItems:** `hasUniqueItems && instance.isArray()` rejects when ANY pair of
+  point-wise items is deep-equal (e.g. `[1,2,1.0]` rejected because `1 == 1.0`).
+- **K-29 `$ref`:** `applicator == ApplicationKind::ref && !children.empty()` validates
+  `children[0]` (the resolved target node) transparently; the target is resolved at
+  generation time within the SAME registry for local refs. Resource identity/baseUri/
+  dialect/anchor carried on `SchemaResource`. External-file refs that cannot be resolved
+  generation-time fall back to the inline keyword copy (honest: local $ref lands, external
+  is partial).
+
+### 9.4 Honest verification claims for this pass
+- `[executed]` All engine headers + new `oas31_deep_equal.hpp` pass
+  `g++ -std=c++17 -Wall -Wextra -Werror -fsyntax-only -I/opt/homebrew/include` (rc=0).
+- `[executed]` `gate-wave1-complete.sh` compiles+runs the REAL-generator-emitted
+  `schema_ir.generated.*` + `schema_validate.generated.cpp` + the committed driver under
+  `-Werror` and verifies boolean/`not`/deep-equal(uniqueItems)/`$ref` raw-instance verdicts,
+  with per-case PASS recorded (evidence `oas-compliance/phase2-wave1build/…`).
+- `[open/partial]` External-file `$ref`, `$anchor` URI resolution across resources,
+  dialect switches: MAY be partial — reported honestly in the engine return JSON.
+- `[out-of-slice]` Still later waves: allOf/anyOf/oneOf full applicator walk,
+  unevaluated*, `$dynamicRef`, string length+pattern, annotations, contains,
+  dependent/if-then-else, C-profile, Waves 5–6. NOT claimed.
