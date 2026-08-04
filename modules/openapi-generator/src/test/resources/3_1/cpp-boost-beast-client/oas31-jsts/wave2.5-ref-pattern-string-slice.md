@@ -166,3 +166,14 @@ zero-BLOCKED): `$ref` (79/0/0), `not` (40/0/0), `properties` (28/0/0),
 (measured 101/28/0). `allOf` supported -> deferred (full-suite 25/3/2; its
 earlier row rested on Phase-2 evidence narrower than the full suite, and the
 anti-greenwash rule requires the full-suite bar).
+
+## 7. Committed-HEAD reproduction (committed-state reproducibility rule)
+
+Enforced before accepting the numbers above: tree clean at HEAD
+`c7add7ecf00`, CLI jar rebuilt from that HEAD, then everything re-ran:
+
+- Java: **111 run / 0 fail** (BUILD SUCCESS).
+- Full 46-file corpus: **1299 cases = 882 PASS / 75 FAIL / 342 BLOCKED**,
+  per-file verdicts bit-identical to §3 (programmatic diff: zero mismatches).
+- Gates: `gate-generated-path.sh` **39/39 GREEN**,
+  `gate-wave1-complete.sh` **35/35 GREEN**.
