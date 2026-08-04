@@ -143,3 +143,23 @@ retained raw artifacts for this table.
 
 ## 6. Full sweep + committed-HEAD reproduction
 Filled post-run: see addendum (same file, §7) after the committed-HEAD rebuild.
+
+---
+
+## 7. Committed-HEAD reproduction (addendum)
+
+Per the committed-state reproducibility rule, the acceptance numbers above were
+re-derived from a jar built after committing HEAD:
+
+- HEAD = `600c55f878f` (Wave-3 slice impl), working tree CLEAN (0 modified).
+- `./mvnw -q -pl modules/openapi-generator-cli -am -DskipTests ... package`
+  rebuilt `modules/openapi-generator-cli/target/openapi-generator-cli.jar` from
+  the committed state (jar mtime after commit).
+- Full 46-file corpus re-run (work dir `w3/whead`, report `w3/head.json`):
+  **46 files / 1299 cases = 1028 PASS / 28 FAIL / 243 BLOCKED** — per-file
+  totals AND every `gi:ci` verdict key programmatically diffed against the
+  pre-commit `w3/full.json`: **zero mismatches** (bit-identical).
+- Gates from committed HEAD: `gate-generated-path.sh` **39/39 GREEN**,
+  `gate-wave1-complete.sh` **35/35 GREEN**; `gate-a.sh` PASS (19 DEFERRED by
+  design).
+- JVM: **111 run / 0 fail** (BUILD SUCCESS).
