@@ -229,6 +229,92 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
+    public void wave1CompleteEmittedIrEndToEnd() throws IOException {
+        // Wave-1 completion LEAF guard: the REAL generator must lower a committed
+        // OAS 3.1 doc (oas31-wave1-complete-regression.yaml) into the densified
+        // IR for K-03 boolean value-schemas, K-01 `not`, K-30/K-34 deep
+        // const/enum (NON-scalar JSON store), K-22 uniqueItems, and K-29 $ref +
+        // resource identity (SchemaResource baseUri/dialectUri/anchor/rootNodes +
+        // per-node resourceIdentity). This is the JVM-side assertion of the new
+        // emitted IR; the C++ compile+verdict side is oas-compliance/
+        // gate-wave1-complete.sh.
+        File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-w1c").toFile();
+        output.deleteOnExit();
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/oas31-wave1-complete-regression.yaml")
+                .setOutputDir(output.getAbsolutePath());
+
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        files.forEach(File::deleteOnExit);
+
+        Path irSource = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Path dispatch = output.toPath().resolve("model/schema_validate.generated.cpp");
+        Assert.assertTrue(java.nio.file.Files.exists(irSource),
+                "schema_ir.generated.cpp must be emitted");
+
+        String ir = java.nio.file.Files.readString(irSource);
+
+        // K-03 Boolean value-schemas must lower to BooleanValue::true_/false_.
+        Assert.assertTrue(ir.contains("n.booleanValue = BooleanValue::false_;")
+                        && ir.contains("n.booleanValue = BooleanValue::true_;"),
+                "boolean value-schemas must emit booleanValue true_/false_");
+
+        // K-01 `not`: the NotString branch must reference a densified not-node.
+        Assert.assertTrue(java.util.regex.Pattern.compile("n\\.notSchema = \\d+;")
+                        .matcher(ir).find(),
+                "a `not` branch must emit n.notSchema = <index>;");
+        // The not-child helper row is appended (typeFlags string = 8u), never a root.
+        Assert.assertTrue(ir.contains("NotString_branch_0_not")
+                        && ir.contains("n.typeFlags = 8u;"),
+                "the `not` subschema must be densified as its own row");
+
+        // K-30/K-34 deep const/enum: NON-scalar members must be emitted as JSON
+        // literals in the deep store (hasEnumJson), not lost to scalar buckets.
+        TestUtils.assertFileContains(irSource,
+                "n.hasEnumJson = true;",
+                "R\"W1J([[1,2,3]])W1J\"",          // DeepConstArray -> enum [ [1,2,3] ]
+                "R\"W1J([{\"a\":1,\"b\":[true,null,2.5]}])W1J\"", // DeepConstObject object member
+                "R\"W1J([[1,2],[3,4]])W1J\"",     // DeepEnumArray
+                "R\"W1J([{\"x\":1},7])W1J\"");  // DeepEnumMixed object+number member
+        // Object/array members must NEVER leak into the numeric parseLexeme bucket
+        // (only genuine numbers 7 use it).
+        Assert.assertFalse(ir.contains("parseLexeme(\"[1,2\")"),
+                "structural enum members must not be fed to parseLexeme");
+
+        // K-22 uniqueItems.
+        Assert.assertTrue(ir.contains("n.hasUniqueItems = true;"),
+                "uniqueItems must be emitted");
+
+        // K-29 $ref: genuine local refs lower to a transparent applicator child.
+        TestUtils.assertFileContains(irSource,
+                "n.applicator = ApplicatorKind::ref;",
+                "n.children.push_back(2);",   // RefConstForty -> ConstForty node
+                "n.children.push_back(10);"); // RefToThing -> Thing node
+
+        // Resource identity (SchemaResource baseUri/dialectUri/rootNodes + node
+        // resourceIdentity). The doc is OAS 3.1 with no jsonSchemaDialect, so the
+        // emitter must class the dialect to the pinned OAS 3.1 dialect URI and
+        // register every MAIN validator row (0..M-1) as a root of the resource;
+        // helper `not`-child rows appended after M are NOT roots.
+        TestUtils.assertFileContains(irSource,
+                "res.baseUri = \"urn:openapi-generator:cpp-boost-beast:wave1\";",
+                "res.dialect = \"https://spec.openapis.org/oas/3.1/dialect/2024-11-10\";",
+                "res.rootNodes.push_back(11);");
+        Assert.assertFalse(ir.contains("res.rootNodes.push_back(12);"),
+                "the helper `not`-child row must not be a resource root");
+        Assert.assertTrue(ir.contains("n.resourceIdentity = 0;"),
+                "every densified node must carry a resourceIdentity");
+
+        // Every schema still gets a thin validate_<id> dispatch.
+        TestUtils.assertFileContains(dispatch,
+                "validate_NotString_branch_0",
+                "validate_AlwaysTrueSchema_branch_0",
+                "validate_RefToThing_branch_0");
+    }
+
+    @Test
     public void generatesInheritedModelsAndRecursiveJsonConversions() throws IOException {
         File output = java.nio.file.Files.createTempDirectory("cpp-boost-beast-models").toFile();
         output.deleteOnExit();
