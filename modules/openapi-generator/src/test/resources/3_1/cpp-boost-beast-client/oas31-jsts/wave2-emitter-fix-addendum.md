@@ -72,4 +72,11 @@ Remaining residuals are all pre-existing and owned elsewhere (no new regressions
 
 ## 6. Reproduced from committed HEAD
 
-<append after commit>
+All numbers above were re-generated from the **committed** source state (`3f428749786`): `./mvnw -pl modules/openapi-generator-cli -am package -DskipTests` then, with the working tree clean:
+
+- JVM suite: **110 run, 0 fail** (BUILD SUCCESS).
+- 5-file GENERATED-path subset: `files=5 cases=83 PASS=83 FAIL=0 BLOCKED=0` (identical per-file: enum 51/0/0, minItems 6/0/0, maxItems 6/0/0, minProperties 10/0/0, maxProperties 10/0/0).
+- Full 13-file corpus: `files=13 cases=378 PASS=370 FAIL=6 BLOCKED=2` (per-file identical to §4).
+- Hand gates re-run with the same jar: `gate-generated-path.sh` **39/39 GREEN**, `gate-wave1-complete.sh` **35/35 GREEN** (no regression on the committed YAML regression specs, whose integer-form bounds never trigger the lexeme injection path).
+
+Commit `3f428749786` is therefore exactly reproducible; no committed evidence overstates the working-tree run.
