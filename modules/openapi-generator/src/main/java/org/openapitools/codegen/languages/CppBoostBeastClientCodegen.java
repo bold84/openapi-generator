@@ -651,8 +651,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
         // (b) float-form count bounds -> inject the exact raw lexeme.
         java.util.regex.Matcher bm = java.util.regex.Pattern.compile(
-                "(?:\"(minItems|maxItems|minProperties|maxProperties)\"|"
-              + "(minItems|maxItems|minProperties|maxProperties))\\s*:"
+                "(?:\"(minItems|maxItems|minProperties|maxProperties|minLength|maxLength)\"|"
+              + "(minItems|maxItems|minProperties|maxProperties|minLength|maxLength))\\s*:"
               + "\\s*(-?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)").matcher(text);
         while (bm.find()) {
             String kw = bm.group(1) != null ? bm.group(1) : bm.group(2);
@@ -663,6 +663,55 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (owner != null) injectCountBoundLexeme(owner, kw, token);
             }
         }
+        // (c) pristine `type` arrays containing the literal "null" member ->
+        // the OAS-3.1 normalizer/parser strips "null" (nullable:true) before
+        // the branch scan, which silently changes VALIDITY (a null instance
+        // must be accepted). Mark the owning component (+ composition members,
+        // mirroring markComponentEmptyEnum) so the type-array densifier can
+        // restore the member from the authoritative raw text.
+        java.util.regex.Matcher tm = java.util.regex.Pattern.compile(
+                "(?:\"type\"|type)\\s*:\\s*\\[[^{}]*?\"null\"[^{}]*?\\]").matcher(text);
+        while (tm.find()) {
+            Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
+            if (owner != null) markPristineTypeNull(owner);
+        }
+    }
+
+    /** True when the parser lost a literal "null" type member that the raw
+     *  spec declared (see recoverPristineLiterals (c)). */
+    private static boolean pristineTypeHasNull(Schema schema) {
+        if (schema == null || schema.getExtensions() == null) return false;
+        return Boolean.TRUE.equals(
+                schema.getExtensions().get("x-oas31-pristine-type-null"));
+    }
+
+    /** Mark a component (and its oneOf/anyOf/allOf members, mirroring
+     *  markComponentEmptyEnum) as carrying a pristine "null" type member. */
+    private static void markPristineTypeNull(Schema schema) {
+        if (schema == null) return;
+        java.util.List<?> members = null;
+        if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
+            members = schema.getOneOf();
+        } else if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+            members = schema.getAnyOf();
+        } else if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) {
+            members = schema.getAllOf();
+        }
+        if (members != null) {
+            for (Object mem : members) {
+                if (mem instanceof Schema) {
+                    Schema ms = (Schema) mem;
+                    if (ms.getExtensions() == null) {
+                        ms.setExtensions(new java.util.LinkedHashMap<>());
+                    }
+                    ms.addExtension("x-oas31-pristine-type-null", true);
+                }
+            }
+        }
+        if (schema.getExtensions() == null) {
+            schema.setExtensions(new java.util.LinkedHashMap<>());
+        }
+        schema.addExtension("x-oas31-pristine-type-null", true);
     }
 
     /** Nearest component schema whose raw-text key precedes the offset. */
@@ -931,10 +980,29 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (surface.getTypes() != null && !surface.getTypes().isEmpty()) {
                     supported.add("type");
                     validateParams.put("validation-type", "type-array");
-                    // OAS 3.1 type arrays: store as List<String> for template iteration;
-                    // has-validation-type-array is a boolean flag for outer section guard.
-                    validateParams.put("validation-type-array",
-                            new ArrayList<>(surface.getTypes()));
+                    java.util.List<Object> loweredTypes =
+                            new ArrayList<>(surface.getTypes());
+                    // OAS-3.1: the normalizer strips a literal "null" type
+                    // member (nullable:true) before this scan; restore it from
+                    // the raw text when it was present (validity is decided by
+                    // the pristine spec, not the model-layer rewrite).
+                    if (pristineTypeHasNull(surface)
+                            && !loweredTypes.contains("null")) {
+                        loweredTypes.add("null");
+                    }
+                    validateParams.put("validation-type-array", loweredTypes);
+                    validateParams.put("has-validation-type-array", true);
+                } else if ((surface.getTypes() == null
+                        || surface.getTypes().isEmpty())
+                        && pristineTypeHasNull(surface)) {
+                    // type: ["null"] lowered to nothing by the normalizer;
+                    // restore the single null member (K-23).
+                    supported.add("type");
+                    validateParams.put("validation-type", "type-array");
+                    java.util.List<Object> loweredTypes =
+                            new ArrayList<>();
+                    loweredTypes.add("null");
+                    validateParams.put("validation-type-array", loweredTypes);
                     validateParams.put("has-validation-type-array", true);
                 }
                 // enum — an EMPTY enum (enum: []) is a reject-all schema handled
@@ -1025,16 +1093,23 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     }
                     validateParams.put("has-validation-numeric", true);
                 }
+                String minLenLex = countBoundLexemeOf(surface, "minLength");
+                String maxLenLex = countBoundLexemeOf(surface, "maxLength");
                 if (surface.getMinLength() != null
-                        || surface.getMaxLength() != null) {
+                        || surface.getMaxLength() != null
+                        || minLenLex != null || maxLenLex != null) {
                     supported.add("string-length");
                     if (surface.getMinLength() != null) {
                         validateParams.put("validation-min-length",
                                 surface.getMinLength());
+                    } else if (minLenLex != null) {
+                        validateParams.put("validation-min-length", minLenLex);
                     }
                     if (surface.getMaxLength() != null) {
                         validateParams.put("validation-max-length",
                                 surface.getMaxLength());
+                    } else if (maxLenLex != null) {
+                        validateParams.put("validation-max-length", maxLenLex);
                     }
                     validateParams.put("has-validation-string-length", true);
                 }
@@ -1206,8 +1281,20 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         || surface.getContentEncoding() != null) {
                     unsupported.add("content-encoding");
                 }
+                // Wave-2.5 patternProperties / propertyNames: densified as
+                // child rows by the IR emitter, never fail-closed. Their
+                // subschemas are densified by irNodeFromRawSchema which handles
+                // every Wave-2.5 keyword (no recursive branch scan needed).
+                if (surface.getPatternProperties() != null
+                        && !surface.getPatternProperties().isEmpty()) {
+                    supported.add("pattern-properties");
+                    validateParams.put("validation-pattern-properties",
+                            surface.getPatternProperties());
+                }
                 if (surface.getPropertyNames() != null) {
-                    unsupported.add("property-names");
+                    supported.add("property-names");
+                    validateParams.put("validation-property-names",
+                            surface.getPropertyNames());
                 }
                 // OAS 3.1 boolean value schemas (true → always-match, false → never-match).
                 // Wave-1: implemented by the shared IR/evaluator (K-03) and no longer
@@ -1621,15 +1708,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
         if (schema.getMinLength() != null) {
             record(ledger, "minLength", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
-                    "validation-min-length; byte-length caveat Wave 2.5 (K-13)");
+                    "validation-min-length; Unicode code points (Wave-2.5 K-13); decimal lexemes preserved");
         }
         if (schema.getMaxLength() != null) {
             record(ledger, "maxLength", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
-                    "validation-max-length; byte-length caveat Wave 2.5 (K-13)");
+                    "validation-max-length; Unicode code points (Wave-2.5 K-13); decimal lexemes preserved");
         }
         if (schema.getPattern() != null) {
             record(ledger, "pattern", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
-                    "validation-pattern; regex_match full-anchor caveat Wave 3.6 (K-13)");
+                    "ECMAScript-subset unanchored regex_search (Wave-2.5 K-13); \\p{Letter} range translation");
         }
         if (schema.getMinItems() != null) {
             record(ledger, "minItems", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
@@ -1677,23 +1764,23 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
         if (schema.getPatternProperties() != null && !schema.getPatternProperties().isEmpty()) {
-            record(ledger, "patternProperties", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; Wave 3.2 (K-09) — previously a silent skip");
+            record(ledger, "patternProperties", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "validation-pattern-properties; Wave-2.5 pattern engine (K-09) — no longer a silent skip");
             for (Map.Entry<String, Schema> p : schema.getPatternProperties().entrySet()) {
                 scanSchemaNode(p.getValue(), location + "/patternProperties/" + p.getKey(), ledger, depth + 1);
             }
         }
         if (schema.getAdditionalProperties() != null) {
-            record(ledger, "additionalProperties", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "fail-closed unless no-op (true/absent)");
+            record(ledger, "additionalProperties", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "additionalProperties tri-state (Wave-2); pattern-covered keys exempt");
             Object addProp = schema.getAdditionalProperties();
             if (addProp instanceof Schema) {
                 scanSchemaNode((Schema) addProp, location + "/additionalProperties", ledger, depth + 1);
             }
         }
         if (schema.getPropertyNames() != null) {
-            record(ledger, "propertyNames", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; Wave 3.3 (K-10)");
+            record(ledger, "propertyNames", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "validation-property-names; Wave-2.5 (K-10)");
             scanSchemaNode(schema.getPropertyNames(), location + "/propertyNames", ledger, depth + 1);
         }
         if (schema.getDependentSchemas() != null && !schema.getDependentSchemas().isEmpty()) {
@@ -1764,10 +1851,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
-        // ---- Unevaluated vocabulary (plan §3.3) ----
+        // ---- Unevaluated vocabulary (validity semantics live; full suites
+        //      deferred to Wave 4.1 interplay: if/then/else, contains, $dynamicRef) ----
         if (schema.getUnevaluatedProperties() != null) {
             record(ledger, "unevaluatedProperties", location, VOCAB_UNEVALUATED,
-                    KeywordOccurrenceStatus.FAIL_CLOSED, "no generated validator; Wave 4.1 (K-12)");
+                    KeywordOccurrenceStatus.EMITTED, "validation-unevaluated-properties (reject/schema forms, Wave-2.5)");
             Schema<?> up = schema.getUnevaluatedProperties();
             scanSchemaNode(up, location + "/unevaluatedProperties", ledger, depth + 1);
         }
@@ -6161,6 +6249,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // AFTER main+extra, so 0..M-1 stay stable) lets every ref-to-plain
         // component, and every mutated raw child, resolve to a real row—the
         // content is never lost. Rows are emitted with no validate_<> dispatch.
+        // COMPOSED components (oneOf/anyOf/allOf) ALSO get a wrapper row: the
+        // RAW densifier materializes the applicator + members + unevaluated*
+        // annotations, so `$ref` to a composed target resolves to the FULL
+        // composition (K-29) instead of an accidental first-branch alias.
         List<IrNode> componentRows = new ArrayList<>();
         if (openAPI != null && openAPI.getComponents() != null
                 && openAPI.getComponents().getSchemas() != null) {
@@ -6168,7 +6260,6 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     openAPI.getComponents().getSchemas().keySet());
             java.util.Collections.sort(names);
             for (String name : names) {
-                if (Boolean.TRUE.equals(irComponentComposed.get(name))) continue;
                 Schema compSchema = openAPI.getComponents().getSchemas().get(name);
                 if (compSchema == null) continue;
                 IrNode row = irNodeFromRawSchema(compSchema,
@@ -6176,6 +6267,13 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (row != null) componentRows.add(row);
             }
         }
+
+        // Seed the flattening BFS from BOTH main nodes AND plain-component rows,
+        // so structural children of extracted components (their properties /
+        // items / applicators / ...) are materialised into the registry too.
+        // (Composed-component wrapper rows carry their members as children;
+        // those members are usually ALREADY main rows via the descriptor, so
+        // identity dedup only adds rows that are structurally new.)
 
         // Seed the flattening BFS from BOTH main nodes AND plain-component rows,
         // so structural children of extracted components (their properties /
@@ -6235,6 +6333,16 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 Integer idx = indexOf.get(n.unevaluatedSchemaChild);
                 if (idx != null) n.unevaluatedSchemaIndex = idx;
             }
+            if (n.propertyNamesChild != null) {
+                Integer idx = indexOf.get(n.propertyNamesChild);
+                if (idx != null) n.propertyNamesIndex = idx;
+            }
+            for (IrNode.PatternSchema pb : n.patternProperties) {
+                if (pb.child != null) {
+                    Integer idx = indexOf.get(pb.child);
+                    if (idx != null) pb.index = idx;
+                }
+            }
             for (IrNode.PropertySchema pb : n.properties) {
                 if (pb.child != null) {
                     Integer idx = indexOf.get(pb.child);
@@ -6274,6 +6382,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (n.additionalSchemaChild != null) out.add(n.additionalSchemaChild);
         if (n.itemsChild != null) out.add(n.itemsChild);
         if (n.unevaluatedSchemaChild != null) out.add(n.unevaluatedSchemaChild);
+        if (n.propertyNamesChild != null) out.add(n.propertyNamesChild);
+        for (IrNode.PatternSchema pb : n.patternProperties) {
+            if (pb.child != null) out.add(pb.child);
+        }
         out.addAll(n.prefixItems);
         out.addAll(n.applicatorChildren);
         for (IrNode.PropertySchema pb : n.properties) {
@@ -6327,6 +6439,21 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         int               additionalSchemaIndex = -1;
         String            minPropertiesLexeme = null;   boolean minPropertiesPresent = false;
         String            maxPropertiesLexeme = null;   boolean maxPropertiesPresent = false;
+
+        // -- Wave-2.5 string constraints --
+        String minLengthLexeme = null;   boolean minLengthPresent = false;
+        String maxLengthLexeme = null;   boolean maxLengthPresent = false;
+        String patternLexeme = null;     boolean patternPresent = false;
+
+        // -- Wave-2.5 patternProperties / propertyNames --
+        static final class PatternSchema {
+            String regex;
+            IrNode  child;
+            int     index = -1;
+        }
+        java.util.List<PatternSchema>  patternProperties = new ArrayList<>();
+        IrNode  propertyNamesChild = null;
+        int     propertyNamesIndex = -1;
 
         // -- Wave-2 array structural (FROZEN §10) --
         java.util.List<IrNode>  prefixItems = new ArrayList<>();
@@ -6574,6 +6701,41 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             n.maxItemsLexeme = lexemeOf(vp.get("validation-max-items"));
             n.maxItemsPresent = n.maxItemsLexeme != null;
         }
+        // Wave-2.5 string constraints (branch scan supplies escaped pattern).
+        if (vp.containsKey("validation-min-length")) {
+            n.minLengthLexeme = lexemeOf(vp.get("validation-min-length"));
+            n.minLengthPresent = n.minLengthLexeme != null;
+        }
+        if (vp.containsKey("validation-max-length")) {
+            n.maxLengthLexeme = lexemeOf(vp.get("validation-max-length"));
+            n.maxLengthPresent = n.maxLengthLexeme != null;
+        }
+        if (vp.containsKey("validation-pattern")) {
+            n.patternLexeme = String.valueOf(vp.get("validation-pattern"));
+            n.patternPresent = n.patternLexeme != null && !n.patternLexeme.isEmpty();
+        }
+        Object ppObj = vp.get("validation-pattern-properties");
+        if (ppObj instanceof java.util.Map) {
+            java.util.Map<?, ?> ppm = (java.util.Map<?, ?>) ppObj;
+            java.util.List<String> ppNames = new ArrayList<>();
+            for (Object k : ppm.keySet()) ppNames.add(String.valueOf(k));
+            java.util.Collections.sort(ppNames);
+            for (String ppName : ppNames) {
+                Object ps = ppm.get(ppName);
+                if (ps instanceof Schema) {
+                    IrNode.PatternSchema pb = new IrNode.PatternSchema();
+                    pb.regex = ppName;
+                    pb.child = irNodeFromRawSchema((Schema) ps, n.childId("pp"));
+                    n.patternProperties.add(pb);
+                }
+            }
+        }
+        Object pnObj = vp.get("validation-property-names");
+        if (pnObj instanceof Schema) {
+            n.propertyNamesChild = irNodeFromRawSchema((Schema) pnObj, n.childId("pn"));
+        } else if (pnObj instanceof Boolean) {
+            n.propertyNamesChild = booleanValueSchema((Boolean) pnObj, n.childId("pn"));
+        }
         String appKind = (String) vp.get("validation-applicator");
         Object appList = vp.get("validation-applicator-schemas");
         if (appKind != null && appList instanceof java.util.List) {
@@ -6621,6 +6783,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 || n.minPropertiesPresent || n.maxPropertiesPresent
                 || !n.prefixItems.isEmpty() || n.itemsChild != null
                 || n.minItemsPresent || n.maxItemsPresent
+                || n.minLengthPresent || n.maxLengthPresent || n.patternPresent
+                || !n.patternProperties.isEmpty() || n.propertyNamesChild != null
                 || n.applicatorKind != null
                 || n.unevaluatedPropertiesPresent;
         return hasKeyword ? n : null;
@@ -6804,6 +6968,53 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             n.maxItemsPresent = true;
         }
 
+        // ---- Wave-2.5 string constraints ----
+        String minll = countBoundLexemeOf(schema, "minLength");
+        if (schema.getMinLength() != null) {
+            n.minLengthLexeme = String.valueOf(schema.getMinLength());
+            n.minLengthPresent = true;
+        } else if (minll != null) {
+            n.minLengthLexeme = minll;
+            n.minLengthPresent = true;
+        }
+        String maxll = countBoundLexemeOf(schema, "maxLength");
+        if (schema.getMaxLength() != null) {
+            n.maxLengthLexeme = String.valueOf(schema.getMaxLength());
+            n.maxLengthPresent = true;
+        } else if (maxll != null) {
+            n.maxLengthLexeme = maxll;
+            n.maxLengthPresent = true;
+        }
+        if (schema.getPattern() != null) {
+            n.patternLexeme = escapeCppStringContent(schema.getPattern());
+            n.patternPresent = true;
+        }
+
+        // ---- Wave-2.5 patternProperties / propertyNames ----
+        if (schema.getPatternProperties() != null
+                && !schema.getPatternProperties().isEmpty()) {
+            java.util.List<String> ppNames = new ArrayList<>(
+                    schema.getPatternProperties().keySet());
+            java.util.Collections.sort(ppNames);
+            for (String ppName : ppNames) {
+                Schema ps = (Schema) schema.getPatternProperties().get(ppName);
+                if (ps == null) continue;
+                IrNode.PatternSchema pb = new IrNode.PatternSchema();
+                pb.regex = ppName;
+                pb.child = irNodeFromRawSchema(ps, n.childId("pp"));
+                n.patternProperties.add(pb);
+            }
+        }
+        if (schema.getPropertyNames() != null) {
+            Schema pns = schema.getPropertyNames();
+            if (pns.getBooleanSchemaValue() != null) {
+                n.propertyNamesChild = booleanValueSchema(
+                        pns.getBooleanSchemaValue(), n.childId("pn"));
+            } else {
+                n.propertyNamesChild = irNodeFromRawSchema(pns, n.childId("pn"));
+            }
+        }
+
         // ---- Wave-2 applicators (this schema's own oneOf/anyOf/allOf) ----
         if (applicatorOf(schema) != null) {
             n.applicatorKind = applicatorOf(schema);
@@ -6868,6 +7079,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 && schema.getMultipleOf() == null
                 && schema.getMinItems() == null && schema.getMaxItems() == null
                 && schema.getMinProperties() == null && schema.getMaxProperties() == null
+                && schema.getMinLength() == null && schema.getMaxLength() == null
+                && schema.getPattern() == null
+                && (schema.getPatternProperties() == null || schema.getPatternProperties().isEmpty())
+                && schema.getPropertyNames() == null
                 && schema.getUniqueItems() == null
                 && schema.getNot() == null
                 && schema.getAdditionalProperties() == null
@@ -6895,8 +7110,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      */
     private String refTargetIdOf(String refStr) {
         String name = refSimpleName(refStr);
-        boolean composed = Boolean.TRUE.equals(irComponentComposed.get(name));
-        return toValidIdentifier(name) + (composed ? "_branch_0" : "_component");
+        // EVERY component (composed or plain) now materialises a dense
+        // `_component` wrapper row, so a $ref always resolves to the full
+        // composition; never the accidental branch_0 shortcut (K-29, not g8
+        // fix: {not: {$ref G0_oneOf_not}} must validate the ANYOF content +
+        // unevaluatedProperties:false, not just anyOf member #0).
+        return toValidIdentifier(name) + "_component";
     }
 
     /**
@@ -7139,9 +7358,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // K-29: genuine local $ref node -> applicator to the resolved
             // target node. 2020-12: $ref and sibling keywords BOTH apply, so
             // the inline keyword copy below is emitted ALWAYS (a pure-ref node
-            // carries no siblings, so nothing else is emitted). A node that
-            // ALSO has its own oneOf/anyOf/allOf keeps its internal applicator
-            // as the node's applicator (ref-only is not modelled combined).
+            // carries no siblings, so nothing else is emitted). The hop is
+            // emitted even when the branch scan copied the target's TYPE into
+            // this node: the resolved TARGET row carries the full constraint
+            // (its own type flags + applicators like oneOf/anyOf/allOf), and
+            // the ref+inline copy is exactly the 2020-12 combined semantics.
+            // (Regression guard: allOf/anyOf/oneOf mixed-applicator rows are
+            // exercized by the full JSTS sweep, e.g. oneOf g1 = type:string +
+            // oneOf:[minLength,maxLength] must reach the oneOf applicator.)
             if (resolvedRef && node.applicatorKind == null) {
                 sb.append("        n.applicator = ApplicatorKind::ref;\n");
                 sb.append("        n.children.push_back(").append(node.refTargetIndex).append(");\n");
@@ -7252,6 +7476,23 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
             emitSetExact(sb, "n.minProperties", "n.hasMinProperties", node.minPropertiesLexeme);
             emitSetExact(sb, "n.maxProperties", "n.hasMaxProperties", node.maxPropertiesLexeme);
+            // -- Wave-2.5 string constraints ----------------------------
+            emitSetExact(sb, "n.minLength", "n.hasMinLength", node.minLengthLexeme);
+            emitSetExact(sb, "n.maxLength", "n.hasMaxLength", node.maxLengthLexeme);
+            if (node.patternPresent) {
+                sb.append("        n.pattern = \"").append(node.patternLexeme).append("\";\n");
+                sb.append("        n.hasPattern = true;\n");
+            }
+            for (int i = 0; i < node.patternProperties.size(); i++) {
+                IrNode.PatternSchema pb = node.patternProperties.get(i);
+                if (pb.index < 0) continue;
+                sb.append("        n.patternProperties.push_back({")
+                  .append("\"").append(escapeCppStringContent(pb.regex)).append("\", ")
+                  .append(pb.index).append("});\n");
+            }
+            if (node.propertyNamesIndex >= 0) {
+                sb.append("        n.propertyNames = ").append(node.propertyNamesIndex).append(";\n");
+            }
             // -- Wave-2 array structural (FROZEN §10) -------------------
             for (int i = 0; i < node.prefixItems.size(); i++) {
                 int cidx = node.prefixItemIndices.isEmpty() ? -1 : node.prefixItemIndices.get(i);

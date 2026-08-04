@@ -213,6 +213,44 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
+    public void wave25EmitsStringAndPatternSurface() throws Exception {
+        // Wave-2.5 surface: type-ARRAY union flags, code-point string lengths,
+        // patternProperties and propertyNames must ALL be emitted into the
+        // densified IR (never silent, never collapsed to a single type).
+        Path spec = java.nio.file.Files.createTempFile("jsts-wave25", ".json");
+        spec.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(spec,
+                "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"t\",\"version\":\"1.0.0\"},"
+              + "\"paths\":{},\"components\":{\"schemas\":{\"G0\":"
+              + "{\"oneOf\":[{\"type\":[\"integer\",\"string\"],"
+              + "\"minLength\":2.0,\"patternProperties\":{\"f.*o\":{\"type\":\"integer\"}},"
+              + "\"propertyNames\":{\"maxLength\":5}}]}}}}");
+        File output = java.nio.file.Files.createTempDirectory(
+                "cpp-boost-beast-wave25").toFile();
+        output.deleteOnExit();
+        CodegenConfigurator cfg = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(spec.toString())
+                .setOutputDir(output.getAbsolutePath());
+        new DefaultGenerator().opts(cfg.toClientOptInput()).generate();
+        Path ir = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Assert.assertTrue(java.nio.file.Files.exists(ir), "IR must be emitted");
+        String content = java.nio.file.Files.readString(ir);
+        // typeFlags 72u = integer(64) | string(8): the FULL union must survive
+        // (K-23) — never a single-type collapse.
+        Assert.assertTrue(content.contains("n.typeFlags = 72u;"),
+                "type-array must be emitted as the union bitmask: " + content);
+        // decimal minLength lexeme preserved via exact-number recovery.
+        Assert.assertTrue(content.contains("setExact(n.minLength, n.hasMinLength, \"2.0\")"),
+                "minLength decimal lexeme must be preserved: " + content);
+        // patternProperties + propertyNames must materialise child rows.
+        Assert.assertTrue(content.contains("n.patternProperties.push_back({"),
+                "patternProperties child rows must be emitted: " + content);
+        Assert.assertTrue(content.contains("n.propertyNames ="),
+                "propertyNames child row must be wired: " + content);
+    }
+
+    @Test
     public void generatedPathEmitsFullNumericBooleanDispatch() throws IOException {
         // Wave-1 wire pass: the REAL generator must emit the full numeric/boolean
         // keyword set as densified IR + a thin validate_<id> dispatch from a
@@ -343,10 +381,17 @@ public class CppBoostBeastClientCodegenTest {
                 "uniqueItems must be emitted");
 
         // K-29 $ref: genuine local refs lower to a transparent applicator child.
-        TestUtils.assertFileContains(irSource,
-                "n.applicator = ApplicatorKind::ref;",
-                "n.children.push_back(2);",   // RefConstForty -> ConstForty node
-                "n.children.push_back(10);"); // RefToThing -> Thing node
+        // Registry indices are layout-dependent (the combined registry grew to
+        // include composed `_component` wrapper rows), so assert the SHAPE: an
+        // applicator=ref block must be followed by a children.push_back, and at
+        // least two such hops must exist (RefConstForty + RefToThing).
+        java.util.regex.Matcher refHop = java.util.regex.Pattern.compile(
+                "n\\.applicator = ApplicatorKind::ref;\\s*\\n\\s*n\\.children\\.push_back\\(\\d+\\);")
+                .matcher(ir);
+        int refHops = 0;
+        while (refHop.find()) ++refHops;
+        Assert.assertTrue(refHops >= 2,
+                "at least two $ref hops expected (RefConstForty, RefToThing), saw " + refHops);
 
         // Resource identity (SchemaResource baseUri/dialectUri/rootNodes + node
         // resourceIdentity). The doc is OAS 3.1 with no jsonSchemaDialect, so the
@@ -355,10 +400,24 @@ public class CppBoostBeastClientCodegenTest {
         // helper `not`-child rows appended after M are NOT roots.
         TestUtils.assertFileContains(irSource,
                 "res.baseUri = \"urn:openapi-generator:cpp-boost-beast:wave1\";",
-                "res.dialect = \"https://spec.openapis.org/oas/3.1/dialect/2024-11-10\";",
-                "res.rootNodes.push_back(11);");
-        Assert.assertFalse(ir.contains("res.rootNodes.push_back(12);"),
-                "the helper `not`-child row must not be a resource root");
+                "res.dialect = \"https://spec.openapis.org/oas/3.1/dialect/2024-11-10\";");
+        // MAIN validator rows are resource roots; helper helper `not`-child rows
+        // are NOT. Registry indices moved when the combined registry grew, so
+        // assert the relationship (roots exist, not-child excluded) instead of
+        // pinned indices.
+        java.util.regex.Matcher rootM = java.util.regex.Pattern.compile(
+                "res\\.rootNodes\\.push_back\\((\\d+)\\);")
+                .matcher(ir);
+        java.util.Set<Integer> roots = new java.util.HashSet<>();
+        while (rootM.find()) roots.add(Integer.valueOf(rootM.group(1)));
+        Assert.assertTrue(roots.size() >= 2, "at least two resource roots expected, saw " + roots);
+        java.util.regex.Matcher notChildM = java.util.regex.Pattern.compile(
+                "if \\(id == \\\"(NotString_branch_0_not)\\\"\\) return (\\d+);")
+                .matcher(ir);
+        Assert.assertTrue(notChildM.find(), "schemaNodeFor must map the not-child row");
+        int notChildIndex = Integer.parseInt(notChildM.group(2));
+        Assert.assertFalse(roots.contains(notChildIndex),
+                "the helper `not`-child row (node " + notChildIndex + ") must not be a resource root");
         Assert.assertTrue(ir.contains("n.resourceIdentity = 0;"),
                 "every densified node must carry a resourceIdentity");
 
@@ -5116,9 +5175,11 @@ public class CppBoostBeastClientCodegenTest {
                 codegen.scanSchemaKeywordOccurrences(openAPI);
 
         // These keywords were previously not scanned at all -> silent-skip gaps.
-        // The exhaustive scanner must classify them as fail-closed, never silent.
+        // The exhaustive scanner must classify them as fail-closed (never
+        // silent) — except patternProperties, which the Wave-2.5 pattern engine
+        // now EMITS (it must be classified EMITTED, not SILENT_SKIP).
         java.util.List<String> previouslyMissed = Arrays.asList(
-                "patternProperties", "dependentSchemas", "minContains",
+                "dependentSchemas", "minContains",
                 "maxContains", "unevaluatedItems");
         for (String k : previouslyMissed) {
             Assert.assertTrue(ledger.hasKeyword(k),
@@ -5129,6 +5190,16 @@ public class CppBoostBeastClientCodegenTest {
             Assert.assertTrue(allFailClosed,
                     "'".concat(k).concat("' must be FAIL_CLOSED, not SILENT_SKIP"));
         }
+        // patternProperties is now EMITTED by the Wave-2.5 pattern engine
+        // (K-09) — the ledger must say EMITTED, never SILENT_SKIP nor
+        // FAIL_CLOSED.
+        Assert.assertTrue(ledger.hasKeyword("patternProperties"),
+                "patternProperties must be indexed");
+        boolean patternPropsEmitted = ledger.forKeyword("patternProperties").stream()
+                .allMatch(o -> o.getStatus()
+                        == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.EMITTED);
+        Assert.assertTrue(patternPropsEmitted,
+                "patternProperties must be EMITTED (Wave-2.5 pattern engine)");
 
         // contentSchema is a schema-valued *annotation* keyword — its child is
         // indexed but its own status is ANNOTATION (never changes enclosing-instance
@@ -5229,20 +5300,26 @@ public class CppBoostBeastClientCodegenTest {
         root.setMinProperties(1);
         root.setPatternProperties(Collections.singletonMap(".", new StringSchema()));
         root.setNot(new StringSchema());
+        root.setContains(new StringSchema());
         io.swagger.v3.oas.models.OpenAPI openAPI =
                 openApiWithSchemas("3.1.0", Collections.singletonMap("Root", root));
 
         java.util.Set<String> fc = codegen.failClosedKeywords(openAPI);
-        // Wave-1/Wave-2 generated+run keywords must NOT be fail-closed any more
-        // (the ledger records them EMITTED; runtime: not.json 39/1/0 and
-        // min/maxProperties 8/0/2 through the GENERATED dispatch).
+        // Wave-1/Wave-2/Wave-2.5 generated+run keywords must NOT be fail-closed
+        // any more (the ledger records them EMITTED; runtime: not.json 40/0/0,
+        // min/maxProperties 10/0/0, patternProperties + propertyNames suites
+        // green through the GENERATED dispatch). `contains` remains genuinely
+        // fail-closed until Wave 3.1.
         Assert.assertFalse(fc.contains("minProperties"), "minProperties is emitted (object-property-count)");
         Assert.assertFalse(fc.contains("not"), "not is emitted (K-01 evaluator)");
-        Assert.assertTrue(fc.contains("patternProperties"), "patternProperties must be fail-closed");
+        Assert.assertFalse(fc.contains("patternProperties"), "patternProperties is emitted (Wave-2.5 pattern engine)");
+        Assert.assertFalse(fc.contains("propertyNames"), "propertyNames is emitted (Wave-2.5)");
+        Assert.assertTrue(fc.contains("contains"), "contains must be fail-closed (Wave 3.1)");
         CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
                 codegen.scanSchemaKeywordOccurrences(openAPI);
-        Assert.assertTrue(ledger.failClosed().containsAll(
-                Collections.singletonList("patternProperties")));
+        Assert.assertTrue(ledger.failClosed().contains("contains"));
+        Assert.assertFalse(ledger.failClosed().contains("patternProperties"));
+        Assert.assertFalse(ledger.failClosed().contains("propertyNames"));
         Assert.assertFalse(ledger.failClosed().contains("minProperties"));
         Assert.assertFalse(ledger.failClosed().contains("not"));
     }

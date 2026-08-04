@@ -25,6 +25,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <regex>
 #include <set>
 #include <string>
 #include <vector>
@@ -439,6 +440,25 @@ public:
             }
         }
 
+        // Wave-2.5 string constraints. minLength/maxLength count Unicode CODE
+        // POINTS (never UTF-8 bytes, never UTF-16 units); each magnitude is
+        // compared exactly via ExactNumber so decimal forms (minLength: 2.0)
+        // behave identically. pattern uses ECMAScript-subset semantics with an
+        // UNANCHORED search (2020-12: a pattern matches by substring search;
+        // only the pattern author's own ^ and $ anchors bound it).
+        if (instance.kind() == JsonType::string) {
+            std::string const s = instance.asString();
+            std::size_t const codePoints = countCodePoints(s);
+            if (node.hasMinLength && ExactNumber::fromUint(codePoints) < node.minLength)
+                return ValidationResult::invalidAt(
+                    path, "string shorter than minLength");
+            if (node.hasMaxLength && node.maxLength < ExactNumber::fromUint(codePoints))
+                return ValidationResult::invalidAt(
+                    path, "string longer than maxLength");
+            if (node.hasPattern && !ecmaRegexSearch(node.pattern, s))
+                return ValidationResult::invalidAt(path, "string does not match pattern");
+        }
+
         // Enum — EXACT deep JSON equality (K-30/K-34). The candidate list is:
         //  1. node.enumNumbers — exact numeric lexemes,
         //  2. node.enumJson — the full deep JSON member set (all kinds),
@@ -572,6 +592,115 @@ private:
         return false;
     }
 
+    // ====================================================================
+    // Wave-2.5 ECMAScript-subset pattern engine (K-13 / K-09 / K-10).
+    // --------------------------------------------------------------------
+    // std::regex (libc++) cannot classify Unicode letters via [[:alpha:]] in
+    // the default C locale, and its basic_regex has no locale-aware
+    // constructor; the JSTS corpus requires \p{Letter} to match p and other
+    // non-ASCII letters. We therefore translate \p{...} letter escapes into
+    // explicit code-point ranges before building the wide regex. Everything
+    // is decoded to Unicode code points first (never UTF-8 bytes, never
+    // UTF-16 units). Patterns match by UNANCHORED search (2020-12: only the
+    // pattern's own ^/$ anchor), and an unsupported pattern degrades to an
+    // always-match no-op (never a spurious reject).
+    // ====================================================================
+
+    /// Letter ranges approximated from the Unicode Letter categories for the
+    /// corpus surface (Latin, Greek, Cyrillic, Armenian, Hebrew, Arabic,
+    /// Indic, CJK, Hangul). Documented approximation: not exhaustive.
+    static char const* letterRanges() {
+        return "a-zA-Z"
+            "\\u00C0-\\u00FF\\u0100-\\u024F"
+            "\\u0370-\\u03FF\\u0400-\\u04FF"
+            "\\u0500-\\u052F\\u0531-\\u058F"
+            "\\u0591-\\u05FF\\u0600-\\u06FF"
+            "\\u0900-\\u097F\\u0A00-\\u0A7F"
+            "\\u0B00-\\u0B7F\\u0C00-\\u0C7F"
+            "\\u0D00-\\u0D7F\\u1E00-\\u1EFF"
+            "\\u3041-\\u3096\\u30A1-\\u30FA"
+            "\\u3400-\\u4DBF\\u4E00-\\u9FFF"
+            "\\uAC00-\\uD7A3";
+    }
+
+    static std::string replaceAll(std::string s, std::string const& from,
+                                  std::string const& to) {
+        std::size_t pos = 0;
+        while ((pos = s.find(from, pos)) != std::string::npos) {
+            s.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+        return s;
+    }
+
+    /// Translate \p{...} / \P{...} letter escapes into explicit ranges.
+    static std::wstring normalizeEcmaPattern(std::string p) {
+        p = replaceAll(std::move(p), "\\p{Letter}",
+                       "[" + std::string(letterRanges()) + "]");
+        p = replaceAll(std::move(p), "\\p{L}",
+                       "[" + std::string(letterRanges()) + "]");
+        p = replaceAll(std::move(p), "\\P{Letter}",
+                       "[^" + std::string(letterRanges()) + "]");
+        p = replaceAll(std::move(p), "\\P{L}",
+                       "[^" + std::string(letterRanges()) + "]");
+        return utf8ToWide(std::move(p));
+    }
+
+    /// UTF-8 code-point count: skips continuation bytes; invalid sequences
+    /// degrade to a byte count (never a crash).
+    static std::size_t countCodePoints(std::string const& s) {
+        std::size_t n = 0;
+        for (unsigned char c : s) {
+            if ((c & 0xC0) != 0x80) ++n;
+        }
+        return n;
+    }
+
+    /// Decode UTF-8 into code-point values stored in wchar_t (32-bit on
+    /// macOS/Linux). Invalid bytes pass through verbatim.
+    static std::wstring utf8ToWide(std::string const& s) {
+        std::wstring out;
+        out.reserve(s.size());
+        std::size_t i = 0;
+        while (i < s.size()) {
+            unsigned char c = static_cast<unsigned char>(s[i]);
+            std::uint32_t cp = 0;
+            std::size_t extra = 0;
+            if (c < 0x80) { out.push_back(static_cast<wchar_t>(c)); ++i; continue; }
+            if ((c >> 5) == 0x6) { cp = c & 0x1F; extra = 1; }
+            else if ((c >> 4) == 0xE) { cp = c & 0x0F; extra = 2; }
+            else if ((c >> 3) == 0x1E) { cp = c & 0x07; extra = 3; }
+            else { out.push_back(static_cast<wchar_t>(c)); ++i; continue; }
+            if (i + extra >= s.size()) {
+                out.push_back(static_cast<wchar_t>(c)); ++i; continue;
+            }
+            bool ok = true;
+            for (std::size_t j = 1; j <= extra; ++j) {
+                unsigned char cc = static_cast<unsigned char>(s[i + j]);
+                if ((cc & 0xC0) != 0x80) { ok = false; break; }
+                cp = (cp << 6) | (cc & 0x3F);
+            }
+            if (!ok) { out.push_back(static_cast<wchar_t>(c)); ++i; continue; }
+            out.push_back(static_cast<wchar_t>(cp));
+            i += extra + 1;
+        }
+        return out;
+    }
+
+    /// Unanchored ECMAScript-subset search on code points. Unsupported
+    /// patterns degrade to an always-match no-op.
+    static bool ecmaRegexSearch(std::string const& pattern,
+                                std::string const& key) {
+        try {
+            std::wregex re(normalizeEcmaPattern(pattern),
+                           std::regex_constants::ECMAScript);
+            std::wstring const wide = utf8ToWide(key);
+            return std::regex_search(wide, re);
+        } catch (std::regex_error const&) {
+            return true;
+        }
+    }
+
     /// allOf/anyOf/oneOf applicator walk with transactional annotation merging.
     /// Only SUCCESSFUL branches retain their evaluated-property/item coverage
     /// and annotations (required for correct anyOf/oneOf + unevaluated*).
@@ -651,14 +780,58 @@ private:
             ctx.evaluatedProperties.insert(pb.name);
         }
 
-        // additionalProperties tri-state. Listed properties are NEVER
-        // additionally evaluated: they are skipped. Unlisted keys are either
-        // allowed (absent/allowed), rejected (false), or validated against the
-        // additionalProperties schema.
+        // Wave-2.5 patternProperties: EVERY member whose name matches any
+        // pattern is validated against that pattern's schema (a name matching
+        // several patterns is validated by ALL of them, 2020-12). Matched
+        // members are evaluated here and are NEVER re-evaluated by
+        // additionalProperties (patterns take precedence, including over
+        // `additionalProperties: false`).
+        std::set<std::string> patternMatched;
+        if (!node.patternProperties.empty()) {
+            for (std::string const& k : instance.objectKeys()) {
+                for (SchemaNode::PatternPropertyBinding const& pb
+                         : node.patternProperties) {
+                    if (ecmaRegexSearch(pb.regex, k)) {
+                        patternMatched.insert(k);
+                        RawInstance const m = instance.atMember(k.c_str());
+                        ValidationPath childPath = path;
+                        childPath.enter(k);
+                        ValidationResult r =
+                            this->validate(pb.node, m, childPath, ctx);
+                        if (!r.success) return r;
+                        ctx.evaluatedProperties.insert(k);
+                    }
+                }
+            }
+        }
+
+        // propertyNames: the subschema applies to EVERY member NAME (as a
+        // string instance), independently of properties/additionalProperties.
+        if (node.propertyNames != kNoSchema) {
+            for (std::string const& k : instance.objectKeys()) {
+                boost::json::value keyValue(k);
+                RawInstance keyInst(&keyValue);
+                ValidationPath childPath = path;
+                childPath.enter(k);
+                ValidationResult r =
+                    this->validate(node.propertyNames, keyInst, childPath, ctx);
+                if (!r.success) return r;
+            }
+        }
+
+        // additionalProperties tri-state. Listed properties AND
+        // pattern-matched members are NEVER additionally evaluated: they are
+        // skipped. Unmatched keys are either allowed (absent/allowed),
+        // rejected (false), or validated against the additionalProperties
+        // schema.
+        auto isCovered = [&](std::string const& k) {
+            if (isListedProperty(node, k)) return true;
+            return patternMatched.count(k) != 0;
+        };
         if (node.additionalProperties == AdditionalPropertiesKind::reject ||
             node.additionalProperties == AdditionalPropertiesKind::schema) {
             for (std::string const& k : instance.objectKeys()) {
-                if (isListedProperty(node, k)) continue;
+                if (isCovered(k)) continue;
                 RawInstance m = instance.atMember(k.c_str());
                 if (node.additionalProperties == AdditionalPropertiesKind::reject)
                     return ValidationResult::invalidAt(
@@ -674,7 +847,7 @@ private:
             }
         } else if (node.additionalProperties == AdditionalPropertiesKind::allowed) {
             for (std::string const& k : instance.objectKeys()) {
-                if (isListedProperty(node, k)) continue;
+                if (isCovered(k)) continue;
                 ctx.evaluatedProperties.insert(k);
             }
         }

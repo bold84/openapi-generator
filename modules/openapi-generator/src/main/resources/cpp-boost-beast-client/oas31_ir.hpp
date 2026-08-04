@@ -129,6 +129,21 @@ struct SchemaNode {
     ExactNumber              minProperties;  bool hasMinProperties = false;
     ExactNumber              maxProperties;  bool hasMaxProperties = false;
 
+    // -- Wave-2.5 string constraints (K-13 subset: Unicode code points, not bytes) --
+    ExactNumber              minLength;  bool hasMinLength = false;
+    ExactNumber              maxLength;  bool hasMaxLength = false;
+    std::string              pattern;    bool hasPattern  = false;  // ECMAScript subset, unanchored search
+
+    // -- Wave-2.5 patternProperties (K-09): regex source + child node per pattern --
+    struct PatternPropertyBinding {
+        std::string regex;                 // raw ECMAScript source as written in the spec
+        SchemaIndex node = kNoSchema;      // child node applied to each matched member
+    };
+    std::vector<PatternPropertyBinding> patternProperties;
+
+    // -- Wave-2.5 propertyNames (K-10): child node applied to EVERY member name --
+    SchemaIndex propertyNames = kNoSchema;
+
     // -- Wave-2 array structural (FROZEN §10.2) ----------------------------
     std::vector<SchemaIndex> prefixItems;     // prefixItems[i] applies to index i
     SchemaIndex              items = kNoSchema;  // applies to indices >= prefixItems.size()
