@@ -424,6 +424,128 @@
       expected: decode_reject
 
 # =============================================================================
+# Wave-1 completion slice (gate-a Phase-2 driver) — boolean value-schemas
+# (K-03), `not` subschema inversion (K-01), exact deep JSON const/enum equality
+# across ALL kinds incl. 1 vs 1.0 (K-30/K-34), array uniqueItems with exact
+# numeric equality (K-22), and local $ref resolution (K-29).  These schema names
+# have NO Wave-0 model headers; they are proven exclusively by the compiled
+# phase2_numeric_driver through validate_<id> -> SchemaEvaluator.  Baseline
+# classification DEFERS them; driver evidence flips them to real PASS
+# (see phase2_classify.py / gate-a.sh Step 4c).
+# =============================================================================
+
+- id: boolean-value-schema-true
+  schema: BooleanValueTrue
+  note: "K-03 OAS 3.1 boolean value-schema true — every instance is valid"
+  cases:
+    - payload: "true"
+      expected: decode_accept
+    - payload: "false"
+      expected: decode_accept
+    - payload: "42"
+      expected: decode_accept
+    - payload: '"hello"'
+      expected: decode_accept
+    - payload: "null"
+      expected: decode_accept
+
+- id: boolean-value-schema-false
+  schema: BooleanValueFalse
+  note: "K-03 OAS 3.1 boolean value-schema false — no instance is valid (reject)"
+  cases:
+    - payload: "true"
+      expected: decode_reject
+    - payload: "false"
+      expected: decode_reject
+    - payload: "42"
+      expected: decode_reject
+    - payload: "null"
+      expected: decode_reject
+
+- id: not-const-zero
+  schema: NotConstZero
+  note: "K-01 { not: { const: 0 } } — 0 is negated-rejected, any other value accepted"
+  cases:
+    - payload: "0"
+      expected: decode_reject
+    - payload: "1"
+      expected: decode_accept
+    - payload: "-3"
+      expected: decode_accept
+    - payload: '"x"'
+      expected: decode_accept
+
+- id: not-type-string
+  schema: NotTypeString
+  note: "K-01 { not: { type: string } } — strings negated-rejected, non-strings accepted"
+  cases:
+    - payload: '"hi"'
+      expected: decode_reject
+    - payload: "42"
+      expected: decode_accept
+    - payload: "true"
+      expected: decode_accept
+
+- id: deep-const-object
+  schema: DeepConstObject
+  note: "K-30 const:{a:1,b:[true,null]} — exact deep equality over object/array; a=1.0 == a=1"
+  cases:
+    - payload: '{"a":1,"b":[true,null]}'
+      expected: decode_accept
+    - payload: '{"a":1.0,"b":[true,null]}'
+      expected: decode_accept
+    - payload: '{"a":2,"b":[true,null]}'
+      expected: decode_reject
+    - payload: '{"a":1}'
+      expected: decode_reject
+
+- id: deep-const-array
+  schema: DeepConstArray
+  note: "K-30 const:[1,2,3] — exact deep equality over array; 1.0 == 1 member"
+  cases:
+    - payload: '[1,2,3]'
+      expected: decode_accept
+    - payload: '[1.0,2,3]'
+      expected: decode_accept
+    - payload: '[1,2,4]'
+      expected: decode_reject
+
+- id: deep-enum-objects
+  schema: DeepEnumObjects
+  note: "K-34 enum:[{a:1},{b:x}] — exact deep equality over object-values; a=1.0 == a=1"
+  cases:
+    - payload: '{"a":1}'
+      expected: decode_accept
+    - payload: '{"a":1.0}'
+      expected: decode_accept
+    - payload: '{"c":9}'
+      expected: decode_reject
+
+- id: unique-items-exact-number
+  schema: UniqueItemsMixed
+  note: "K-22 uniqueItems:true over array — 1 == 1.0 is a duplicate (ExactNumber)"
+  cases:
+    - payload: '[1,2]'
+      expected: decode_accept
+    - payload: '[1,2,3]'
+      expected: decode_accept
+    - payload: '[1,1.0]'
+      expected: decode_reject
+    - payload: '[1,2,1.0]'
+      expected: decode_reject
+
+- id: ref-const-five
+  schema: RefConstFive
+  note: "K-29 local $ref -> const:5 node — resolves target transparently (5 accept, 6 reject)"
+  cases:
+    - payload: "5"
+      expected: decode_accept
+    - payload: "6"
+      expected: decode_reject
+    - payload: "5.0"
+      expected: decode_accept
+
+# =============================================================================
 # OAS 3.0 regression cases (specified in separate spec files)
 # =============================================================================
 
