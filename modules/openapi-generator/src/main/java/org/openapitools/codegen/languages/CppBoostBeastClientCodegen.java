@@ -1212,27 +1212,46 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                     ? surface.getMaxProperties() : maxPropsLex);
                 }
                 // oneOf/anyOf/allOf nested inside a branch are densified as
-                // applicator children (Wave-2); never fail-closed. A branch that
-                // IS a $ref excludes the applicator scan (the $ref applicator is
-                // resolved via the registry; the REF TARGET's own composition is
-                // materialised as the target branch row, not as this node's
-                // applicator — keeps pure-ref nodes truly transparent).
-                String branchApplicator = null;
+                // applicator children (Wave-2); ALL of them may coexist
+                // (2020-12 multi-applicator: allOf AND anyOf AND oneOf each
+                // apply), so each keyword gets its own schema list key. Never
+                // fail-closed. A branch that IS a $ref excludes the applicator
+                // scan (the $ref applicator is resolved via the registry; the
+                // REF TARGET's own composition is materialised as the target
+                // branch row, not as this node's applicator — keeps pure-ref
+                // nodes truly transparent).
                 if (!refBranchExcluded) {
                     if (surface.getOneOf() != null && !surface.getOneOf().isEmpty()) {
-                        branchApplicator = "oneOf";
-                    } else if (surface.getAnyOf() != null && !surface.getAnyOf().isEmpty()) {
-                        branchApplicator = "anyOf";
-                    } else if (surface.getAllOf() != null && !surface.getAllOf().isEmpty()) {
-                        branchApplicator = "allOf";
+                        validateParams.put("validation-oneof-schemas", surface.getOneOf());
+                    }
+                    if (surface.getAnyOf() != null && !surface.getAnyOf().isEmpty()) {
+                        validateParams.put("validation-anyof-schemas", surface.getAnyOf());
+                    }
+                    if (surface.getAllOf() != null && !surface.getAllOf().isEmpty()) {
+                        validateParams.put("validation-allof-schemas", surface.getAllOf());
                     }
                 }
-                if (branchApplicator != null) {
-                    validateParams.put("validation-applicator", branchApplicator);
-                    validateParams.put("validation-applicator-schemas",
-                            "oneOf".equals(branchApplicator) ? surface.getOneOf()
-                            : "anyOf".equals(branchApplicator) ? surface.getAnyOf()
-                            : surface.getAllOf());
+                // unevaluatedItems (Wave-2.5): boolean or schema form.
+                if (surface.getUnevaluatedItems() != null) {
+                    validateParams.put("validation-unevaluated-items",
+                            surface.getUnevaluatedItems());
+                }
+                // if/then/else + dependentSchemas (Wave-2.5 conditionals):
+                // evaluated unconditionally; annotations of the APPLIED branch
+                // feed the unevaluated* exit checks.
+                if (surface.getIf() != null) {
+                    validateParams.put("validation-if", surface.getIf());
+                }
+                if (surface.getThen() != null) {
+                    validateParams.put("validation-then", surface.getThen());
+                }
+                if (surface.getElse() != null) {
+                    validateParams.put("validation-else", surface.getElse());
+                }
+                if (surface.getDependentSchemas() != null
+                        && !surface.getDependentSchemas().isEmpty()) {
+                    validateParams.put("validation-dependent-schemas",
+                            surface.getDependentSchemas());
                 }
                 // Nested composition on branches is handled by the resolved
                 // model type, not the branch validator. Do not fail on nested
@@ -6359,6 +6378,31 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (idx != null) n.applicatorChildIndices.add(idx);
                 else n.applicatorChildIndices.add(-1);
             }
+            resolveChildList(n.allOfChildren, n.allOfChildIndices, indexOf);
+            resolveChildList(n.anyOfChildren, n.anyOfChildIndices, indexOf);
+            resolveChildList(n.oneOfChildren, n.oneOfChildIndices, indexOf);
+            if (n.unevaluatedItemsSchemaChild != null) {
+                Integer idx = indexOf.get(n.unevaluatedItemsSchemaChild);
+                if (idx != null) n.unevaluatedItemsSchemaIndex = idx;
+            }
+            if (n.ifChild != null) {
+                Integer idx = indexOf.get(n.ifChild);
+                if (idx != null) n.ifIndex = idx;
+            }
+            if (n.thenChild != null) {
+                Integer idx = indexOf.get(n.thenChild);
+                if (idx != null) n.thenIndex = idx;
+            }
+            if (n.elseChild != null) {
+                Integer idx = indexOf.get(n.elseChild);
+                if (idx != null) n.elseIndex = idx;
+            }
+            for (IrNode.DependentSchema d : n.dependentSchemas) {
+                if (d.child != null) {
+                    Integer idx = indexOf.get(d.child);
+                    if (idx != null) d.index = idx;
+                }
+            }
             if (n.isRef && n.refTargetId != null) {
                 Integer idx = idIndex.get(n.refTargetId);
                 if (idx != null) {
@@ -6368,6 +6412,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
             }
         }
+        // (resolveChildList is a helper below; definitions live with the loop)
 
         processed.put("oas31SchemaIrHeader", buildSchemaIrHeader(allRows));
         processed.put("oas31SchemaIrSource", buildSchemaIrSource(allRows, mainNodes.size()));
@@ -6382,16 +6427,36 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (n.additionalSchemaChild != null) out.add(n.additionalSchemaChild);
         if (n.itemsChild != null) out.add(n.itemsChild);
         if (n.unevaluatedSchemaChild != null) out.add(n.unevaluatedSchemaChild);
+        if (n.unevaluatedItemsSchemaChild != null) out.add(n.unevaluatedItemsSchemaChild);
+        if (n.ifChild != null) out.add(n.ifChild);
+        if (n.thenChild != null) out.add(n.thenChild);
+        if (n.elseChild != null) out.add(n.elseChild);
+        for (IrNode.DependentSchema d : n.dependentSchemas) {
+            if (d.child != null) out.add(d.child);
+        }
         if (n.propertyNamesChild != null) out.add(n.propertyNamesChild);
         for (IrNode.PatternSchema pb : n.patternProperties) {
             if (pb.child != null) out.add(pb.child);
         }
         out.addAll(n.prefixItems);
         out.addAll(n.applicatorChildren);
+        out.addAll(n.allOfChildren);
+        out.addAll(n.anyOfChildren);
+        out.addAll(n.oneOfChildren);
         for (IrNode.PropertySchema pb : n.properties) {
             if (pb.child != null) out.add(pb.child);
         }
         return out;
+    }
+
+    /** Resolve an IrNode child list to its combined-registry row indices. */
+    private static void resolveChildList(java.util.List<IrNode> children,
+                                         java.util.List<Integer> indices,
+                                         java.util.Map<IrNode, Integer> indexOf) {
+        for (IrNode c : children) {
+            Integer idx = indexOf.get(c);
+            indices.add(idx != null ? idx : -1);
+        }
     }
 
     /** A single densified SchemaNode to emit, from one composition branch. */
@@ -6464,15 +6529,44 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         String                  maxItemsLexeme = null;  boolean maxItemsPresent = false;
 
         // -- Wave-2 applicator (allOf/anyOf/oneOf members of THIS schema) --
-        String                   applicatorKind = null;   // "allOf"|"anyOf"|"oneOf"
+        String                   applicatorKind = null;   // legacy single-keyword hint
         java.util.List<IrNode>   applicatorChildren = new ArrayList<>();
         java.util.List<Integer>  applicatorChildIndices = new ArrayList<>();
+        // Wave-2.5 multi-applicator: ALL of allOf/anyOf/oneOf may coexist.
+        java.util.List<IrNode>   allOfChildren = new ArrayList<>();
+        java.util.List<Integer>  allOfChildIndices = new ArrayList<>();
+        java.util.List<IrNode>   anyOfChildren = new ArrayList<>();
+        java.util.List<Integer>  anyOfChildIndices = new ArrayList<>();
+        java.util.List<IrNode>   oneOfChildren = new ArrayList<>();
+        java.util.List<Integer>  oneOfChildIndices = new ArrayList<>();
 
         // -- Wave-2 unevaluatedProperties --
         boolean unevaluatedPropertiesPresent = false;
         boolean unevaluatedPropertiesRejects = false;
         IrNode  unevaluatedSchemaChild = null;
         int     unevaluatedSchemaIndex = -1;
+
+        // -- Wave-2.5 unevaluatedItems --
+        boolean unevaluatedItemsPresent = false;
+        boolean unevaluatedItemsRejects = false;
+        IrNode  unevaluatedItemsSchemaChild = null;
+        int     unevaluatedItemsSchemaIndex = -1;
+
+        // -- Wave-2.5 if/then/else --
+        IrNode  ifChild   = null;
+        int     ifIndex   = -1;
+        IrNode  thenChild = null;
+        int     thenIndex = -1;
+        IrNode  elseChild = null;
+        int     elseIndex = -1;
+
+        // -- Wave-2.5 dependentSchemas (trigger name -> child) --
+        static final class DependentSchema {
+            String name;
+            IrNode  child;
+            int     index = -1;   // resolved registry row of child
+        }
+        java.util.List<DependentSchema> dependentSchemas = new ArrayList<>();
         boolean selfRef = false;   // $ref resolves to THIS node (self/root ref)
 
         /** Deterministic child-row id suffix counter (per node). */
@@ -6736,18 +6830,85 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         } else if (pnObj instanceof Boolean) {
             n.propertyNamesChild = booleanValueSchema((Boolean) pnObj, n.childId("pn"));
         }
-        String appKind = (String) vp.get("validation-applicator");
-        Object appList = vp.get("validation-applicator-schemas");
-        if (appKind != null && appList instanceof java.util.List) {
-            n.applicatorKind = appKind;
-            for (Object s : (java.util.List<?>) appList) {
+        // -- Wave-2.5 multi-applicator (allOf/anyOf/oneOf, all may coexist) --
+        Object allOfList = vp.get("validation-allof-schemas");
+        if (allOfList instanceof java.util.List) {
+            n.applicatorKind = "allOf";
+            for (Object s : (java.util.List<?>) allOfList) {
                 if (s instanceof Schema) {
-                    n.applicatorChildren.add(
+                    n.allOfChildren.add(
                             irNodeFromRawSchema((Schema) s, n.childId("app")));
                 } else if (s instanceof Boolean) {
-                    n.applicatorChildren.add(
+                    n.allOfChildren.add(
                             booleanValueSchema((Boolean) s, n.childId("app")));
                 }
+            }
+        }
+        Object anyOfList = vp.get("validation-anyof-schemas");
+        if (anyOfList instanceof java.util.List) {
+            if (n.applicatorKind == null) n.applicatorKind = "anyOf";
+            for (Object s : (java.util.List<?>) anyOfList) {
+                if (s instanceof Schema) {
+                    n.anyOfChildren.add(
+                            irNodeFromRawSchema((Schema) s, n.childId("app")));
+                } else if (s instanceof Boolean) {
+                    n.anyOfChildren.add(
+                            booleanValueSchema((Boolean) s, n.childId("app")));
+                }
+            }
+        }
+        Object oneOfList = vp.get("validation-oneof-schemas");
+        if (oneOfList instanceof java.util.List) {
+            if (n.applicatorKind == null) n.applicatorKind = "oneOf";
+            for (Object s : (java.util.List<?>) oneOfList) {
+                if (s instanceof Schema) {
+                    n.oneOfChildren.add(
+                            irNodeFromRawSchema((Schema) s, n.childId("app")));
+                } else if (s instanceof Boolean) {
+                    n.oneOfChildren.add(
+                            booleanValueSchema((Boolean) s, n.childId("app")));
+                }
+            }
+        }
+        Object unevalItemsObj = vp.get("validation-unevaluated-items");
+        if (unevalItemsObj != null) {
+            n.unevaluatedItemsPresent = true;
+            if (unevalItemsObj instanceof Schema) {
+                Schema us = (Schema) unevalItemsObj;
+                Boolean bv = us.getBooleanSchemaValue();
+                if (bv != null) {
+                    n.unevaluatedItemsRejects = !Boolean.TRUE.equals(bv);
+                } else {
+                    n.unevaluatedItemsSchemaChild =
+                            irNodeFromRawSchema(us, n.childId("uneval"));
+                }
+            } else if (unevalItemsObj instanceof Boolean) {
+                n.unevaluatedItemsRejects =
+                        !Boolean.TRUE.equals(unevalItemsObj);
+            }
+        }
+        Object ifObj = vp.get("validation-if");
+        if (ifObj instanceof Schema) {
+            n.ifChild = irNodeFromRawSchema((Schema) ifObj, n.childId("if"));
+        }
+        Object thenObj = vp.get("validation-then");
+        if (thenObj instanceof Schema) {
+            n.thenChild = irNodeFromRawSchema((Schema) thenObj, n.childId("then"));
+        }
+        Object elseObj = vp.get("validation-else");
+        if (elseObj instanceof Schema) {
+            n.elseChild = irNodeFromRawSchema((Schema) elseObj, n.childId("else"));
+        }
+        Object depObj = vp.get("validation-dependent-schemas");
+        if (depObj instanceof java.util.Map) {
+            for (java.util.Map.Entry<?, ?> e
+                    : ((java.util.Map<?, ?>) depObj).entrySet()) {
+                if (!(e.getValue() instanceof Schema)) continue;
+                IrNode.DependentSchema d = new IrNode.DependentSchema();
+                d.name = String.valueOf(e.getKey());
+                d.child = irNodeFromRawSchema((Schema) e.getValue(),
+                        n.childId("dep_" + n.dependentSchemas.size()));
+                n.dependentSchemas.add(d);
             }
         }
         Object unevalObj = vp.get("validation-unevaluated-properties");
@@ -6786,7 +6947,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 || n.minLengthPresent || n.maxLengthPresent || n.patternPresent
                 || !n.patternProperties.isEmpty() || n.propertyNamesChild != null
                 || n.applicatorKind != null
-                || n.unevaluatedPropertiesPresent;
+                || !n.allOfChildren.isEmpty() || !n.anyOfChildren.isEmpty()
+                || !n.oneOfChildren.isEmpty()
+                || n.unevaluatedPropertiesPresent
+                || n.unevaluatedItemsPresent
+                || n.ifChild != null || n.thenChild != null || n.elseChild != null
+                || !n.dependentSchemas.isEmpty();
         return hasKeyword ? n : null;
     }
 
@@ -7015,18 +7181,48 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
-        // ---- Wave-2 applicators (this schema's own oneOf/anyOf/allOf) ----
-        if (applicatorOf(schema) != null) {
-            n.applicatorKind = applicatorOf(schema);
-            java.util.List<?> members = applicatorMembers(schema);
-            for (Object mo : members) {
-                Schema s = (Schema) mo;
-                if (s == null) continue;
-                if (s.getBooleanSchemaValue() != null) {
-                    n.applicatorChildren.add(booleanValueSchema(
-                            s.getBooleanSchemaValue(), n.childId("app")));
-                } else {
-                    n.applicatorChildren.add(irNodeFromRawSchema(s, n.childId("app")));
+        // ---- Wave-2.5 multi-applicators (allOf/anyOf/oneOf may coexist) ----
+        {
+            java.util.List<?> allMembers = schema.getAllOf();
+            if (allMembers != null && !allMembers.isEmpty()) {
+                n.applicatorKind = "allOf";
+                for (Object mo : allMembers) {
+                    Schema s = (Schema) mo;
+                    if (s == null) continue;
+                    if (s.getBooleanSchemaValue() != null) {
+                        n.allOfChildren.add(booleanValueSchema(
+                                s.getBooleanSchemaValue(), n.childId("app")));
+                    } else {
+                        n.allOfChildren.add(irNodeFromRawSchema(s, n.childId("app")));
+                    }
+                }
+            }
+            java.util.List<?> anyMembers = schema.getAnyOf();
+            if (anyMembers != null && !anyMembers.isEmpty()) {
+                if (n.applicatorKind == null) n.applicatorKind = "anyOf";
+                for (Object mo : anyMembers) {
+                    Schema s = (Schema) mo;
+                    if (s == null) continue;
+                    if (s.getBooleanSchemaValue() != null) {
+                        n.anyOfChildren.add(booleanValueSchema(
+                                s.getBooleanSchemaValue(), n.childId("app")));
+                    } else {
+                        n.anyOfChildren.add(irNodeFromRawSchema(s, n.childId("app")));
+                    }
+                }
+            }
+            java.util.List<?> oneMembers = schema.getOneOf();
+            if (oneMembers != null && !oneMembers.isEmpty()) {
+                if (n.applicatorKind == null) n.applicatorKind = "oneOf";
+                for (Object mo : oneMembers) {
+                    Schema s = (Schema) mo;
+                    if (s == null) continue;
+                    if (s.getBooleanSchemaValue() != null) {
+                        n.oneOfChildren.add(booleanValueSchema(
+                                s.getBooleanSchemaValue(), n.childId("app")));
+                    } else {
+                        n.oneOfChildren.add(irNodeFromRawSchema(s, n.childId("app")));
+                    }
                 }
             }
         }
@@ -7042,6 +7238,45 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 n.unevaluatedPropertiesRejects = false;
             } else {
                 n.unevaluatedSchemaChild = irNodeFromRawSchema(us, n.childId("uneval"));
+            }
+        }
+
+        // ---- Wave-2.5 unevaluatedItems ----
+        if (schema.getUnevaluatedItems() != null) {
+            n.unevaluatedItemsPresent = true;
+            Schema us = schema.getUnevaluatedItems();
+            Boolean bv = us.getBooleanSchemaValue();
+            if (bv != null) {
+                n.unevaluatedItemsRejects = !Boolean.TRUE.equals(bv);
+            } else if (emptySchema(us)) {
+                n.unevaluatedItemsRejects = false;
+            } else {
+                n.unevaluatedItemsSchemaChild =
+                        irNodeFromRawSchema(us, n.childId("uneval"));
+            }
+        }
+
+        // ---- Wave-2.5 if/then/else ----
+        if (schema.getIf() != null) {
+            n.ifChild = irNodeFromRawSchema(schema.getIf(), n.childId("if"));
+        }
+        if (schema.getThen() != null) {
+            n.thenChild = irNodeFromRawSchema(schema.getThen(), n.childId("then"));
+        }
+        if (schema.getElse() != null) {
+            n.elseChild = irNodeFromRawSchema(schema.getElse(), n.childId("else"));
+        }
+
+        // ---- Wave-2.5 dependentSchemas ----
+        java.util.Map<String, Schema> depMap = schema.getDependentSchemas();
+        if (depMap != null && !depMap.isEmpty()) {
+            for (java.util.Map.Entry<String, Schema> e : depMap.entrySet()) {
+                if (e.getValue() == null) continue;
+                IrNode.DependentSchema d = new IrNode.DependentSchema();
+                d.name = e.getKey();
+                d.child = irNodeFromRawSchema(e.getValue(),
+                        n.childId("dep_" + n.dependentSchemas.size()));
+                n.dependentSchemas.add(d);
             }
         }
         return n;
@@ -7317,7 +7552,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         return sb.toString();
     }
 
-    /** schema_ir.generated.cpp — densified rows + schemaNodeFor() map. */
+    /** Emit `n.<field>.push_back(<idx>);` for every resolved index. */
+    private static void emitChildVector(StringBuilder sb, String field,
+                                        java.util.List<Integer> indices) {
+        if (indices == null) return;
+        for (Integer cidx : indices) {
+            if (cidx >= 0) {
+                sb.append("        n.").append(field).append(".push_back(").append(cidx).append(");\n");
+            }
+        }
+    }
+
+    /** schema_ir.generated.cpp - densified rows + schemaNodeFor() map. */
     private String buildSchemaIrSource(java.util.List<IrNode> nodes, int mainNodeCount) {
         StringBuilder sb = new StringBuilder();
         sb.append("// Generated by CppBoostBeastClientCodegen (Wave-1 densified schema IR).\n");
@@ -7504,15 +7750,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
             emitSetExact(sb, "n.minItems", "n.hasMinItems", node.minItemsLexeme);
             emitSetExact(sb, "n.maxItems", "n.hasMaxItems", node.maxItemsLexeme);
-            // -- Wave-2 applicator (allOf/anyOf/oneOf) ------------------
-            if (node.applicatorKind != null && !node.applicatorChildIndices.isEmpty()) {
-                sb.append("        n.applicator = ApplicatorKind::").append(node.applicatorKind).append(";\n");
-                for (Integer cidx : node.applicatorChildIndices) {
-                    if (cidx >= 0) {
-                        sb.append("        n.children.push_back(").append(cidx).append(");\n");
-                    }
-                }
-            }
+            // -- Wave-2.5 multi-applicator (allOf/anyOf/oneOf may coexist) ---
+            emitChildVector(sb, "allOfChildren", node.allOfChildIndices);
+            emitChildVector(sb, "anyOfChildren", node.anyOfChildIndices);
+            emitChildVector(sb, "oneOfChildren", node.oneOfChildIndices);
             // -- Wave-2 unevaluatedProperties ---------------------------
             if (node.unevaluatedPropertiesPresent) {
                 sb.append("        n.hasUnevaluatedProperties = true;\n");
@@ -7522,6 +7763,36 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (node.unevaluatedSchemaIndex >= 0) {
                     sb.append("        n.unevaluatedSchema = ").append(node.unevaluatedSchemaIndex).append(";\n");
                 }
+            }
+            // -- Wave-2.5 unevaluatedItems ------------------------------
+            if (node.unevaluatedItemsPresent) {
+                sb.append("        n.hasUnevaluatedItems = true;\n");
+                if (node.unevaluatedItemsRejects) {
+                    sb.append("        n.unevaluatedItemsRejects = true;\n");
+                }
+                if (node.unevaluatedItemsSchemaIndex >= 0) {
+                    sb.append("        n.unevaluatedItemsSchema = ").append(node.unevaluatedItemsSchemaIndex).append(";\n");
+                }
+            }
+            // -- Wave-2.5 if/then/else --------------------------------
+            if (node.ifIndex >= 0) {
+                sb.append("        n.hasIf = true;\n");
+                sb.append("        n.ifSchema = ").append(node.ifIndex).append(";\n");
+            }
+            if (node.thenIndex >= 0) {
+                sb.append("        n.hasThen = true;\n");
+                sb.append("        n.thenSchema = ").append(node.thenIndex).append(";\n");
+            }
+            if (node.elseIndex >= 0) {
+                sb.append("        n.hasElse = true;\n");
+                sb.append("        n.elseSchema = ").append(node.elseIndex).append(";\n");
+            }
+            // -- Wave-2.5 dependentSchemas ----------------------------
+            for (IrNode.DependentSchema d : node.dependentSchemas) {
+                if (d.index < 0) continue;
+                sb.append("        n.dependentSchemas.push_back({\"")
+                        .append(escapeCppStringContent(d.name))
+                        .append("\", ").append(d.index).append("});\n");
             }
             sb.append("        reg.nodes.push_back(n);\n");
             sb.append("    }\n");

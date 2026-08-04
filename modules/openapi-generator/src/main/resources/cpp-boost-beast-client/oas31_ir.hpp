@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace oas31 {
@@ -150,14 +151,38 @@ struct SchemaNode {
     ExactNumber              minItems;  bool hasMinItems = false;
     ExactNumber              maxItems;  bool hasMaxItems = false;
 
-    // -- Wave-2 unevaluatedProperties (bool/absent + schema form, best-effort) --
+    // -- Wave-2 unevaluatedProperties (bool/absent + schema form) -----------
     bool         hasUnevaluatedProperties = false;
     bool         unevaluatedPropertiesRejects = false;
     SchemaIndex  unevaluatedSchema = kNoSchema;
 
-    // -- applicators --
+    // -- Wave-2.5 unevaluatedItems (bool/absent + schema form) -------------
+    bool         hasUnevaluatedItems = false;
+    bool         unevaluatedItemsRejects = false;
+    SchemaIndex  unevaluatedItemsSchema = kNoSchema;
+
+    // if/then/else (Wave-2.5 conditional applicator set; annotations of the
+    // APPLIED branch count toward unevaluated*, the guard's never leak).
+    bool         hasIf = false;
+    SchemaIndex  ifSchema = kNoSchema;
+    bool         hasThen = false;
+    SchemaIndex  thenSchema = kNoSchema;
+    bool         hasElse = false;
+    SchemaIndex  elseSchema = kNoSchema;
+
+    // dependentSchemas: trigger key -> schema; the triggered dependent schema
+    // is validated in the current context (its annotations count).
+    std::vector<std::pair<std::string, SchemaIndex>> dependentSchemas;
+
+    // -- applicators: ALL of allOf/anyOf/oneOf may coexist (2020-12); each
+    //    member is a densified child row. `children` is used by the REF
+    //    applicator only (children[0] = resolved target). Evaluation order is
+    //    allOf -> anyOf -> oneOf (irrelevant for validity).
     ApplicatorKind         applicator = ApplicatorKind::none;
-    std::vector<SchemaIndex> children;    // allOf/anyOf/oneOf member indices
+    std::vector<SchemaIndex> children;    // REF applicator target (0/1)
+    std::vector<SchemaIndex> allOfChildren;
+    std::vector<SchemaIndex> anyOfChildren;
+    std::vector<SchemaIndex> oneOfChildren;
     SchemaIndex            notSchema = kNoSchema;  // `not` subschema reference
 
     // D4 dynamic-scope data — NOT used by this slice's keyword set; reserved.

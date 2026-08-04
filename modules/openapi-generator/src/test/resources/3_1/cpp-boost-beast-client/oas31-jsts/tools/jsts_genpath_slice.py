@@ -61,12 +61,14 @@ This tool is jsts-owned (oas31-jsts/). It reads engines/resources it does not ow
 (read-only) and drives the real generator + g++ — it never hand-rolls a validator.
 """
 import argparse
+import copy
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+import urllib.parse as _urlparse
 
 # Mirror the canonical slice set in jsts_runner.py.
 NUMERIC_BOOLEAN_SLICE_FILES = [
@@ -83,6 +85,43 @@ LEXEME_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "src", "test", "resources", "3_1",
                           "cpp-boost-beast-client",
                           "oas-compliance", "oas31_lexeme.hpp")
+
+# ---- remote vault (refRemote): map http://localhost:1234/<path> onto the
+# vendored `vendor/remotes/<path>` files (the official JSTS remote set served
+# at localhost:1234). swagger-parser FETCHES unresolved remote refs over HTTP
+# at parse time (Connection refused => generation BLOCKED), so every remote
+# ref must be hoisted into an in-doc component BEFORE generation.
+_VAULT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "..", "vendor", "remotes")
+_vault_cache = {}          # full URL -> parsed JSON document
+_vault_processing = set()  # in-flight URLs (cycle guard)
+
+
+def _vault_load(full):
+    """Load a localhost:1234 resource from the vendored remotes vault."""
+    if full in _vault_cache:
+        return _vault_cache[full]
+    if full in _vault_processing:
+        return None
+    _vault_processing.add(full)
+    try:
+        u = _urlparse.urlsplit(full)
+        if u.scheme != "http" or u.hostname != "localhost":
+            return None
+        if u.port not in (None, 1234):
+            return None
+        rel = u.path.lstrip("/")
+        fp = os.path.join(_VAULT_DIR, rel)
+        if not os.path.isfile(fp):
+            return None
+        with open(fp, encoding="utf-8") as f:
+            doc = json.load(f)
+    except Exception:
+        return None
+    finally:
+        _vault_processing.discard(full)
+    _vault_cache[full] = doc
+    return doc
 
 
 def resolve_draft_dir(suite):
@@ -237,6 +276,27 @@ def _hop_refs(branch):
             elif ctx_id and full == ctx_id:
                 # self-resource full ref -> the enclosing resource itself
                 base_obj = ctx_obj if ctx_obj is not None else branch
+            elif full.startswith("http://localhost"):
+                # refRemote: resolve against the vendored remotes vault. The
+                # vault subdocument is registered as an in-doc resource and its
+                # OWN inner refs are recursively rewritten in a nested walk
+                # (same vault, so nested remote files hoist too). A FRESH copy
+                # per group: the nested walk rewrites the document in place,
+                # and the cached pristine copy must never leak rewritten refs
+                # into later groups' specs.
+                vdoc = copy.deepcopy(_vault_load(full))
+                if vdoc is None or not isinstance(vdoc, dict):
+                    return False
+                id_index.setdefault(full, vdoc)
+                tail = full.split("?")[0].lstrip("/").split("/")[-1] or "res"
+                id_name.setdefault(full, "__vault_"
+                        + _re.sub(r"[^0-9A-Za-z_]+", "_", tail).rstrip("_"))
+                base_obj = vdoc
+                # recursively rewrite refs inside the vault document (its ctx
+                # object/identity are the vault document itself, so local
+                # pointers and bare anchors resolve against the VAULT root,
+                # never against the enclosing group branch).
+                walk(vdoc, vdoc, full)
             else:
                 return False
             # 2020-12 root-self: a full URI identical to the ROOT resource id
@@ -322,6 +382,37 @@ def _hop_refs(branch):
 
     walk(branch, branch if isinstance(branch, dict) else None,
          branch.get("$id") if isinstance(branch, dict) else None)
+
+    # ---- Wave-3 pass 2: hoist INLINE allOf members ----------------
+    # openapi-generator's InlineModelResolver FOLDS pure-constraint inline
+    # allOf members ({allOf:[{maximum:30},{minimum:20}]} -> member emptied,
+    # inner constraint LOST in the model). Hoisting every inline member to a
+    # component turns the member into a $ref the resolver will not fold,
+    # preserving constraints verbatim through generation. Pure-$ref members
+    # are left alone (never folded; avoids double-wrapping). Inner refs inside
+    # a member were already rewritten by pass 1 in the live tree.
+    def hoist_allof(node, counter):
+        if isinstance(node, dict):
+            al = node.get("allOf")
+            if isinstance(al, list):
+                for i, mem in enumerate(al):
+                    if (isinstance(mem, dict)
+                            and not (len(mem) == 1 and "$ref" in mem)):
+                        counter[0] += 1
+                        nm = capture("__allof_%d" % counter[0], mem)
+                        al[i] = {"$ref": "#/components/schemas/" + nm}
+            for v in node.values():
+                if isinstance(v, dict):
+                    hoist_allof(v, counter)
+                elif isinstance(v, list):
+                    for vv in v:
+                        hoist_allof(vv, counter)
+        elif isinstance(node, list):
+            for vv in node:
+                hoist_allof(vv, counter)
+
+    hoist_allof(branch, [0])
+
     # Capture hoisted targets AFTER pass 1 so any inner refs inside a target
     # were already rewritten in the live tree (never a stale copy).
     for name in sorted(pending):

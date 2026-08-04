@@ -9,3 +9,6 @@
 /manifest.json
 /report.json
 /run-work/
+
+# Wave-3 runner work dir (per-run generated specs, binaries, reports).
+/w3/

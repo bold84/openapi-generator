@@ -325,20 +325,37 @@ private:
 
 struct ValidationContext {
     AnnotationStore annotations;
-    std::set<std::string> evaluatedProperties;
-    std::set<std::size_t> evaluatedItems;
+    // Location-scoped evaluation coverage: the TOP of each stack is the
+    // CURRENT instance location (an object's evaluated member keys / an
+    // array's evaluated item indices). Descending into a nested object/array
+    // value pushes a fresh location, so a nested object's keys can never leak
+    // into the parent's unevaluated* check (instance-location correctness:
+    // unevaluatedProperties g41/g42/g43).
+    std::vector<std::set<std::string>> evaluatedPropertiesStack{{}};
+    std::vector<std::set<std::size_t>> evaluatedItemsStack{{}};
+
+    std::set<std::string>& curProps() { return evaluatedPropertiesStack.back(); }
+    std::set<std::size_t>& curItems() { return evaluatedItemsStack.back(); }
+    void pushLocation() {
+        evaluatedPropertiesStack.emplace_back();
+        evaluatedItemsStack.emplace_back();
+    }
+    void popLocation() {
+        evaluatedPropertiesStack.pop_back();
+        evaluatedItemsStack.pop_back();
+    }
 
     struct Branch {
         std::size_t annotationMark = 0;
-        std::set<std::string> evaluatedProperties;
-        std::set<std::size_t> evaluatedItems;
+        std::vector<std::set<std::string>> evaluatedProperties;
+        std::vector<std::set<std::size_t>> evaluatedItems;
     };
 
     Branch beginBranch() {
         Branch b;
         b.annotationMark = annotations.snapshot();
-        b.evaluatedProperties = evaluatedProperties;
-        b.evaluatedItems = evaluatedItems;
+        b.evaluatedProperties = evaluatedPropertiesStack;
+        b.evaluatedItems = evaluatedItemsStack;
         return b;
     }
     /// Keep this branch's additions (annotations + evaluated coverage) in place.
@@ -346,8 +363,55 @@ struct ValidationContext {
     /// Discard this branch's output and restore annotations + coverage.
     void rollbackBranch(Branch const& b) {
         annotations.rollbackTo(b.annotationMark);
-        evaluatedProperties = b.evaluatedProperties;
-        evaluatedItems = b.evaluatedItems;
+        evaluatedPropertiesStack = b.evaluatedProperties;
+        evaluatedItemsStack = b.evaluatedItems;
+    }
+
+    /// Run a child evaluator against the CURRENT (base) coverage, capture only
+    /// the additions made at the current location into `acc*`, then restore
+    /// the coverage stacks to the base. This is the 2020-12 annotation-scope
+    /// rule: a subschema's unevaluated* check must NOT see its SIBLINGS'
+    /// coverage ("can't see inside cousins", unevaluatedProperties g22/g23/
+    /// g28) — the parent merges the accumulated additions after the group.
+    template <typename Fn>
+    ValidationResult evaluateAndCapture(Fn fn,
+                                        std::set<std::string>& accProps,
+                                        std::set<std::size_t>& accItems) {
+        std::vector<std::set<std::string>> baseProps = evaluatedPropertiesStack;
+        std::vector<std::set<std::size_t>> baseItems = evaluatedItemsStack;
+        std::set<std::string> const bProps = curProps();
+        std::set<std::size_t> const bItems = curItems();
+        ValidationResult r = fn();
+        for (auto const& k : curProps())
+            if (bProps.count(k) == 0) accProps.insert(k);
+        for (auto const& it : curItems())
+            if (bItems.count(it) == 0) accItems.insert(it);
+        evaluatedPropertiesStack = baseProps;
+        evaluatedItemsStack = baseItems;
+        return r;
+    }
+
+    /// success-only capture: additions are accumulated ONLY when `fn`
+    /// validates (anyOf/oneOf: a FAILED branch must never contribute
+    /// evaluated-property/item coverage).
+    template <typename Fn>
+    ValidationResult evaluateAndCaptureValid(Fn fn,
+                                             std::set<std::string>& accProps,
+                                             std::set<std::size_t>& accItems) {
+        std::vector<std::set<std::string>> baseProps = evaluatedPropertiesStack;
+        std::vector<std::set<std::size_t>> baseItems = evaluatedItemsStack;
+        std::set<std::string> const bProps = curProps();
+        std::set<std::size_t> const bItems = curItems();
+        ValidationResult r = fn();
+        if (r.success) {
+            for (auto const& k : curProps())
+                if (bProps.count(k) == 0) accProps.insert(k);
+            for (auto const& it : curItems())
+                if (bItems.count(it) == 0) accItems.insert(it);
+        }
+        evaluatedPropertiesStack = baseProps;
+        evaluatedItemsStack = baseItems;
+        return r;
     }
 };
 
@@ -375,13 +439,18 @@ public:
         if (node.booleanValue == BooleanValue::false_)
             return ValidationResult::invalidAt(path, "boolean value-schema false");
 
-        // Wave-2 unevaluatedProperties: snapshot the evaluated-property set at
-        // ENTRY so the exit check only considers keys evaluated WITHIN this
-        // node's subtree (applicators / object traversal included). Best-effort
-        // subset of full annotation semantics (FROZEN §10.3).
+        // Wave-2 unevaluatedProperties/Items: snapshot the evaluated coverage
+        // at ENTRY so the exit check only considers what was evaluated WITHIN
+        // this node's subtree (applicators / object/array traversal included).
+        // Best-effort implementation of the 2020-12 annotation semantics
+        // (FROZEN §10.3) with location-scoped coverage stacks.
         std::set<std::string> unevalEntry;
         if (node.hasUnevaluatedProperties && instance.isObject()) {
-            unevalEntry = ctx.evaluatedProperties;
+            unevalEntry = ctx.curProps();
+        }
+        std::set<std::size_t> unevalItemsEntry;
+        if (node.hasUnevaluatedItems && instance.isArray()) {
+            unevalItemsEntry = ctx.curItems();
         }
 
         // K-29 $ref: validate the generation-time-resolved target first, then
@@ -536,30 +605,85 @@ public:
         ValidationResult arrRes = this->validateArrayTraversal(node, instance, path, ctx);
         if (!arrRes.success) return arrRes;
 
-        // Best-effort unevaluatedProperties (bool false-form rejects; schema
-        // form validates). Only object instances are considered. Any key NOT
-        // evaluated within this node's subtree is "unevaluated".
-        if (node.hasUnevaluatedProperties && instance.isObject()) {
-            std::set<std::string> localEval;
-            for (auto const& p : ctx.evaluatedProperties)
-                if (unevalEntry.count(p) == 0) localEval.insert(p);
-            if (node.unevaluatedPropertiesRejects) {
-                for (std::string const& k : instance.objectKeys()) {
-                    if (localEval.count(k) == 0)
-                        return ValidationResult::invalidAt(
-                            path, "unevaluated property '" + k + "'");
-                }
-            } else if (node.unevaluatedSchema != kNoSchema) {
-                for (std::string const& k : instance.objectKeys()) {
-                    if (localEval.count(k) == 0) {
-                        RawInstance const m = instance.atMember(k.c_str());
-                        ValidationPath childPath = path;
-                        childPath.enter(k);
+        // if/then/else + dependentSchemas (annotations of the APPLIED branches
+        // count for unevaluated*; evaluated BEFORE the uneval check so the
+        // exit block sees them). Dependent triggers: the dependent schema
+        // validates in the current context whenever its key is present.
+        {
+            ValidationResult condRes = this->walkConditional(node, instance, path, ctx);
+            if (!condRes.success) return condRes;
+            if (instance.isObject()) {
+                for (auto const& dep : node.dependentSchemas) {
+                    if (instance.atMember(dep.first.c_str()).value != nullptr) {
                         ValidationResult r =
-                            this->validate(node.unevaluatedSchema, m, childPath, ctx);
+                            this->validate(dep.second, instance, path, ctx);
                         if (!r.success) return r;
                     }
                 }
+            }
+        }
+
+        // Best-effort unevaluatedProperties (bool false-form rejects; schema
+        // form validates and then marks keys evaluated; boolean-true form
+        // marks every remaining key evaluated). Only object instances are
+        // considered. A key is "unevaluated" when it was not yet evaluated at
+        // this node's entry and not added by this node's own subtree.
+        if (node.hasUnevaluatedProperties && instance.isObject()) {
+            std::vector<std::string> unevalKeys;
+            for (std::string const& k : instance.objectKeys()) {
+                if (unevalEntry.count(k) == 0 && ctx.curProps().count(k) == 0) {
+                    unevalKeys.push_back(k);
+                }
+            }
+            if (node.unevaluatedPropertiesRejects) {
+                if (!unevalKeys.empty())
+                    return ValidationResult::invalidAt(
+                        path, "unevaluated property '" + unevalKeys.front() + "'");
+            } else if (node.unevaluatedSchema != kNoSchema) {
+                for (std::string const& k : unevalKeys) {
+                    RawInstance const m = instance.atMember(k.c_str());
+                    ValidationPath childPath = path;
+                    childPath.enter(k);
+                    ctx.pushLocation();
+                    ValidationResult r =
+                        this->validate(node.unevaluatedSchema, m, childPath, ctx);
+                    ctx.popLocation();
+                    if (!r.success) return r;
+                    ctx.curProps().insert(k);  // examined by unevaluatedProperties -> evaluated
+                }
+            } else {
+                // boolean-true form: every remaining key is examined.
+                ctx.curProps().insert(unevalKeys.begin(), unevalKeys.end());
+            }
+        }
+
+        // Wave-2.5 unevaluatedItems: array analogue with evaluated ITEM
+        // positions at the current array location.
+        if (node.hasUnevaluatedItems && instance.isArray()) {
+            std::vector<std::size_t> unevalIdx;
+            for (std::size_t i = 0; i < instance.size(); ++i) {
+                if (unevalItemsEntry.count(i) == 0 && ctx.curItems().count(i) == 0) {
+                    unevalIdx.push_back(i);
+                }
+            }
+            if (node.unevaluatedItemsRejects) {
+                if (!unevalIdx.empty())
+                    return ValidationResult::invalidAt(
+                        path, "unevaluated item at index " + std::to_string(unevalIdx.front()));
+            } else if (node.unevaluatedItemsSchema != kNoSchema) {
+                for (std::size_t i : unevalIdx) {
+                    RawInstance const m = instance.atIndex(i);
+                    ValidationPath childPath = path;
+                    childPath.enterIndex(i);
+                    ctx.pushLocation();
+                    ValidationResult r =
+                        this->validate(node.unevaluatedItemsSchema, m, childPath, ctx);
+                    ctx.popLocation();
+                    if (!r.success) return r;
+                    ctx.curItems().insert(i);  // examined -> evaluated
+                }
+            } else {
+                ctx.curItems().insert(unevalIdx.begin(), unevalIdx.end());
             }
         }
 
@@ -701,48 +825,102 @@ private:
         }
     }
 
-    /// allOf/anyOf/oneOf applicator walk with transactional annotation merging.
-    /// Only SUCCESSFUL branches retain their evaluated-property/item coverage
-    /// and annotations (required for correct anyOf/oneOf + unevaluated*).
+    /// allOf/anyOf/oneOf applicator walk with transactional, sibling-isolated
+    /// annotation merging. All three applicators may coexist (2020-12); each
+    /// group walks its own member rows. Members are evaluated against the
+    /// walk-entry coverage (a member's unevaluated* check never sees its
+    /// SIBLINGS' coverage — "can't see inside cousins"), and only SUCCESSFUL
+    /// branches contribute evaluated-property/item coverage and annotations —
+    /// the rule unevaluated* relies on. (The REF applicator hop lives in
+    /// validateSchemaNode; pure-ref nodes have empty member lists here.)
     ValidationResult walkApplicators(SchemaNode const& node, RawInstance const& instance,
                                      ValidationPath& path, ValidationContext& ctx) const {
-        switch (node.applicator) {
-            case ApplicatorKind::none:
-            case ApplicatorKind::ref:   // handled by the caller's fall-through
-                return ValidationResult::valid();
-            case ApplicatorKind::allOf: {
-                for (SchemaIndex c : node.children) {
-                    ValidationResult r = this->validate(c, instance, path, ctx);
-                    if (!r.success) return r;
-                }
-                return ValidationResult::valid();
+        std::set<std::string> accProps;
+        std::set<std::size_t> accItems;
+
+        // allOf: EVERY member must validate; all successful members contribute.
+        for (SchemaIndex c : node.allOfChildren) {
+            ValidationContext::Branch b = ctx.beginBranch();
+            ValidationResult r = ctx.evaluateAndCaptureValid(
+                [&]() { return this->validate(c, instance, path, ctx); },
+                accProps, accItems);
+            if (!r.success) {
+                ctx.rollbackBranch(b);
+                return r;
             }
-            case ApplicatorKind::anyOf: {
-                bool any = false;
-                for (SchemaIndex c : node.children) {
-                    ValidationContext::Branch b = ctx.beginBranch();
-                    ValidationResult r = this->validate(c, instance, path, ctx);
-                    if (r.success) { any = true; ctx.commitBranch(b); }
-                    else { ctx.rollbackBranch(b); }
-                }
-                if (any) return ValidationResult::valid();
-                return ValidationResult::invalidAt(path, "anyOf: no branch matched");
+        }
+        // anyOf: at least one must validate; successful branches contribute.
+        if (!node.anyOfChildren.empty()) {
+            bool any = false;
+            std::set<std::string> grpProps;
+            std::set<std::size_t> grpItems;
+            for (SchemaIndex c : node.anyOfChildren) {
+                ValidationContext::Branch b = ctx.beginBranch();
+                ValidationResult r = ctx.evaluateAndCaptureValid(
+                    [&]() { return this->validate(c, instance, path, ctx); },
+                    grpProps, grpItems);
+                if (r.success) { any = true; }
+                else { ctx.rollbackBranch(b); }
             }
-            case ApplicatorKind::oneOf: {
-                std::size_t matches = 0;
-                for (SchemaIndex c : node.children) {
-                    ValidationContext::Branch b = ctx.beginBranch();
-                    ValidationResult r = this->validate(c, instance, path, ctx);
-                    if (r.success) { ++matches; ctx.commitBranch(b); }
-                    else { ctx.rollbackBranch(b); }
-                }
-                if (matches == 1) return ValidationResult::valid();
-                if (matches == 0)
-                    return ValidationResult::invalidAt(path, "oneOf: no branch matched");
-                return ValidationResult::invalidAt(path, "oneOf: more than one branch matched");
+            if (!any) return ValidationResult::invalidAt(path, "anyOf: no branch matched");
+            accProps.insert(grpProps.begin(), grpProps.end());
+            accItems.insert(grpItems.begin(), grpItems.end());
+        }
+        // oneOf: EXACTLY one must validate; the successful branch contributes.
+        if (!node.oneOfChildren.empty()) {
+            std::size_t matches = 0;
+            std::set<std::string> grpProps;
+            std::set<std::size_t> grpItems;
+            for (SchemaIndex c : node.oneOfChildren) {
+                ValidationContext::Branch b = ctx.beginBranch();
+                ValidationResult r = ctx.evaluateAndCaptureValid(
+                    [&]() { return this->validate(c, instance, path, ctx); },
+                    grpProps, grpItems);
+                if (r.success) { ++matches; }
+                else { ctx.rollbackBranch(b); }
             }
-            default:
-                break;
+            if (matches != 1) {
+                return ValidationResult::invalidAt(path,
+                    matches == 0 ? "oneOf: no branch matched"
+                                 : "oneOf: more than one branch matched");
+            }
+            accProps.insert(grpProps.begin(), grpProps.end());
+            accItems.insert(grpItems.begin(), grpItems.end());
+        }
+        // Merge the accumulated (sibling-isolated) coverage at this location,
+        // so enclosing unevaluated* checks see the successful members' output.
+        ctx.curProps().insert(accProps.begin(), accProps.end());
+        ctx.curItems().insert(accItems.begin(), accItems.end());
+        return ValidationResult::valid();
+    }
+
+    /// if/then/else: the `if` guard runs against a THROWAWAY capture; when it
+    /// SUCCEEDS its annotations are collected (applicable-subschema rule) and
+    /// `then` applies in the current context; when it FAILS, `else` applies.
+    /// Annotations of the not-applied branch never leak. Neither path fails
+    /// this node on its own.
+    ValidationResult walkConditional(SchemaNode const& node,
+                                     RawInstance const& instance,
+                                     ValidationPath& path,
+                                     ValidationContext& ctx) const {
+        if (!node.hasIf) return ValidationResult::valid();
+        std::set<std::string> ifProps;
+        std::set<std::size_t> ifItems;
+        ValidationResult ifRes = ctx.evaluateAndCapture(
+            [&] { return this->validate(node.ifSchema, instance, path, ctx); },
+            ifProps, ifItems);
+        if (ifRes.success) {
+            ctx.curProps().insert(ifProps.begin(), ifProps.end());
+            ctx.curItems().insert(ifItems.begin(), ifItems.end());
+            if (node.hasThen) {
+                ValidationResult r =
+                    this->validate(node.thenSchema, instance, path, ctx);
+                if (!r.success) return r;
+            }
+        } else if (node.hasElse) {
+            ValidationResult r =
+                this->validate(node.elseSchema, instance, path, ctx);
+            if (!r.success) return r;
         }
         return ValidationResult::valid();
     }
@@ -769,15 +947,20 @@ private:
         }
 
         // Declared properties: validate each present member against its
-        // property subschema; absent members are not evaluated.
+        // property subschema; absent members are not evaluated. Member VALUES
+        // live at a nested instance location, so their evaluation happens in
+        // a fresh location scope (their keys must never leak into this
+        // object's unevaluated* check).
         for (PropertyBinding const& pb : node.properties) {
             RawInstance m = instance.atMember(pb.name.c_str());
             if (m.value == nullptr) continue;
             ValidationPath childPath = path;
             childPath.enter(pb.name);
+            ctx.pushLocation();
             ValidationResult r = this->validate(pb.node, m, childPath, ctx);
+            ctx.popLocation();
             if (!r.success) return r;
-            ctx.evaluatedProperties.insert(pb.name);
+            ctx.curProps().insert(pb.name);
         }
 
         // Wave-2.5 patternProperties: EVERY member whose name matches any
@@ -796,10 +979,12 @@ private:
                         RawInstance const m = instance.atMember(k.c_str());
                         ValidationPath childPath = path;
                         childPath.enter(k);
+                        ctx.pushLocation();
                         ValidationResult r =
                             this->validate(pb.node, m, childPath, ctx);
+                        ctx.popLocation();
                         if (!r.success) return r;
-                        ctx.evaluatedProperties.insert(k);
+                        ctx.curProps().insert(k);
                     }
                 }
             }
@@ -839,16 +1024,18 @@ private:
                 if (node.additionalSchema != kNoSchema) {
                     ValidationPath childPath = path;
                     childPath.enter(k);
+                    ctx.pushLocation();
                     ValidationResult r =
                         this->validate(node.additionalSchema, m, childPath, ctx);
+                    ctx.popLocation();
                     if (!r.success) return r;
                 }
-                ctx.evaluatedProperties.insert(k);
+                ctx.curProps().insert(k);
             }
         } else if (node.additionalProperties == AdditionalPropertiesKind::allowed) {
             for (std::string const& k : instance.objectKeys()) {
                 if (isCovered(k)) continue;
-                ctx.evaluatedProperties.insert(k);
+                ctx.curProps().insert(k);
             }
         }
 
@@ -866,15 +1053,18 @@ private:
         if (node.hasMaxItems && node.maxItems < ExactNumber::fromUint(n))
             return ValidationResult::invalidAt(path, "array has more items than maxItems");
 
-        // prefixItems: each schema applies to the item at ITS index.
+        // prefixItems: each schema applies to the item at ITS index. Item
+        // values live at nested array locations (fresh scopes).
         std::size_t const prefixCount = node.prefixItems.size();
         for (std::size_t i = 0; i < prefixCount && i < n; ++i) {
             RawInstance m = instance.atIndex(i);
             ValidationPath childPath = path;
             childPath.enterIndex(i);
+            ctx.pushLocation();
             ValidationResult r = this->validate(node.prefixItems[i], m, childPath, ctx);
+            ctx.popLocation();
             if (!r.success) return r;
-            ctx.evaluatedItems.insert(i);
+            ctx.curItems().insert(i);
         }
 
         // items: applies to the REMAINDER (indices >= prefixItems.size()).
@@ -883,9 +1073,11 @@ private:
                 RawInstance m = instance.atIndex(i);
                 ValidationPath childPath = path;
                 childPath.enterIndex(i);
+                ctx.pushLocation();
                 ValidationResult r = this->validate(node.items, m, childPath, ctx);
+                ctx.popLocation();
                 if (!r.success) return r;
-                ctx.evaluatedItems.insert(i);
+                ctx.curItems().insert(i);
             }
         }
 

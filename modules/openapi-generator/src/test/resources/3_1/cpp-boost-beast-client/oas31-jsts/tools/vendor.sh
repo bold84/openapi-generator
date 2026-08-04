@@ -54,5 +54,22 @@ mkdir -p "${TARGET}"
 cp -r "${TMP}/clone/tests/draft2020-12" "${TARGET}/tests"
 cp -r "${TMP}/clone/remotes" "${TARGET}/remotes"
 
+# Runner-side vault patch (Wave-3): the upstream remotes tree omits
+# draft2020-12/the-nested-id.json even though nested-absolute-ref-to-string.json
+# resolves to it (its $defs.bar declares the $id
+# http://localhost:1234/draft2020-12/the-nested-id.json with type:string, and
+# the root $ref points there). The synthetic bytes below ARE that resource
+# (authoritative from the declared $id); re-materialised here so the vault is
+# self-consistent for the refRemote slice. Without it, the openapi-generator
+# reader HTTP-fetches the URL at parse time (Connection refused -> BLOCKED).
+mkdir -p "${TARGET}/remotes/draft2020-12"
+cat > "${TARGET}/remotes/draft2020-12/the-nested-id.json" <<'JSON'
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "http://localhost:1234/draft2020-12/the-nested-id.json",
+    "type": "string"
+}
+JSON
+
 echo "Vendored 2020-12 corpus to ${TARGET} at ${SHA}"
 echo "  test file: $(find "${TARGET}/tests" -name '*.json' | wc -l | tr -d ' ') json files"

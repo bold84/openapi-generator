@@ -35,11 +35,13 @@ dialect: "https://spec.openapis.org/oas/3.1/dialect/2024-11-10"
 # Draft 2020-12. The underlying metaschema dialect for the vendored JSTS pack
 # is JSON Schema Draft 2020-12 (the 2020-12 branch).
 
-runnerVersion: "0.1.0-wave0"
+runnerVersion: "0.2.0-wave3"
 # Version of the L2/L5/L6 JSTS runner (compiled C++ Boost raw-instance
 # validator + OAS-wrapped adapter). Bump whenever the runner's discovery,
 # evaluation, or reporting behaviour changes so recorded numbers stay
-# meaningful against the baseline.
+# meaningful against the baseline. Wave-3 bump: multi-applicator engine,
+# unevaluated* location stacks, if/then/else + dependentSchemas support,
+# inline-allOf-member hoisting, and the remotes vault (refRemote slice).
 
 # =============================================================================
 # Exclusion entry schema (documentation only — the ledger is currently empty)
