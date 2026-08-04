@@ -34,15 +34,17 @@
 # the committed JSTS numeric/boolean GENERATED-path subset report
 # (`oas31-jsts/wave1-numeric-subset-report.md`, 10 files / 281 cases through the
 # real generator's validate_<id> dispatch) now carry real per-keyword runtime
-# evidence. Per-file (PASS/FAIL/BLOCKED): boolean_schema 0/0/18 (fail-closed),
-# not 0/0/40 (fail-closed), const 45/9/0, enum 31/12/8, minimum 11/0/0,
-# maximum 8/0/0, exclusiveMinimum 4/0/0, exclusiveMaximum 4/0/0, multipleOf
-# 11/0/0, type 79/1/0. Because promotion requires the JSTS group green,
-# minimum/maximum/exclusiveMinimum/exclusiveMaximum/multipleOf are `supported`
-# (0 FAIL, 0 BLOCKED); type and enum are `deferred` (residual FAIL/BLOCKED
-# even though their scalar core is green); const is `deferred` (non-scalar
-# FAIL); boolean_schema and not stay `fail-closed` (generation rejects). No row
-# is `supported` without real GENERATED-path or Phase-2 runtime evidence.
+# evidence. Wave-1 COMPLETE update (committed `oas31-jsts/wave1-complete-subset-
+# report.md`, HEAD 36c11de5 GENERATED-path run): Per-file (PASS/FAIL/BLOCKED):
+# boolean_schema 18/0/0, not 36/4/0, const 54/0/0, enum 46/5/0, uniqueItems
+# 28/0/41, ref 6/5/68 (311 cases total). Because promotion requires the JSTS
+# group zero-FAIL and zero-BLOCKED, boolean_schema and const are `supported`
+# (real runtime evidence); not/enum remain `deferred` (residual FAIL even
+# though zero-BLOCKED); uniqueItems and $ref remain `deferred` (BLOCKED /
+# partial). Numeric rows (minimum/maximum/exclusive*/multipleOf `supported`,
+# type `deferred`) are unchanged from the numeric-subset report, which owns
+# those rows and is NOT re-measured here. No row is `supported` without real
+# GENERATED-path or Phase-2 runtime evidence.
 #
 # Row contract (plan §8.1): keyword, vocabularyUri, classification, profiles,
 # status, acceptedSchemaDomain, sourceEvidence, parserEvidence, irEvidence,
@@ -103,9 +105,9 @@
   sourceEvidence: "CppBoostBeastClientCodegen buildCompositionDescriptor (resolves $ref with cycle detection)"
   parserEvidence: "swagger-models Schema.get$ref()"
   irEvidence: "CompositionBranchDescriptor.sourceRef/resolvedName"
-  runtimeEvidence: ""
-  jstsGroups: []
-  notes: "Component-level $ref and cycle detection supported. Full URI/base resolution is Wave 1. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: ref.json 6/79 PASS, 5 FAIL, 68 BLOCKED)"
+  jstsGroups: [ref]
+  notes: "Local non-`$defs` $ref resolves to a real SchemaNode at generation time (K-29 registry); resource identity/baseUri/dialect/anchor carried on SchemaResource. PARTIAL, NOT SUPPORTED: 68 BLOCKED = top-level `$defs`/inner-`$id` scope, remote http://example.com/*, and URN refs fail-closed; 5 FAIL = `$ref` property-name collision / partial inner-`$id` relative scope. Honest claim: local in-scope refs only."
 
 - keyword: "$defs"
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
@@ -255,18 +257,31 @@
   notes: "Runtime accept/reject proven by the compiled Phase-2 raw-instance runner (K-18)."
   
 
+- keyword: boolean_schema
+  vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
+  classification: Value Schema (K-03)
+  profiles: [S-V]
+  status: supported
+  acceptedSchemaDomain: OAS 3.1 true/false value schema
+  sourceEvidence: "CppBoostBeastClientCodegen IR emission (validation-boolean-value -> BooleanValue::true_/false_) + oas31_validator.hpp K-03"
+  parserEvidence: "Schema.getBooleanSchemaValue()"
+  irEvidence: "IrNode.booleanValue -> BooleanValue enum (oas31_ir.hpp)"
+  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: boolean_schema.json 18/18 PASS, 0 FAIL, 0 BLOCKED)"
+  jstsGroups: [boolean_schema]
+  notes: "OAS 3.1 `true`/`false` value-schemas SUPPORTED on real GENERATED-path runtime evidence (18/0/0). OAS 3.0 documents still reject a bare boolean schema at generation (documented limitation); 3.0 dual-path regression intact."
+
 - keyword: not
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
   classification: Applicator (NOT)
   profiles: [S-V]
-  status: fail-closed
+  status: deferred
   acceptedSchemaDomain: invert subschema result
-  sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('not'))"
+  sourceEvidence: "CppBoostBeastClientCodegen scanner (validation-not-schema -> IrNode.notChild) + oas31_validator.hpp K-01"
   parserEvidence: "Schema.getNot()"
-  irEvidence: "branch.unsupportedAssertions"
-  runtimeEvidence: ""
-  jstsGroups: []
-  notes: "Always fail-closed because it flips membership. Wave 1.6 (K-01)."
+  irEvidence: "branch.validateParams['validation-not-schema']"
+  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: not.json 36/40 PASS, 4 FAIL, 0 BLOCKED)"
+  jstsGroups: [not]
+  notes: "`not` is no longer fail-closed: it generates and runs (0 BLOCKED). NOT yet SUPPORTED: 4 semantic inversion FAILs (complex `not`{type+properties} x2, `not`{} inside properties x1, `not`+annotation/unevaluatedProperties x1) keep it out of zero-FAIL/zero-BLOCKED. Single-level nested `not` subschema densified flat; deeper/property-level `not` is Wave 2+."
 
 - keyword: if
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
@@ -465,22 +480,22 @@
   sourceEvidence: "CppBoostBeastClientCodegen scanner + validation-enum emission"
   parserEvidence: "Schema.getEnum()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-enum-values']"
-  runtimeEvidence: "oas31-jsts/wave1-numeric-subset-report.md (GENERATED-path: enum.json 31/51 PASS, 12 FAIL, 8 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: enum.json 46/51 PASS, 5 FAIL, 0 BLOCKED)"
   jstsGroups: [enum]
-  notes: "Scalar-enum cases are largely green and Phase-2 raw-instance (anyof-enum-union, allof-enum-intersection, oneof-string-string-enum-overlap) pass, but enum is NOT fully GS-supported: a G1 compile defect (5) + G2 run-BLOCKED (3) and 12 FAIL incl. mixed/object-enum drop it out of zero-FAIL/zero-BLOCKED. Deferred until the compile defect and non-scalar enum exact equality land."
+  notes: "Scalar + deep-equality enum members largely green (0 BLOCKED); the prior 12 FAILs drop to 5 via the exact deep-equality engine (K-34). NOT yet SUPPORTED: 5 FAILs remain — object-with-`properties`+`required` enum groups (G3 x4) and `enum:[]` reject-all (G14 x1), both outside the scalar/deep-equality path. Deferred until object-property/required and empty-enum handling land (Wave 2+)."
 
 - keyword: const
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: deep equality across JSON kinds
   sourceEvidence: "CppBoostBeastClientCodegen scanner + validation-const emission"
   parserEvidence: "Schema.getConst()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-const-*']"
-  runtimeEvidence: "oas31-jsts/wave1-numeric-subset-report.md (GENERATED-path: const.json 45/54 PASS, 9 FAIL, 0 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: const.json 54/54 PASS, 0 FAIL, 0 BLOCKED; exact deep equality all JSON kinds, K-30)"
   jstsGroups: [const]
-  notes: "Scalar-const is GENERATED-path green, but const is NOT GS-supported: 9 FAIL = non-scalar const (object/array/null/nul-string). EXACT-MATH equals via ExactNumber (D1) for the scalar path. Deferred until non-scalar const exact equality lands (GS1/GS2)."
+  notes: "const SUPPORTED on real GENERATED-path runtime evidence (54/0/0). Non-scalar const (object/array/null/boolean/nul-string/decimal-number) exact deep-equality landed (K-30) via ExactNumber — the prior 9 non-scalar FAILs are resolved. Deep store limitation documented: numbers nested inside stored const values canonicalise through the double representability gate only when beyond exact int/float."
 
 - keyword: multipleOf
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
@@ -621,9 +636,9 @@
   sourceEvidence: "CppBoostBeastClientCodegen scanner (supported.add('unique-items'))"
   parserEvidence: "Schema.getUniqueItems()"
   irEvidence: "CompositionBranchDescriptor.validateParams['has-validation-unique-items']"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: uniqueItems.json 28/69 PASS, 0 FAIL, 41 BLOCKED)"
   jstsGroups: [uniqueItems]
-  notes: "EXACT-MATH CAVEAT (K-22): arbitrary-precision deep equality is Wave 1 (K-30). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+  notes: "Exact deep-uniqueness (1 == 1.0 is a duplicate, K-22) GENERATED-path green on naive arrays (28/0/0). NOT yet SUPPORTED: 41 BLOCKED = `uniqueItems:false` emission gap (15) + `prefixItems`/`additionalItems` array-structural groups (26, out of Wave-1 scope but counted honestly). core `uniqueItems:true` row is zero-FAIL; blocked on the structural/`:false` emission gap."
 
 - keyword: maxContains
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
