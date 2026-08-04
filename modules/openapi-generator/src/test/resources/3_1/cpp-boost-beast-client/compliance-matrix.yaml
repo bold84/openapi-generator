@@ -36,13 +36,21 @@
 # real generator's validate_<id> dispatch) now carry real per-keyword runtime
 # evidence. Wave-1 COMPLETE update (committed `oas31-jsts/wave1-complete-subset-
 # report.md`, HEAD 36c11de5 GENERATED-path run): Per-file (PASS/FAIL/BLOCKED):
-# boolean_schema 18/0/0, not 36/4/0, const 54/0/0, enum 46/5/0, uniqueItems
-# 28/0/41, ref 6/5/68 (311 cases total). Because promotion requires the JSTS
-# group zero-FAIL and zero-BLOCKED, boolean_schema and const are `supported`
+# boolean_schema 18/0/0, const 54/0/0 (both SUPPORTED); not 36/4/0, enum 46/5/0,
+# uniqueItems 28/0/41, ref 6/5/68 (311 cases total). Because promotion requires
+# the JSTS group zero-FAIL and zero-BLOCKED, boolean_schema and const are `supported`
 # (real runtime evidence); not/enum remain `deferred` (residual FAIL even
 # though zero-BLOCKED); uniqueItems and $ref remain `deferred` (BLOCKED /
-# partial). Numeric rows (minimum/maximum/exclusive*/multipleOf `supported`,
-# type `deferred`) are unchanged from the numeric-subset report, which owns
+# partial). Wave-2 STRUCTURAL update (committed `oas31-jsts/wave2-structural-
+# subset-report.md`, 082461df8f5 + engine 1a1e8c28, 13 files / 378 cases GENERATED
+# path: 361 PASS / 7 FAIL / 10 BLOCKED): uniqueItems 69/0/0, required 18/0/0,
+# prefixItems 11/0/0, items 29/0/0 -> all four SUPPORTED (zero-FAIL AND
+# zero-BLOCKED). not 39/1/0, enum 50/1/0, ref 78/1/0, properties 26/2/0 remain
+# `deferred` (zero-BLOCKED but residual semantic FAILs; see per-row notes).
+# additionalProperties 17/2/2 and min/maxProperties, min/maxItems (0 FAIL but 2
+# BLOCKED each, schema-side decimal-bound emission gap) remain `deferred`.
+# Numeric rows (minimum/maximum/exclusive*/multipleOf `supported`, type
+# `deferred`) are unchanged from the numeric-subset report, which owns
 # those rows and is NOT re-measured here. No row is `supported` without real
 # GENERATED-path or Phase-2 runtime evidence.
 #
@@ -105,9 +113,9 @@
   sourceEvidence: "CppBoostBeastClientCodegen buildCompositionDescriptor (resolves $ref with cycle detection)"
   parserEvidence: "swagger-models Schema.get$ref()"
   irEvidence: "CompositionBranchDescriptor.sourceRef/resolvedName"
-  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: ref.json 6/79 PASS, 5 FAIL, 68 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: ref.json 78/79 PASS, 1 FAIL, 0 BLOCKED)"
   jstsGroups: [ref]
-  notes: "Local non-`$defs` $ref resolves to a real SchemaNode at generation time (K-29 registry); resource identity/baseUri/dialect/anchor carried on SchemaResource. PARTIAL, NOT SUPPORTED: 68 BLOCKED = top-level `$defs`/inner-`$id` scope, remote http://example.com/*, and URN refs fail-closed; 5 FAIL = `$ref` property-name collision / partial inner-`$id` relative scope. Honest claim: local in-scope refs only."
+  notes: "zero-BLOCKED (78/1/0, was 6/5/68): local pointer refs, $defs chaining (+$defs surfacing), escaped pointers, $id/anchor/relative-URI/URN-with-$defs refs all resolve through hoisted components (K-29 registry). NOT SUPPORTED: 1 residual FAIL = remote metaschema ref https://json-schema.org/draft/2020-12/schema inert (G6; documented remote-partial)."
 
 - keyword: "$defs"
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/core
@@ -279,9 +287,9 @@
   sourceEvidence: "CppBoostBeastClientCodegen scanner (validation-not-schema -> IrNode.notChild) + oas31_validator.hpp K-01"
   parserEvidence: "Schema.getNot()"
   irEvidence: "branch.validateParams['validation-not-schema']"
-  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: not.json 36/40 PASS, 4 FAIL, 0 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: not.json 39/40 PASS, 1 FAIL, 0 BLOCKED)"
   jstsGroups: [not]
-  notes: "`not` is no longer fail-closed: it generates and runs (0 BLOCKED). NOT yet SUPPORTED: 4 semantic inversion FAILs (complex `not`{type+properties} x2, `not`{} inside properties x1, `not`+annotation/unevaluatedProperties x1) keep it out of zero-FAIL/zero-BLOCKED. Single-level nested `not` subschema densified flat; deeper/property-level `not` is Wave 2+."
+  notes: "zero-BLOCKED (39/1/0): complex-object not and not:{} inside properties are now correct (4 Wave-1 FAILs resolved via full subschema evaluation at depth). NOT SUPPORTED: 1 residual FAIL = annotation/unevaluatedProperties collection inside a not (G8; annotations are Wave-3, out of scope)."
 
 - keyword: if
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
@@ -331,9 +339,9 @@
   sourceEvidence: "CppBoostBeastClientCodegen fromModel object storage"
   parserEvidence: "ObjectSchema.getProperties()"
   irEvidence: "AllOfIntersection.properties"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: properties.json 26/28 PASS, 2 FAIL, 0 BLOCKED)"
   jstsGroups: []
-  notes: "Everywhere-not-only-top-level is Wave 2.1 (K-04). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2.1 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+  notes: "zero-BLOCKED (26/2/0): property subschemas validated at path-depth; declared properties are NEVER additionally evaluated (tri-state additionalProperties applies to UNLISTED keys only). NOT SUPPORTED: 2 residual FAILs are patternProperties-interplay (Wave-3, out of scope)."
 
 - keyword: patternProperties
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
@@ -352,14 +360,14 @@
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
   classification: Applicator
   profiles: [S-V]
-  status: fail-closed
+  status: deferred
   acceptedSchemaDomain: constrained additionalProperties
   sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('additional-properties') when constrained)"
   parserEvidence: "Schema.getAdditionalProperties() (Schema|Boolean)"
   irEvidence: "branch.unsupportedAssertions"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: additionalProperties.json 17/21 PASS, 2 FAIL, 2 BLOCKED)"
   jstsGroups: []
-  notes: "true/absent treated as no-op (supported); false/constrained schema fail-closed. Wave 2.1 (K-04)."
+  notes: "No longer fail-closed: tri-state (absent/true/false/schema) landed; schema-form validates unlisted values only and declared properties are never double-evaluated. Deferred: 2 residual FAILs (patternProperties-interplay) + 2 BLOCKED (schema-side decimal-bound cases) keep it out of zero-FAIL/zero-BLOCKED."
 
 - keyword: propertyNames
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
@@ -391,27 +399,27 @@
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
   classification: Applicator
   profiles: [S-V]
-  status: fail-closed
+  status: supported
   acceptedSchemaDomain: tuple validation by index
   sourceEvidence: "CppBoostBeastClientCodegen scanner (unsupported.add('array-prefix-items'); allOf exempt)"
   parserEvidence: "Schema.getPrefixItems()"
   irEvidence: "branch.unsupportedAssertions"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: prefixItems.json 11/11 PASS, 0 FAIL, 0 BLOCKED - zero-FAIL AND zero-BLOCKED)"
   jstsGroups: []
-  notes: "Fail-closed for oneOf/anyOf; allOf exempted by design. Wave 2.2 (K-06)."
+  notes: Wave-2 SUPPORTED on real GENERATED-path runtime evidence (11/0/0, zero-FAIL AND zero-BLOCKED, 2020-12). By-index traversal with items start-index adjustment; no longer fail-closed.
 
 - keyword: items
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
   classification: Applicator
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: post-prefix array items (OAS-required presence)
   sourceEvidence: "CppBoostBeastClientCodegen scanner (items not fail-closed; OAS-required)"
   parserEvidence: "ArraySchema.getItems()"
-  irEvidence: ""
-  runtimeEvidence: ""
-  jstsGroups: []
-  notes: "Presence alone does not affect membership beyond type validation. Wave 2.2 (K-06). [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2.2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+  irEvidence: "SchemaNode.prefixItems + SchemaNode.items (SchemaIndex), FROZEN s10 (oas31_ir.hpp); emitter densifies prefixItems/items + remainder dispatch (oas31_schema_validate.mustache)"
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: items.json 29/29 PASS, 0 FAIL, 0 BLOCKED - zero-FAIL AND zero-BLOCKED)"
+  jstsGroups: [items]
+  notes: Wave-2 SUPPORTED on real GENERATED-path runtime evidence (29/0/0, zero-FAIL AND zero-BLOCKED, 2020-12). Remainder semantics (prefixItems then items), items:false, nested items, and $defs-referenced items now run via $defs surfacing (6 Wave-1/early-Wave-2 BLOCKED cases unblocked).
 
 - keyword: contains
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/applicator
@@ -480,9 +488,9 @@
   sourceEvidence: "CppBoostBeastClientCodegen scanner + validation-enum emission"
   parserEvidence: "Schema.getEnum()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-enum-values']"
-  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: enum.json 46/51 PASS, 5 FAIL, 0 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: enum.json 50/51 PASS, 1 FAIL, 0 BLOCKED)"
   jstsGroups: [enum]
-  notes: "Scalar + deep-equality enum members largely green (0 BLOCKED); the prior 12 FAILs drop to 5 via the exact deep-equality engine (K-34). NOT yet SUPPORTED: 5 FAILs remain — object-with-`properties`+`required` enum groups (G3 x4) and `enum:[]` reject-all (G14 x1), both outside the scalar/deep-equality path. Deferred until object-property/required and empty-enum handling land (Wave 2+)."
+  notes: "zero-BLOCKED (50/1/0): object-with-properties+required deep enum members now pass (Wave-1 G3 x4 resolved via object traversal + container-depth lexemes). NOT SUPPORTED: 1 residual FAIL = empty enum:[] reject-all (G14; generator type-inference drops the empty enum)."
 
 - keyword: const
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
@@ -610,9 +618,9 @@
   sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-max-items emission"
   parserEvidence: "Schema.getMaxItems()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-max-items']"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: maxItems.json 4/6 PASS, 0 FAIL, 2 BLOCKED)"
   jstsGroups: [maxItems]
-  notes: " [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+  notes: "Runs via array traversal (4/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. maxItems: 1.0) are dropped at emission (swagger-models Integer getMaxItems) - decimal-bound preservation is an open item."
 
 - keyword: minItems
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
@@ -623,22 +631,22 @@
   sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-min-items emission"
   parserEvidence: "Schema.getMinItems()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-min-items']"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: minItems.json 4/6 PASS, 0 FAIL, 2 BLOCKED)"
   jstsGroups: [minItems]
-  notes: " [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+  notes: "Runs via array traversal (4/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. minItems: 1.0) are dropped at emission (swagger-models Integer getMinItems) - decimal-bound preservation is an open item."
 
 - keyword: uniqueItems
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: deep JSON equality
   sourceEvidence: "CppBoostBeastClientCodegen scanner (supported.add('unique-items'))"
   parserEvidence: "Schema.getUniqueItems()"
   irEvidence: "CompositionBranchDescriptor.validateParams['has-validation-unique-items']"
-  runtimeEvidence: "oas31-jsts/wave1-complete-subset-report.md (GENERATED-path: uniqueItems.json 28/69 PASS, 0 FAIL, 41 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: uniqueItems.json 69/69 PASS, 0 FAIL, 0 BLOCKED - zero-FAIL AND zero-BLOCKED)"
   jstsGroups: [uniqueItems]
-  notes: "Exact deep-uniqueness (1 == 1.0 is a duplicate, K-22) GENERATED-path green on naive arrays (28/0/0). NOT yet SUPPORTED: 41 BLOCKED = `uniqueItems:false` emission gap (15) + `prefixItems`/`additionalItems` array-structural groups (26, out of Wave-1 scope but counted honestly). core `uniqueItems:true` row is zero-FAIL; blocked on the structural/`:false` emission gap."
+  notes: Wave-2 SUPPORTED on real GENERATED-path runtime evidence (69/0/0, zero-FAIL AND zero-BLOCKED, K-22). Exact deep-uniqueness across ALL JSON kinds incl. 1 vs 1.0 vs 1e0 via container-depth lexemes; uniqueItems:false no-op emission fixed (the 15 Wave-1 BLOCKED cases now run and pass).
 
 - keyword: maxContains
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
@@ -670,40 +678,40 @@
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: fail-closed
+  status: deferred
   acceptedSchemaDomain: object member count
   sourceEvidence: "CppBoostBeastClientCodegen scanner (object-property-count)"
   parserEvidence: "Schema.getMaxProperties()"
   irEvidence: "branch.unsupportedAssertions"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: maxProperties.json 8/10 PASS, 0 FAIL, 2 BLOCKED)"
   jstsGroups: [maxProperties]
-  notes: "Wave 2.1/2.5 (K-05)."
+  notes: "Runs via object traversal (8/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. maxProperties: 1.0) are dropped at emission (swagger-models Integer getMaxProperties) - decimal-bound preservation is an open item."
 
 - keyword: minProperties
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: fail-closed
+  status: deferred
   acceptedSchemaDomain: object member count
   sourceEvidence: "CppBoostBeastClientCodegen scanner (object-property-count)"
   parserEvidence: "Schema.getMinProperties()"
   irEvidence: "branch.unsupportedAssertions"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: minProperties.json 8/10 PASS, 0 FAIL, 2 BLOCKED)"
   jstsGroups: [minProperties]
-  notes: "Wave 2.1/2.5 (K-05)."
+  notes: "Runs via object traversal (8/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. minProperties: 1.0) are dropped at emission (swagger-models Integer getMinProperties) - decimal-bound preservation is an open item."
 
 - keyword: required
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: object property presence (unique names)
   sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-required emission"
   parserEvidence: "Schema.getRequired()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-required']"
-  runtimeEvidence: ""
+  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: required.json 18/18 PASS, 0 FAIL, 0 BLOCKED - zero-FAIL AND zero-BLOCKED)"
   jstsGroups: [required]
-  notes: "Enforced at model and composed-branch level. [deferred: validator emitted (source+IR evidence); runtime proof pending Wave 2 JSTS group — not claimable as Supported per GS1/GS2 until runtime evidence lands.]"
+  notes: Wave-2 SUPPORTED on real GENERATED-path runtime evidence (18/0/0, zero-FAIL AND zero-BLOCKED). Presence enforcement incl. escaped property names and JS-reserved names; enforced within object traversal (never on non-objects).
 
 - keyword: dependentRequired
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
