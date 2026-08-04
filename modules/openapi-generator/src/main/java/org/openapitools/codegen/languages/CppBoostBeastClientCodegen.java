@@ -383,7 +383,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // ArraySchema and does not copy prefixItems). Must run BEFORE the
         // descriptor scan so the branch/child scan sees the pristine value.
         restoreNormalizerDroppedPrefixItems(openAPI);
-        markPristineEmptyEnums(openAPI);
+        recoverPristineLiterals(openAPI);
         // Opt-in / internally-gated Wave-0 silent-skip scanner. Default off so the
         // existing 30.x/3.1 fixture suite is never regressed; enabled only when the
         // oas31NoSilentSkip flag is set (plan §5 Wave 0 item 1 / GH).
@@ -593,7 +593,21 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      * Best-effort: on any parsing failure nothing is marked (the group is then
      * honestly measured as FAIL, never silently passed).
      */
-    private void markPristineEmptyEnums(OpenAPI openAPI) {
+    /**
+     * Format-tolerant recovery of primitives the parser loses, from the RAW
+     * spec text (this generator's OAS 3.1 input files are authoritative):
+     *  (a) explicit `enum: []` -> swagger-parser yields enum=null + types=[string];
+     *      the owning component is marked reject-all via x-oas31-empty-enum;
+     *  (b) float-form count bounds such as `minItems: 1.0` -> swagger-models
+     *      getMinItems()==null and the bound silently vanishes; the exact raw
+     *      LEXEME is injected via x-oas31-<keyword>-lexeme so ExactNumber
+     *      preserves it (1.0 == 1 mathematically; scientific forms stay exact).
+     * Component keys are located in BOTH YAML (`  Name:`) and JSON (`"Name":`)
+     * shapes at ANY indentation; every recovered literal is mapped to the
+     * nearest preceding component whose name exists in components.schemas
+     * (walking back past non-schema keys). Format-independent.
+     */
+    private void recoverPristineLiterals(OpenAPI openAPI) {
         if (openAPI == null || openAPI.getComponents() == null
                 || openAPI.getComponents().getSchemas() == null
                 || openAPI.getComponents().getSchemas().isEmpty()) {
@@ -612,27 +626,103 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         } catch (Exception e) {
             return;
         }
-        // Split the spec into per-component REGIONS by top-level 4-space-indented
-        // schema keys (the shape JSTS wraps and this repo's regression specs use:
-        // `components.schemas.<Name>:` at a fixed 4-space indent). Each region is
-        // the authoritative text for exactly one component, so an empty enum
-        // inside it cannot leak onto sibling components.
-        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
-                "(?m)^\\s{4}([A-Za-z0-9_]+):\\s*$").matcher(text);
+        // Drop comment lines so a trailing `# enum: []` cannot be mistaken.
+        StringBuilder sb = new StringBuilder(text.length());
+        for (String line : text.split("\n")) {
+            if (line.trim().startsWith("#")) continue;
+            sb.append(line).append('\n');
+        }
+        text = sb.toString();
         Map<String, Schema> schemas = openAPI.getComponents().getSchemas();
-        int lastStart = 0;
-        String lastName = null;
-        while (m.find()) {
-            if (lastName != null && hasEmptyEnumLiteral(
-                    text.substring(lastStart, m.start()))) {
-                markComponentEmptyEnum(schemas.get(lastName));
+        java.util.TreeMap<Integer, String> keysAt = new java.util.TreeMap<>();
+        java.util.regex.Matcher keyM = java.util.regex.Pattern.compile(
+                "(?m)^\\s{2,}([A-Za-z0-9_]+):\\s*$"
+              + "|\"([A-Za-z0-9_]+)\"\\s*:").matcher(text);
+        while (keyM.find()) {
+            String name = keyM.group(1) != null ? keyM.group(1) : keyM.group(2);
+            if (name != null) keysAt.put(keyM.start(), name);
+        }
+        // (a) empty enum literals -> mark the owning component reject-all.
+        java.util.regex.Matcher em = java.util.regex.Pattern.compile(
+                "(?:\"enum\"|enum)\\s*:\\s*\\[\\s*\\]").matcher(text);
+        while (em.find()) {
+            Schema owner = nearestComponentBefore(keysAt, em.start(), schemas);
+            if (owner != null) markComponentEmptyEnum(owner);
+        }
+        // (b) float-form count bounds -> inject the exact raw lexeme.
+        java.util.regex.Matcher bm = java.util.regex.Pattern.compile(
+                "(?:\"(minItems|maxItems|minProperties|maxProperties)\"|"
+              + "(minItems|maxItems|minProperties|maxProperties))\\s*:"
+              + "\\s*(-?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)").matcher(text);
+        while (bm.find()) {
+            String kw = bm.group(1) != null ? bm.group(1) : bm.group(2);
+            String token = bm.group(3);
+            if (token != null && (token.indexOf('.') >= 0
+                    || token.indexOf('e') >= 0 || token.indexOf('E') >= 0)) {
+                Schema owner = nearestComponentBefore(keysAt, bm.start(), schemas);
+                if (owner != null) injectCountBoundLexeme(owner, kw, token);
             }
-            lastName = m.group(1);
-            lastStart = m.start();
         }
-        if (lastName != null && hasEmptyEnumLiteral(text.substring(lastStart))) {
-            markComponentEmptyEnum(schemas.get(lastName));
+    }
+
+    /** Nearest component schema whose raw-text key precedes the offset. */
+    private static Schema nearestComponentBefore(
+            java.util.TreeMap<Integer, String> keysAt, int offset,
+            Map<String, Schema> schemas) {
+        java.util.Map.Entry<Integer, String> e = keysAt.floorEntry(offset);
+        while (e != null) {
+            Schema s = schemas.get(e.getValue());
+            if (s != null) return s;
+            e = keysAt.lowerEntry(e.getKey());
         }
+        return null;
+    }
+
+    private static String countBoundExtensionName(String keyword) {
+        return "x-oas31-" + keyword + "-lexeme";
+    }
+
+    /**
+     * Inject an exact count-bound lexeme for a float-form bound that
+     * swagger-models drops (e.g. `minItems: 1.0` -> getMinItems()==null).
+     * Composed components are marked on their oneOf/anyOf/allOf members,
+     * mirroring markComponentEmptyEnum.
+     */
+    private static void injectCountBoundLexeme(Schema schema, String keyword,
+                                               String lexeme) {
+        if (schema == null || lexeme == null) return;
+        String ext = countBoundExtensionName(keyword);
+        java.util.List<?> members = null;
+        if (schema.getOneOf() != null && !schema.getOneOf().isEmpty()) {
+            members = schema.getOneOf();
+        } else if (schema.getAnyOf() != null && !schema.getAnyOf().isEmpty()) {
+            members = schema.getAnyOf();
+        } else if (schema.getAllOf() != null && !schema.getAllOf().isEmpty()) {
+            members = schema.getAllOf();
+        }
+        if (members != null) {
+            for (Object mem : members) {
+                if (mem instanceof Schema) {
+                    Schema ms = (Schema) mem;
+                    if (ms.getExtensions() == null) {
+                        ms.setExtensions(new java.util.LinkedHashMap<>());
+                    }
+                    ms.addExtension(ext, lexeme);
+                }
+            }
+            return;
+        }
+        if (schema.getExtensions() == null) {
+            schema.setExtensions(new java.util.LinkedHashMap<>());
+        }
+        schema.addExtension(ext, lexeme);
+    }
+
+    /** Read a recovered count-bound lexeme extension (null when absent). */
+    private static String countBoundLexemeOf(Schema schema, String keyword) {
+        if (schema == null || schema.getExtensions() == null) return null;
+        Object v = schema.getExtensions().get(countBoundExtensionName(keyword));
+        return v == null ? null : String.valueOf(v);
     }
 
     /** True when the raw spec region contains an explicit EMPTY enum array. */
@@ -967,16 +1057,23 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (surface.getItems() != null) {
                     validateParams.put("validation-items", surface.getItems());
                 }
+                String minItemsLex = countBoundLexemeOf(surface, "minItems");
+                String maxItemsLex = countBoundLexemeOf(surface, "maxItems");
                 if (surface.getMinItems() != null
-                        || surface.getMaxItems() != null) {
+                        || surface.getMaxItems() != null
+                        || minItemsLex != null || maxItemsLex != null) {
                     supported.add("array-length");
                     if (surface.getMinItems() != null) {
                         validateParams.put("validation-min-items",
                                 surface.getMinItems());
+                    } else if (minItemsLex != null) {
+                        validateParams.put("validation-min-items", minItemsLex);
                     }
                     if (surface.getMaxItems() != null) {
                         validateParams.put("validation-max-items",
                                 surface.getMaxItems());
+                    } else if (maxItemsLex != null) {
+                        validateParams.put("validation-max-items", maxItemsLex);
                     }
                     validateParams.put("has-validation-array-length", true);
                 }
@@ -1025,15 +1122,19 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                                 Boolean.TRUE.equals(addPropsVal) ? "allowed" : "reject");
                     }
                 }
-                if (surface.getMinProperties() != null) {
+                String minPropsLex = countBoundLexemeOf(surface, "minProperties");
+                String maxPropsLex = countBoundLexemeOf(surface, "maxProperties");
+                if (surface.getMinProperties() != null || minPropsLex != null) {
                     supported.add("object-property-count");
                     validateParams.put("validation-min-properties",
-                            surface.getMinProperties());
+                            surface.getMinProperties() != null
+                                    ? surface.getMinProperties() : minPropsLex);
                 }
-                if (surface.getMaxProperties() != null) {
+                if (surface.getMaxProperties() != null || maxPropsLex != null) {
                     supported.add("object-property-count");
                     validateParams.put("validation-max-properties",
-                            surface.getMaxProperties());
+                            surface.getMaxProperties() != null
+                                    ? surface.getMaxProperties() : maxPropsLex);
                 }
                 // oneOf/anyOf/allOf nested inside a branch are densified as
                 // applicator children (Wave-2); never fail-closed. A branch that
@@ -1547,12 +1648,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     "validation-required / object-properties");
         }
         if (schema.getMinProperties() != null) {
-            record(ledger, "minProperties", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; object-property-count");
+            record(ledger, "minProperties", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-min-properties (Wave-2 object-property-count)");
         }
         if (schema.getMaxProperties() != null) {
-            record(ledger, "maxProperties", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; object-property-count");
+            record(ledger, "maxProperties", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-max-properties (Wave-2 object-property-count)");
         }
         if (schema.getMinContains() != null) {
             record(ledger, "minContains", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
@@ -1620,8 +1721,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             scanSchemaNode(schema.getContains(), location + "/contains", ledger, depth + 1);
         }
         if (schema.getNot() != null) {
-            record(ledger, "not", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; Wave 1.6 (K-01)");
+            record(ledger, "not", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "validation-not-schema; Wave-1 evaluator (K-01); residual annotation/unevaluated-in-not FAIL is Wave-3");
             scanSchemaNode(schema.getNot(), location + "/not", ledger, depth + 1);
         }
         if (schema.getIf() != null || schema.getThen() != null || schema.getElse() != null) {
@@ -1713,8 +1814,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         // ---- 3.0 dual-path compatibility keywords ----
         if (Boolean.TRUE.equals(schema.getNullable())) record(ledger, "nullable", location, VOCAB_OAS_BASE, KeywordOccurrenceStatus.EMITTED,
                 "3.0 nullable dual-path; tri-state NullableField");
-        if (schema.getBooleanSchemaValue() != null) record(ledger, "boolean-schema", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
-                "true/false value schema; Wave 1.5 (K-03)");
+        if (schema.getBooleanSchemaValue() != null) record(ledger, "boolean-schema", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                "boolean value-schema; Wave-1 (K-03) SUPPORTED in OAS 3.1; OAS 3.0 rejects a bare boolean schema (documented dual-path limitation)");
     }
 
     private static void record(KeywordOccurrenceLedger ledger, String keyword, String location,
@@ -6649,9 +6750,17 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             n.minPropertiesLexeme = String.valueOf(schema.getMinProperties());
             n.minPropertiesPresent = true;
             n.hasObjectSchema = true;
+        } else if (countBoundLexemeOf(schema, "minProperties") != null) {
+            n.minPropertiesLexeme = countBoundLexemeOf(schema, "minProperties");
+            n.minPropertiesPresent = true;
+            n.hasObjectSchema = true;
         }
         if (schema.getMaxProperties() != null) {
             n.maxPropertiesLexeme = String.valueOf(schema.getMaxProperties());
+            n.maxPropertiesPresent = true;
+            n.hasObjectSchema = true;
+        } else if (countBoundLexemeOf(schema, "maxProperties") != null) {
+            n.maxPropertiesLexeme = countBoundLexemeOf(schema, "maxProperties");
             n.maxPropertiesPresent = true;
             n.hasObjectSchema = true;
         }
@@ -6678,12 +6787,20 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 n.itemsChild = irNodeFromRawSchema(its, n.childId("items"));
             }
         }
+        String mibl = countBoundLexemeOf(schema, "minItems");
         if (schema.getMinItems() != null) {
             n.minItemsLexeme = String.valueOf(schema.getMinItems());
             n.minItemsPresent = true;
+        } else if (mibl != null) {
+            n.minItemsLexeme = mibl;
+            n.minItemsPresent = true;
         }
+        String maxbl = countBoundLexemeOf(schema, "maxItems");
         if (schema.getMaxItems() != null) {
             n.maxItemsLexeme = String.valueOf(schema.getMaxItems());
+            n.maxItemsPresent = true;
+        } else if (maxbl != null) {
+            n.maxItemsLexeme = maxbl;
             n.maxItemsPresent = true;
         }
 

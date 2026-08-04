@@ -483,14 +483,14 @@
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: deep equality across JSON kinds
   sourceEvidence: "CppBoostBeastClientCodegen scanner + validation-enum emission"
   parserEvidence: "Schema.getEnum()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-enum-values']"
-  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: enum.json 50/51 PASS, 1 FAIL, 0 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave2-emitter-fix-addendum.md (GENERATED-path: enum.json 51/51 PASS, 0 FAIL, 0 BLOCKED; full corpus 370/6/2)"
   jstsGroups: [enum]
-  notes: "zero-BLOCKED (50/1/0): object-with-properties+required deep enum members now pass (Wave-1 G3 x4 resolved via object traversal + container-depth lexemes). NOT SUPPORTED: 1 residual FAIL = empty enum:[] reject-all (G14; generator type-inference drops the empty enum)."
+  notes: "GENERATED-path zero-FAIL + zero-BLOCKED (51/0/0). Empty enum:[] reject-all recovered via format-tolerant raw-text recovery (x-oas31-empty-enum marker now applies to JSON one-line specs too; non-string instances correctly rejected)."
 
 - keyword: const
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
@@ -613,27 +613,27 @@
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: array length
   sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-max-items emission"
   parserEvidence: "Schema.getMaxItems()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-max-items']"
-  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: maxItems.json 4/6 PASS, 0 FAIL, 2 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave2-emitter-fix-addendum.md (GENERATED-path: maxItems.json 6/6 PASS, 0 FAIL, 0 BLOCKED; full corpus 370/6/2)"
   jstsGroups: [maxItems]
-  notes: "Runs via array traversal (4/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. maxItems: 1.0) are dropped at emission (swagger-models Integer getMaxItems) - decimal-bound preservation is an open item."
+  notes: "GENERATED-path zero-FAIL + zero-BLOCKED (6/0/0). Decimal count bounds (maxItems: 1.0) preserved via x-oas31-max-items-lexeme exact-lexeme recovery (swagger-models drops float bounds); array traversal enforces counts."
 
 - keyword: minItems
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: array length
   sourceEvidence: "CppBoostBeastClientCodegen scanner → validation-min-items emission"
   parserEvidence: "Schema.getMinItems()"
   irEvidence: "CompositionBranchDescriptor.validateParams['validation-min-items']"
-  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: minItems.json 4/6 PASS, 0 FAIL, 2 BLOCKED)"
+  runtimeEvidence: "oas31-jsts/wave2-emitter-fix-addendum.md (GENERATED-path: minItems.json 6/6 PASS, 0 FAIL, 0 BLOCKED; full corpus 370/6/2)"
   jstsGroups: [minItems]
-  notes: "Runs via array traversal (4/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. minItems: 1.0) are dropped at emission (swagger-models Integer getMinItems) - decimal-bound preservation is an open item."
+  notes: "GENERATED-path zero-FAIL + zero-BLOCKED (6/0/0). Decimal count bounds (minItems: 1.0) preserved via x-oas31-min-items-lexeme exact-lexeme recovery (swagger-models drops float bounds); array traversal enforces counts."
 
 - keyword: uniqueItems
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
@@ -678,27 +678,27 @@
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: object member count
   sourceEvidence: "CppBoostBeastClientCodegen scanner (object-property-count)"
   parserEvidence: "Schema.getMaxProperties()"
-  irEvidence: "branch.unsupportedAssertions"
-  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: maxProperties.json 8/10 PASS, 0 FAIL, 2 BLOCKED)"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-max-properties']"
+  runtimeEvidence: "oas31-jsts/wave2-emitter-fix-addendum.md (GENERATED-path: maxProperties.json 10/10 PASS, 0 FAIL, 0 BLOCKED; full corpus 370/6/2)"
   jstsGroups: [maxProperties]
-  notes: "Runs via object traversal (8/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. maxProperties: 1.0) are dropped at emission (swagger-models Integer getMaxProperties) - decimal-bound preservation is an open item."
+  notes: "GENERATED-path zero-FAIL + zero-BLOCKED (10/0/0). Decimal count bounds (maxProperties: 1.0) preserved via x-oas31-max-properties-lexeme exact-lexeme recovery (swagger-models drops float bounds); object-property-count enforces counts."
 
 - keyword: minProperties
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation
   classification: Assertion
   profiles: [S-V]
-  status: deferred
+  status: supported
   acceptedSchemaDomain: object member count
   sourceEvidence: "CppBoostBeastClientCodegen scanner (object-property-count)"
   parserEvidence: "Schema.getMinProperties()"
-  irEvidence: "branch.unsupportedAssertions"
-  runtimeEvidence: "oas31-jsts/wave2-structural-subset-report.md (GENERATED-path: minProperties.json 8/10 PASS, 0 FAIL, 2 BLOCKED)"
+  irEvidence: "CompositionBranchDescriptor.validateParams['validation-min-properties']"
+  runtimeEvidence: "oas31-jsts/wave2-emitter-fix-addendum.md (GENERATED-path: minProperties.json 10/10 PASS, 0 FAIL, 0 BLOCKED; full corpus 370/6/2)"
   jstsGroups: [minProperties]
-  notes: "Runs via object traversal (8/0/2 PASS/FAIL/BLOCKED). NOT supported solely because 2 BLOCKED schema-side decimal-bound cases (e.g. minProperties: 1.0) are dropped at emission (swagger-models Integer getMinProperties) - decimal-bound preservation is an open item."
+  notes: "GENERATED-path zero-FAIL + zero-BLOCKED (10/0/0). Decimal count bounds (minProperties: 1.0) preserved via x-oas31-min-properties-lexeme exact-lexeme recovery (swagger-models drops float bounds); object-property-count enforces counts."
 
 - keyword: required
   vocabularyUri: https://json-schema.org/draft/2020-12/vocab/validation

@@ -158,6 +158,61 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
+    public void recoversEmptyEnumFromJsonSpec() throws Exception {
+        // JSON one-line input must still recover `enum: []` (reject-all) via the
+        // format-tolerant raw-text recovery; the parser otherwise degrades the
+        // branch to types=[string] and only the string case would wrongly pass.
+        Path spec = java.nio.file.Files.createTempFile("jsts-enum-empty", ".json");
+        spec.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(spec,
+                "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"t\",\"version\":\"1.0.0\"},"
+              + "\"paths\":{},\"components\":{\"schemas\":{\"G0\":"
+              + "{\"oneOf\":[{\"enum\":[]}]}}}}");
+        File output = java.nio.file.Files.createTempDirectory(
+                "cpp-boost-beast-enum-empty").toFile();
+        output.deleteOnExit();
+        CodegenConfigurator cfg = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(spec.toString())
+                .setOutputDir(output.getAbsolutePath());
+        new DefaultGenerator().opts(cfg.toClientOptInput()).generate();
+        Path ir = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Assert.assertTrue(java.nio.file.Files.exists(ir), "IR must be emitted");
+        String content = java.nio.file.Files.readString(ir);
+        Assert.assertTrue(content.contains("n.hasEnumJson = true;"),
+                "empty enum must be materialised as zero-member deep store "
+                + "(reject-all) for JSON specs: " + content);
+    }
+
+    @Test
+    public void recoversFloatCountBoundsFromJsonSpec() throws Exception {
+        // swagger-models drops `minItems: 1.0` (getMinItems()==null); the exact
+        // raw lexeme must be recovered and emitted so the count bound is
+        // enforced via ExactNumber (1.0 == 1 mathematically).
+        Path spec = java.nio.file.Files.createTempFile("jsts-bound-float", ".json");
+        spec.toFile().deleteOnExit();
+        java.nio.file.Files.writeString(spec,
+                "{\"openapi\":\"3.1.0\",\"info\":{\"title\":\"t\",\"version\":\"1.0.0\"},"
+              + "\"paths\":{},\"components\":{\"schemas\":{\"G0\":"
+              + "{\"oneOf\":[{\"minItems\":1.0,\"maxProperties\":2.0}]}}}}");
+        File output = java.nio.file.Files.createTempDirectory(
+                "cpp-boost-beast-bound-float").toFile();
+        output.deleteOnExit();
+        CodegenConfigurator cfg = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec(spec.toString())
+                .setOutputDir(output.getAbsolutePath());
+        new DefaultGenerator().opts(cfg.toClientOptInput()).generate();
+        Path ir = output.toPath().resolve("model/schema_ir.generated.cpp");
+        Assert.assertTrue(java.nio.file.Files.exists(ir), "IR must be emitted");
+        String content = java.nio.file.Files.readString(ir);
+        Assert.assertTrue(content.contains("\"1.0\""),
+                "minItems float lexeme must be preserved: " + content);
+        Assert.assertTrue(content.contains("\"2.0\""),
+                "maxProperties float lexeme must be preserved: " + content);
+    }
+
+    @Test
     public void generatedPathEmitsFullNumericBooleanDispatch() throws IOException {
         // Wave-1 wire pass: the REAL generator must emit the full numeric/boolean
         // keyword set as densified IR + a thin validate_<id> dispatch from a
@@ -5178,13 +5233,18 @@ public class CppBoostBeastClientCodegenTest {
                 openApiWithSchemas("3.1.0", Collections.singletonMap("Root", root));
 
         java.util.Set<String> fc = codegen.failClosedKeywords(openAPI);
-        Assert.assertTrue(fc.contains("minProperties"), "minProperties must be fail-closed");
+        // Wave-1/Wave-2 generated+run keywords must NOT be fail-closed any more
+        // (the ledger records them EMITTED; runtime: not.json 39/1/0 and
+        // min/maxProperties 8/0/2 through the GENERATED dispatch).
+        Assert.assertFalse(fc.contains("minProperties"), "minProperties is emitted (object-property-count)");
+        Assert.assertFalse(fc.contains("not"), "not is emitted (K-01 evaluator)");
         Assert.assertTrue(fc.contains("patternProperties"), "patternProperties must be fail-closed");
-        Assert.assertTrue(fc.contains("not"), "not must be fail-closed");
         CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
                 codegen.scanSchemaKeywordOccurrences(openAPI);
-        Assert.assertTrue(ledger.failClosed().containsAll(Arrays.asList(
-                "minProperties", "patternProperties", "not")));
+        Assert.assertTrue(ledger.failClosed().containsAll(
+                Collections.singletonList("patternProperties")));
+        Assert.assertFalse(ledger.failClosed().contains("minProperties"));
+        Assert.assertFalse(ledger.failClosed().contains("not"));
     }
 
     @Test
