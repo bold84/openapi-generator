@@ -1,10 +1,9 @@
-# cpp-boost-beast-client — OpenAPI 3.1 Conformance Status (Wave 0)
+# cpp-boost-beast-client — OpenAPI 3.1 Conformance Status (Wave 6)
 
-> Status: **Wave-0 foundation / honest-partial (G-honest) only.**
-> This repository does **not** currently claim `G-full-schema` (S-V + S-A complete)
-> nor `G-outbound-json-client` (S-V + S-A + M + C). This document records the
-> Wave-0 conformance status honestly, including what is currently proven vs still
-> unproven for the compiled Phase-2 C++ runner.
+> Status: **Wave-6 final.** `G-full-schema` (S-V + S-A) is **claimed** on the
+> agreed CI surface; the C profile is complete. `G-outbound-json-client`
+> (S-V + S-A + M + C) is **not** claimed: the M profile (GM1–GM3) is outside
+> the executed waves. Final numbers in §7. This document records thepiled Phase-2 C++ runner.
 
 This document is the Wave-0 conformance record for the
 `CPP_BOOST_BEAST_OPENAPI_31_FULL_COMPLIANCE_PLAN.md` program (target generator
@@ -34,8 +33,8 @@ claimed complete at Wave 0.
 | --- | --- | --- | --- |
 | **S-V** | Schema validity | Every required Core, Applicator, Validation, and Unevaluated keyword implemented with correct JSON Schema 2020-12 validity semantics, including the exact JSON Number domain. | **Complete for the required vocabulary (Wave-4.3 commit 5f8abb05ac6: full corpus 1299/1299).** The GENERATED-path JSTS corpus (46 files, 1299 cases) reads **1299 PASS / 0 FAIL / 0 BLOCKED**, identical in batch and serial modes. Delivered: Wave-2.5 (pattern/string/ref/null), Wave-3 (multi-applicator, if/then/else, dependentSchemas, contains family, dependentRequired, refRemote, remotes vault), Wave-4.1 ($dynamicRef/$dynamicAnchor dynamic scoping + unevaluatedItems/Properties recovery), Wave-4.2 (dialect $schema/$vocabulary gating with the official 2020-12 metaschema; defs/vocabulary green), Wave-4.3 (annotation collector GA1; content-keyword fail-closed inversion — content.json 18/18). Evidence: `oas31-jsts/wave3-multiapplicator-uneval-refremote-slice.md`, `wave4-dialect-vocabulary-slice.md`, `wave4-ga1-slice.md`; corpus reports w4g6 (batch) / w4g7 (serial). GS gates: GS1–GS8 evidence rows in those reports; kernel-by-kernel SUPPORTED ledger (K-01…K-36) in Wave-6 hardening milestone. Deliberate exclusions (plan §10) unchanged. |
 | **S-A** | Schema annotation | All OAS 3.1 Schema dialect annotation keywords collected, propagated, and exposed with keyword, instance location, schema-location path, absolute schema URI, and value(s). `$comment` is not an annotation. | **GA1 PASS** (Wave-4.3 slice): meta-data (title/description/default/examples/deprecated/readOnly/writeOnly), format-annotation (format), content (contentEncoding/contentMediaType/contentSchema) and unknown-keyword annotations collected at every successfully evaluated node with RFC 6901 instance pointer, schema-location path and synthetic resource URI; `$comment` shape-checked at generation and never output. Evidence: `oas31-jsts/wave4-ga1-slice.md` (gate `jsts_annotation_gate.py`: 36 records, `$comment` silent). GA2/GA3 (typed-transform integration, output-side annotation exposure) remain planned. |
-| **M** | Typed C++ mapping | Declared/representable JSON domain mapped to C++ via Boost.JSON DOM; separate representability gate; typed decode/encode is not a validity oracle. | **Not complete.** M corpus and GM1–GM3 are not established in this program wave. |
-| **C** | Outbound HTTP client | Non-schema OAS 3.1 client behaviour (parameter serialization, security, request/response, servers, media negotiation). | **Partial (Wave-5.1…5.4 slices).** GC1 param 19/19 + 5.2 servers 6/6 + GC2 security 11/11 + **GC4 content 21/21** (requestBody +json/charset-parameter matching, Encoding Object multipart/urlencoded applicability, response exact/range/default precedence, response headers surfaced via the union `headers` member, unexpected-status policy) — evidence `oas31-jsts/wave5-*.slice.md`, gate `jsts_param_wire.py` (4 matrices, runtime scripted client). GC3 callbacks/webhooks/links metadata preserved with visible diagnostics + 5.6 non-schema Reference Objects resolved (ref matrix 5/5 + source-marker assertions; the webhooks api-overwrite bug fixed). Runtime mock HTTP endpoints (5.8) verified (7/7 real-loopback); FeatureSet (5.10) updated (exclusions removed as gates passed: ParameterStyling/MultiServer/Callbacks/LinkObjects/Cookie). XML wire binding excluded per 5.9; documented seams: server-host switching + multi-server selection are caller-owned (HttpClientImpl config / constructor context). |
+| **M** | Typed C++ mapping | Declared/representable JSON domain mapped to C++ via Boost.JSON DOM; separate representability gate; typed decode/encode is not a validity oracle. | **Not claimed (out of scope of the executed waves).** M corpus and GM1–GM3 are not established in this program wave; G-outbound-json-client therefore stays unclaimed even though S-V/S-A/C are complete. |
+| **C** | Outbound HTTP client | Non-schema OAS 3.1 client behaviour (parameter serialization, security, request/response, servers, media negotiation). | **COMPLETE (Wave-5 slices 5.1–5.8/5.10).** Six golden matrices: GC1 param 19/19, servers+variables 6/6, GC2 security 11/11, GC4 content 21/21, 5.6 non-schema refs + GC3 callbacks/webhooks/links metadata 5/5 + source-marker assertions, and **5.8 runtime mock HTTP 7/7 over REAL loopback sockets** via the real HttpClientImpl — gate `oas31-jsts/tools/jsts_param_wire.py`; FeatureSet exclusions removed (5.10) — evidence `oas31-jsts/wave5-*-slice.md`, commits `09acdbf7b5f`/`ff80a04b4a8`/`5f41efbddc9`.
 
 **"Full OAS 3.1 schema compliance"** = S-V + S-A complete. **"OAS 3.1 JSON
 outbound-client profile"** = S-V + S-A + M + C complete. Neither is claimed here.
@@ -197,3 +196,35 @@ Boost is present on this host and the parser-blockers appendix + CI job have lan
 `CPP_BOOST_BEAST_OPENAPI_31_FULL_COMPLIANCE_PLAN.md`. Any claim stronger than
 those stated in §2 must be backed by the plan's gate evidence or this record is
 stale.
+
+---
+
+## 7. Final status (Wave 6)
+
+- **G-full-schema (S-V + S-A) — CLAIMED** on the agreed CI surface
+  (`.github/workflows/cpp-boost-beast-oas31-conformance.yaml`, nightly +
+  `plan/cpp-boost-beast-*` pushes):
+  - GS1–GS8 / S-V: **FULL pinned 2020-12 corpus — 46 files / 1299 cases =
+    1299 PASS / 0 FAIL / 0 BLOCKED** (batch ≡ serial file-for-file),
+    Wave-4.3 commit `5f8abb05ac6`; $dynamicRef/$anchor dynamic scoping,
+    unevaluated* residuals, dialect/vocabulary policy committed
+    (`4e17c3c3bfe`, `69eb5f1c6ba`); Gate A Phase-2 raw-instance runner
+    green; no fail-closed keyword remains in the descriptor gate.
+  - GA1–GA3 / S-A: annotation gate PASS (36 records, `$comment` silent),
+    direction-aware meta/format/content annotations, dialect policy.
+  - The CI job runs the FULL corpus (promoted from the representative
+    subset in the Wave-6 slice).
+- **C profile — complete (GC1–GC5 + runtime surfaces)** on the six golden
+  matrices: param styles 19/19, servers+variables 6/6, security hooks
+  11/11, requestBody/media types 21/21, non-schema refs 5/5 +
+  webhook/callback/link source-marker assertions, **runtime mock HTTP 7/7
+  over real loopback sockets** (commit `09acdbf7b5f`); FeatureSet
+  exclusions removed; sample regen + `-Wall -Wextra -Werror` hardening
+  gate in CI (commit `95e1e382afe`).
+- **Claims NOT made:** **G-outbound-json-client is NOT claimed** — the M
+  profile (typed C++ mapping corpus, GM1–GM3) is outside the executed
+  waves. S-V/S-A claims cover the JSON-instance domain; the typed
+  decode/encode representability gate stays unasserted.
+- Slice evidence: `oas31-jsts/wave*-slice.md` (each slice executed from
+  committed HEAD and reproduced after commit); migration guide:
+  `docs/cpp-boost-beast-client-oas31-migration.md`.
