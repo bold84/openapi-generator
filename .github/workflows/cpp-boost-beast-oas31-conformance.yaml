@@ -314,6 +314,42 @@ jobs:
             -o /tmp/petapi.o
           echo "Sample hardening compile: PASS"
 
+      # ---------------------------------------------------------------------
+      # M profile gate (GM1/GM2): the five-class mapping corpus runs the
+      # GENERATED model axis through the compiled M driver (transport /
+      # schema-invalid / unrepresentable / representable / narrowed).  Every
+      # representation failure must classify as representation, never as
+      # schema validity.  Failures fail the job.
+      # ---------------------------------------------------------------------
+      - name: M profile gate — five-class mapping corpus (50 rows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          J=modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas31-jsts
+          C=modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas-compliance
+          JAR=modules/openapi-generator-cli/target/openapi-generator-cli.jar
+          W=tmp/m-gate
+          rm -rf "${W}" && mkdir -p "${W}"
+          java -jar "${JAR}" generate -g cpp-boost-beast-client \
+            -i "${J}/mprofile/m-probe-schemas.yaml" -o "${W}/gen" \
+            --additional-properties packageName=CppBoostBeastMProbe,apiPackage=api,modelPackage=model
+          printf '#include <boost/json/src.hpp>\n' > "${W}/boost_json_src.cpp"
+          PHASE2_M_INC="${W}/phase2_m.inc" M_CORPUS="${J}/mprofile/m-corpus.yaml" \
+            python3 "${C}/phase2_m_gen.py" "${W}"
+          g++ -std=c++17 -O1 -Wall -Wextra -Werror \
+            -I"${W}/gen" -I"${W}/gen/model" -I/usr/include \
+            "${C}/m_driver.cpp" "${W}/boost_json_src.cpp" \
+            "${W}"/gen/model/Int32Box.cpp "${W}"/gen/model/Int64Box.cpp \
+            "${W}"/gen/model/FloatBox.cpp "${W}"/gen/model/DoubleBox.cpp \
+            "${W}"/gen/model/StringBox.cpp "${W}"/gen/model/BoolBox.cpp \
+            "${W}"/gen/model/EnumBox.cpp "${W}"/gen/model/NullableBox.cpp \
+            "${W}"/gen/model/PolyBox.cpp "${W}"/gen/model/Cat.cpp \
+            "${W}"/gen/model/Dog.cpp "${W}"/gen/model/CollectionBox.cpp \
+            "${W}"/gen/model/Child.cpp \
+            -o "${W}/m_driver" && "${W}/m_driver" "${W}/m-resolved.tsv" \
+            | tee tmp/jsts-reports/m-gate.log
+          python3 -c 'import json,sys; t=[l for l in open("tmp/jsts-reports/m-gate.log") if "__M_PASS__" in l][-1]; print(t.strip())'
+
       - name: Upload conformance report artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -322,6 +358,7 @@ jobs:
           path: |
             tmp/jsts-reports/jsts-report.json
             tmp/jsts-reports/wire-gate.log
+            tmp/jsts-reports/m-gate.log
             tmp/jsts-reports/sample-diff.stat
             phase2-resolved.tsv
             phase2-results.log
