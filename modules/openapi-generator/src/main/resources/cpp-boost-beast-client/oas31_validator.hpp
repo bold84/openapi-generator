@@ -497,6 +497,50 @@ public:
     }
 
     /// Validate a single schema object against one raw instance.
+    /// Wave-4.3 (GA1): record a node's annotation keywords at the current
+    /// instance location. Every record carries keyword, instance JSON
+    /// pointer, schema-location path (emitter row name — hoisted names
+    /// encode the reference traversal), absolute schema-location URI
+    /// (synthetic resource: urn:oas31:res:<id>) and value(s) as JSON text.
+    /// $comment is shape-checked at generation time and NEVER emitted.
+    void collectAnnotations(SchemaNode const& node,
+                            ValidationPath const& path,
+                            ValidationContext& ctx) const {
+        auto add = [&](std::string const& kw, std::string const& val) {
+            if (val.empty()) return;
+            Annotation a;
+            a.keyword = kw;
+            // RFC 6901 instance JSON pointer ('' for the whole document).
+            a.instancePath = path.str().empty()
+                    ? std::string() : "/" + path.str();
+            a.schemaPath = node.sourceName;
+            a.absSchemaUri = "urn:oas31:res:"
+                    + std::to_string(node.dynamicResource);
+            a.value = val;
+            ctx.annotations.add(std::move(a));
+        };
+        add("title", node.annTitle);
+        add("description", node.annDescription);
+        add("default", node.annDefaultJson);
+        for (auto const& e : node.annExamplesJson) add("examples", e);
+        add("deprecated", node.annDeprecatedJson);
+        add("readOnly", node.annReadOnlyJson);
+        add("writeOnly", node.annWriteOnlyJson);
+        add("format", node.annFormat);
+        add("contentEncoding", node.annContentEncoding);
+        add("contentMediaType", node.annContentMediaType);
+        if (node.annContentSchema >= 0 && node.annContentSchema
+                < static_cast<int>(registry_.nodes.size())) {
+            // contentSchema is annotation-only: its value is the child
+            // schema location, never an evaluated instance check.
+            add("contentSchema",
+                registry_.nodes[static_cast<std::size_t>(
+                        node.annContentSchema)].sourceName);
+        }
+        for (auto const& e : node.annExtras) add(e.first, e.second);
+        // $comment: no annotation output (GA1).
+    }
+
     ValidationResult validateSchemaNode(SchemaNode const& node, RawInstance const& instance,
                                         ValidationPath& path, ValidationContext& ctx) const {
         // Wave-4.2 dialect: validation-vocabulary gating. A resource whose
@@ -775,6 +819,14 @@ public:
                 ctx.curItems().insert(unevalIdx.begin(), unevalIdx.end());
             }
         }
+
+        // Wave-4.3 (GA1): annotation collection at the SUCCESSFUL closure of
+        // this node. Every annotation keyword present on the node is recorded
+        // with the instance location (JSON pointer), the schema location
+        // (emitter row name — hoisted names encode reference traversal), the
+        // absolute schema-location URI (synthetic resource urn) and the
+        // keyword's value (JSON text). $comment produces no annotation output.
+        collectAnnotations(node, path, ctx);
 
         return ValidationResult::valid();
     }

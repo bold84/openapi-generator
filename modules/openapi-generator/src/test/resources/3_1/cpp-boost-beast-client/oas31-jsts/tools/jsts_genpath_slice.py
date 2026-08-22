@@ -610,6 +610,29 @@ def _hop_refs(branch, group_index=0):
                 if not isinstance(al, list):
                     continue
                 for i, mem in enumerate(al):
+                    if isinstance(mem, bool):
+                        # ONE-TO-MANY counting semantics: oneOf counts how
+                        # many branches accept — identical boolean members
+                        # must stay DISTINCT rows. The shared batch doc lets
+                        # the inline-model resolver dedupe identical inline
+                        # members (content-dedupe), collapsing [true,true,
+                        # false] to [true,false] and silently accepting what
+                        # the suite rejects. Hoist every boolean member into
+                        # a group-unique object wrapper: `true` -> accept-all
+                        # extensions object, `false` -> {"not": true} (the
+                        # not machinery is corpus-proven). The x-oas31-gid
+                        # marker keeps the contents unique per group, so the
+                        # dedupe can never merge them.
+                        if app != "oneOf":
+                            continue  # anyOf/allOf: duplicate accepts are
+                                      # harmless; keep the members untouched
+                        counter[0] += 1
+                        wr = {"x-oas31-gid": counter[1]}
+                        if not mem:
+                            wr["not"] = True
+                        nm = capture("__comp_%d" % counter[0], wr)
+                        al[i] = {"$ref": "#/components/schemas/" + nm}
+                        continue
                     if (isinstance(mem, dict)
                             and not (len(mem) == 1 and "$ref" in mem)):
                         counter[0] += 1

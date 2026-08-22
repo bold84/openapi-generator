@@ -86,6 +86,11 @@ struct SchemaNode {
     // -- identity --
     std::uint32_t resourceIdentity = 0;   // index into SchemaResourceRegistry::resources
     SchemaIndex   parent = kNoSchema;
+    std::string   sourceName;             // Wave-4.3: emitter-side row id
+                                          // (a.k.a. validatorId) — the schema
+                                          // LOCATION path incl. reference
+                                          // traversal (hoisted names encode
+                                          // the vault/pointer provenance)
 
     // -- Wave-3 dynamic-scope ($dynamicRef/$dynamicAnchor) --
     // Synthetic resource identifier for the dynamic scope: the emitter assigns
@@ -206,6 +211,25 @@ struct SchemaNode {
     //    When the key is present on the object, every listed name must also
     //    be present (string-present assertion, no schema evaluation).
     std::vector<std::pair<std::string, std::vector<std::string>>> dependentRequired;
+
+    // -- Wave-4.3 annotation collection (GA1): metadata (meta-data vocab),
+    //    format-annotation, content vocab and unknown-keyword annotations,
+    //    collected at every SUCCESSFULLY evaluated node's instance location.
+    //    Values ride as JSON text (true/false/string/object/array literals);
+    //    empty string = keyword absent. `$comment` is emitted only for the
+    //    shape check at generation time and NEVER produces an annotation.
+    std::string annTitle;             // "" absent
+    std::string annDescription;       // "" absent
+    std::string annDefaultJson;       // JSON literal (default: <any>)
+    std::vector<std::string> annExamplesJson;  // examples: array of any
+    std::string annDeprecatedJson;    // "true"/"false"/""
+    std::string annReadOnlyJson;      // "true"/"false"/""
+    std::string annWriteOnlyJson;     // "true"/"false"/""
+    std::string annFormat;            // format-annotation vocabulary
+    std::string annContentEncoding;   // content vocabulary
+    std::string annContentMediaType;  // content vocabulary
+    SchemaIndex annContentSchema = kNoSchema;
+    std::vector<std::pair<std::string, std::string>> annExtras; // unknown keywords -> JSON value
 
     // -- applicators: ALL of allOf/anyOf/oneOf may coexist (2020-12); each
     //    member is a densified child row. `children` is used by the REF

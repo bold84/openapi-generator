@@ -3898,8 +3898,9 @@ public class CppBoostBeastClientCodegenTest {
                 new io.swagger.v3.oas.models.Components();
         Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
 
-        // Schema with conditional (now supported) + contains (Wave-3.1
-        // supported) + contentEncoding (the remaining fail-closed keyword)
+        // Schema with conditional (supported) + contains (Wave-3.1
+        // supported) + contentEncoding (Wave-4.3 GA1: annotation-only —
+        // supported, no longer fail-closed)
         ComposedSchema schema = new ComposedSchema();
         StringSchema conditionalBranch = new StringSchema();
         conditionalBranch.setMinLength(1);
@@ -3923,24 +3924,17 @@ public class CppBoostBeastClientCodegenTest {
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
-        // preprocessOpenAPI must still throw — the FIRST unsupported keyword
-        // is now contentEncoding (`conditional` and `contains` are supported
-        // since Wave 2.5/3.1). The descriptor map is populated BEFORE
-        // validateDescriptorAssertions throws, so branches are inspectable.
-        try {
-            codegen.preprocessOpenAPI(openAPI);
-            org.testng.Assert.fail("expected UnsupportedSchemaAssertionException for 'content-encoding'");
-        } catch (CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException e) {
-            String msg = e.getMessage();
-            Assert.assertTrue(msg.contains("content-encoding"),
-                    "Exception must mention content-encoding. Got: " + msg);
-        }
+        // Every keyword in this fixture is now supported (conditional:
+        // Wave 2.5; contains: Wave 3.1; content-encoding: Wave-4.3 GA1 —
+        // a pure annotation per 2020-12 §8.2.6, it can never affect
+        // composition membership). preprocessOpenAPI must NOT throw.
+        codegen.preprocessOpenAPI(openAPI);
 
         CppBoostBeastClientCodegen.CompositionDescriptor desc =
                 codegen.getCompositionDescriptor("SchemaWithUnsupported");
         Assert.assertNotNull(desc,
                 "SchemaWithUnsupported must have a descriptor");
-        // The conditional branch (branch 0) must NO LONGER list conditional as
+        // The conditional branch (branch 0) must NOT list conditional as
         // unsupported; the if schema must be surfaced for IR emission (§10).
         CppBoostBeastClientCodegen.CompositionBranchDescriptor conditionalBranchDesc =
                 desc.getBranches().get(0);
@@ -3951,8 +3945,7 @@ public class CppBoostBeastClientCodegenTest {
                 conditionalBranchDesc.getValidateParams().get("validation-if-schema"),
                 "validation-if-schema must be surfaced for the conditional branch");
         // The contains branch (branch 1) must be SUPPORTED (Wave-3.1): its
-        // subschema is surfaced for IR emission; the contentEncoding branch
-        // (branch 2) is flagged unsupported.
+        // subschema is surfaced for IR emission.
         CppBoostBeastClientCodegen.CompositionBranchDescriptor containsBranchDesc =
                 desc.getBranches().get(1);
         Assert.assertFalse(
@@ -3961,11 +3954,15 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertNotNull(
                 containsBranchDesc.getValidateParams().get("validation-contains-schema"),
                 "validation-contains-schema must be surfaced for the contains branch");
+        // The contentEncoding branch (branch 2) must now be SUPPORTED (GA1):
+        // annotation-only keyword — collected, never fail-closed.
         CppBoostBeastClientCodegen.CompositionBranchDescriptor encodedBranchDesc =
                 desc.getBranches().get(2);
-        Assert.assertTrue(
+        Assert.assertTrue(encodedBranchDesc.getSupportedAssertions().contains("content-encoding"),
+                "contentEncoding must be supported (Wave-4.3 GA1 annotation surface)");
+        Assert.assertFalse(
                 encodedBranchDesc.getUnsupportedAssertions().contains("content-encoding"),
-                "contentEncoding must remain unsupported (fail-closed)");
+                "contentEncoding must NOT be fail-closed (GA1)");
     }
 
     @Test
@@ -4713,8 +4710,11 @@ public class CppBoostBeastClientCodegenTest {
                 "conditional must no longer be unsupported");
     }
 
-    @Test(expectedExceptions = CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException.class)
-    public void unsupportedAssertionOnAnyOfThrows() {
+    @Test
+    public void contentEncodingAnyOfNoLongerThrows() {
+        // Wave-4.3 GA1: contentEncoding is annotation-only per 2020-12
+        // §8.2.6 (no validation behavior — cannot affect anyOf membership),
+        // so a content-encoded anyOf branch must not fail generation.
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();
 
@@ -4727,11 +4727,22 @@ public class CppBoostBeastClientCodegenTest {
         StringSchema contentEncodedBranch = new StringSchema();
         contentEncodedBranch.setContentEncoding("base64");
         schema.addAnyOfItem(contentEncodedBranch);
-        schemas.put("SchemaWithUnsupportedAnyOf", schema);
+        schemas.put("SchemaWithContentAnyOf", schema);
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
+        // Must NOT throw anymore.
         codegen.preprocessOpenAPI(openAPI);
+
+        CppBoostBeastClientCodegen.CompositionDescriptor desc =
+                codegen.getCompositionDescriptor("SchemaWithContentAnyOf");
+        Assert.assertNotNull(desc, "SchemaWithContentAnyOf must have a descriptor");
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor branch =
+                desc.getBranches().get(0);
+        Assert.assertFalse(branch.getUnsupportedAssertions().contains("content-encoding"),
+                "contentEncoding must no longer be fail-closed (GA1)");
+        Assert.assertTrue(branch.getSupportedAssertions().contains("content-encoding"),
+                "contentEncoding must be surfaced as supported (GA1 annotation)");
     }
 
     @Test
@@ -5317,6 +5328,11 @@ public class CppBoostBeastClientCodegenTest {
         root.setPatternProperties(Collections.singletonMap(".", new StringSchema()));
         root.setNot(new StringSchema());
         root.setContains(new StringSchema());
+        root.setContentEncoding("base64");
+        root.setContentMediaType("text/plain");
+        Schema contentSchema = new Schema();
+        contentSchema.setType("string");
+        root.setContentSchema(contentSchema);
         io.swagger.v3.oas.models.OpenAPI openAPI =
                 openApiWithSchemas("3.1.0", Collections.singletonMap("Root", root));
 
@@ -5325,8 +5341,8 @@ public class CppBoostBeastClientCodegenTest {
         // (the ledger records them EMITTED; runtime: not.json 40/0/0,
         // min/maxProperties 10/0/0, patternProperties + propertyNames suites
         // green through the GENERATED dispatch, contains family green after
-        // the Wave-3.1 slice). contentEncoding remains fail-closed (S-A
-        // annotation surface, Wave 3.7).
+        // the Wave-3.1 slice). contentEncoding/contentMediaType/contentSchema
+        // are annotation-only per 2020-12 §8.2.6 since Wave-4.3 GA1.
         Assert.assertFalse(fc.contains("minProperties"), "minProperties is emitted (object-property-count)");
         Assert.assertFalse(fc.contains("not"), "not is emitted (K-01 evaluator)");
         Assert.assertFalse(fc.contains("patternProperties"), "patternProperties is emitted (Wave-2.5 pattern engine)");
@@ -5334,6 +5350,12 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertFalse(fc.contains("contains"), "contains must be supported (Wave-3.1 K-08)");
         Assert.assertFalse(fc.contains("minContains"), "minContains is emitted (Wave-3.1 count bound)");
         Assert.assertFalse(fc.contains("maxContains"), "maxContains is emitted (Wave-3.1 count bound)");
+        Assert.assertFalse(fc.contains("contentEncoding"),
+                "contentEncoding must be ANNOTATION (Wave-4.3 GA1), not fail-closed");
+        Assert.assertFalse(fc.contains("contentMediaType"),
+                "contentMediaType must be ANNOTATION (Wave-4.3 GA1), not fail-closed");
+        Assert.assertFalse(fc.contains("contentSchema"),
+                "contentSchema must be ANNOTATION (Wave-4.3 GA1), not fail-closed");
         CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
                 codegen.scanSchemaKeywordOccurrences(openAPI);
         Assert.assertFalse(ledger.failClosed().contains("contains"),

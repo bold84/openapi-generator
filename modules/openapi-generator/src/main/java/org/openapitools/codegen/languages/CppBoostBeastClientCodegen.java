@@ -1265,6 +1265,187 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
      * suppresses the nested oneOf/anyOf/allOf applicator scan for $ref
      * branches (the ref applicator is resolved via the registry instead).
      */
+    /**
+     * Wave-4.3 (GA1): read the annotation-vocabulary keywords of a schema
+     * into a (key -> value) sink. Values ride as JSON TEXT (booleans as
+     * "true"/"false", defaults/examples via toJsonLiteral, strings verbatim).
+     * $comment is inspected for the STRING-SHAPE check only (recorded as
+     * "validation-ann-comment" for the emitter's shape check; never emitted
+     * as an annotation — GA1 §"$comment produces no annotation output").
+     * Annotations of the unknown-keyword kind are the schema's extension map
+     * MINUS the runner's x-oas31-* machinery (those are engine channels, not
+     * spec keywords).
+     */
+    private static void readAnnotationKeywords(
+            io.swagger.v3.oas.models.media.Schema schema,
+            java.util.function.BiConsumer<String, Object> sink) {
+        if (schema == null) return;
+        if (schema.getTitle() != null) sink.accept("title", schema.getTitle());
+        if (schema.getDescription() != null) {
+            sink.accept("description", schema.getDescription());
+        }
+        if (schema.getDefault() != null) {
+            sink.accept("default", toJsonLiteral(schema.getDefault()));
+        }
+        if (schema.getExamples() != null && !schema.getExamples().isEmpty()) {
+            java.util.List<String> json = new java.util.ArrayList<>();
+            for (Object ex : schema.getExamples()) {
+                json.add(toJsonLiteral(ex));
+            }
+            sink.accept("examples", json);
+        }
+        if (schema.getDeprecated() != null) {
+            sink.accept("deprecated", Boolean.TRUE.equals(schema.getDeprecated())
+                    ? "true" : "false");
+        }
+        if (schema.getReadOnly() != null) {
+            sink.accept("readOnly",
+                    Boolean.TRUE.equals(schema.getReadOnly()) ? "true" : "false");
+        }
+        if (schema.getWriteOnly() != null) {
+            sink.accept("writeOnly",
+                    Boolean.TRUE.equals(schema.getWriteOnly()) ? "true" : "false");
+        }
+        if (schema.getFormat() != null) sink.accept("format", schema.getFormat());
+        if (schema.getContentEncoding() != null) {
+            sink.accept("contentEncoding", schema.getContentEncoding());
+        }
+        if (schema.getContentMediaType() != null) {
+            sink.accept("contentMediaType", schema.getContentMediaType());
+        }
+        if (schema.getContentSchema() != null) {
+            sink.accept("contentSchema", schema.getContentSchema());
+        }
+        Object comment = schema.get$comment();
+        if (comment != null) {
+            sink.accept("comment", comment instanceof String
+                    ? (String) comment : "NON-STRING");
+            if (!(comment instanceof String)) {
+                sink.accept("comment-shape-violation", "TRUE");
+            }
+        }
+        if (schema.getExtensions() != null) {
+            java.util.Iterator<?> it = schema.getExtensions().entrySet().iterator();
+            while (it.hasNext()) {
+                java.util.Map.Entry<?, ?> e =
+                        (java.util.Map.Entry<?, ?>) it.next();
+                if (String.valueOf(e.getKey()).startsWith("x-oas31-")) continue;
+                sink.accept("extra:" + e.getKey(), toJsonLiteral(e.getValue()));
+            }
+        }
+    }
+
+    /** Wave-4.3 (GA1): materialise the annotation fields of an IrNode from the
+     *  branch validateParams map (keys written by readAnnotationKeywords via
+     *  scanSurfaceAssertions). Never affects the schema-keyword shape check. */
+    private void readAnnotationVp(
+            Map<String, Object> vp, IrNode n) {
+        if (vp == null) return;
+        n.annTitle = strOf(vp.get("validation-ann-title"));
+        n.annDescription = strOf(vp.get("validation-ann-description"));
+        n.annDefaultJson = strOf(vp.get("validation-ann-default"));
+        Object ex = vp.get("validation-ann-examples");
+        if (ex instanceof java.util.List) {
+            for (Object e : (java.util.List<?>) ex) {
+                n.annExamplesJson.add(String.valueOf(e));
+            }
+        }
+        n.annDeprecatedJson = strOf(vp.get("validation-ann-deprecated"));
+        n.annReadOnlyJson = strOf(vp.get("validation-ann-readOnly"));
+        n.annWriteOnlyJson = strOf(vp.get("validation-ann-writeOnly"));
+        n.annFormat = strOf(vp.get("validation-ann-format"));
+        n.annContentEncoding = strOf(vp.get("validation-ann-contentEncoding"));
+        n.annContentMediaType = strOf(vp.get("validation-ann-contentMediaType"));
+        Object cs = vp.get("validation-ann-contentSchema");
+        if (cs instanceof io.swagger.v3.oas.models.media.Schema) {
+            n.annContentSchemaNode = irNodeFromRawSchema(
+                    (io.swagger.v3.oas.models.media.Schema) cs,
+                    n.childId("contentSchema"));
+        }
+        n.annComment = strOf(vp.get("validation-ann-comment"));
+        if ("TRUE".equals(String.valueOf(vp.get(
+                "validation-ann-comment-shape-violation")))) {
+            n.annCommentShapeViolation = true;
+        }
+        for (Map.Entry<?, ?> e : vp.entrySet()) {
+            if (String.valueOf(e.getKey()).startsWith("validation-ann-extra:")) {
+                n.annExtras.add(new java.util.AbstractMap.SimpleImmutableEntry<>(
+                        String.valueOf(e.getKey())
+                                .substring("validation-ann-extra:".length()),
+                        String.valueOf(e.getValue())));
+            }
+        }
+    }
+
+    private static String strOf(Object o) {
+        return o == null ? "" : String.valueOf(o);
+    }
+
+    /** Wave-4.3 (GA1): raw-path annotation reads (component/structural rows). */
+    private void readAnnotationRaw(
+            io.swagger.v3.oas.models.media.Schema schema, IrNode n) {
+        if (schema == null) return;
+        final IrNode node = n;
+        readAnnotationKeywords(schema, (key, value) -> {
+            switch (key) {
+                case "title":
+                    node.annTitle = String.valueOf(value);
+                    break;
+                case "description":
+                    node.annDescription = String.valueOf(value);
+                    break;
+                case "default":
+                    node.annDefaultJson = String.valueOf(value);
+                    break;
+                case "examples":
+                    if (value instanceof java.util.List) {
+                        for (Object e : (java.util.List<?>) value) {
+                            node.annExamplesJson.add(String.valueOf(e));
+                        }
+                    }
+                    break;
+                case "deprecated":
+                    node.annDeprecatedJson = String.valueOf(value);
+                    break;
+                case "readOnly":
+                    node.annReadOnlyJson = String.valueOf(value);
+                    break;
+                case "writeOnly":
+                    node.annWriteOnlyJson = String.valueOf(value);
+                    break;
+                case "format":
+                    node.annFormat = String.valueOf(value);
+                    break;
+                case "contentEncoding":
+                    node.annContentEncoding = String.valueOf(value);
+                    break;
+                case "contentMediaType":
+                    node.annContentMediaType = String.valueOf(value);
+                    break;
+                case "contentSchema":
+                    if (value instanceof io.swagger.v3.oas.models.media.Schema) {
+                        node.annContentSchemaNode = irNodeFromRawSchema(
+                                (io.swagger.v3.oas.models.media.Schema) value,
+                                node.childId("contentSchema"));
+                    }
+                    break;
+                case "comment":
+                    node.annComment = String.valueOf(value);
+                    break;
+                case "comment-shape-violation":
+                    node.annCommentShapeViolation = true;
+                    break;
+                default:
+                    if (key.startsWith("extra:")) {
+                        node.annExtras.add(
+                                new java.util.AbstractMap.SimpleImmutableEntry<>(
+                                        key.substring("extra:".length()),
+                                        String.valueOf(value)));
+                    }
+            }
+        });
+    }
+
     private void scanSurfaceAssertions(
             io.swagger.v3.oas.models.media.Schema surface,
             io.swagger.v3.oas.models.OpenAPI openAPI,
@@ -1638,9 +1819,19 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
                     validateParams.put("validation-unevaluated-properties",
                             surface.getUnevaluatedProperties());
                 }
-                if (surface.getContentMediaType() != null
-                        || surface.getContentEncoding() != null) {
-                    unsupported.add("content-encoding");
+                // Wave-4.3 (GA1): contentEncoding/contentMediaType/contentSchema are
+                // pure annotations per 2020-12 §8.2.6 — zero validation
+                // behavior, so they can never affect composition membership.
+                // The keys are surfaced via readAnnotationKeywords (annotated
+                // at runtime, shape-checked at generation) — NOT fail-closed.
+                if (surface.getContentMediaType() != null) {
+                    supported.add("content-media-type");
+                }
+                if (surface.getContentEncoding() != null) {
+                    supported.add("content-encoding");
+                }
+                if (surface.getContentSchema() != null) {
+                    supported.add("content-schema");
                 }
                 // Wave-2.5 patternProperties / propertyNames: densified as
                 // child rows by the IR emitter, never fail-closed. Their
@@ -1664,6 +1855,25 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
                 if (surface.getBooleanSchemaValue() != null) {
                     validateParams.put("validation-boolean-value",
                             surface.getBooleanSchemaValue());
+                }
+                // Wave-4.3 (GA1): annotation-vocabulary keywords ride the same
+                // vp channel as the assertions.
+                {
+                    final java.util.Map<String, Object> vp2 = validateParams;
+                    final java.util.List<String> sup = supported;
+                    readAnnotationKeywords(surface, (key, value) -> {
+                        vp2.put("validation-ann-" + key, value);
+                        if (key.equals("comment") || key.startsWith("extra:")
+                                || key.equals("title") || key.equals("description")
+                                || key.equals("default") || key.equals("examples")
+                                || key.equals("format") || key.equals("contentEncoding")
+                                || key.equals("contentMediaType")
+                                || key.equals("contentSchema")
+                                || key.equals("deprecated") || key.equals("readOnly")
+                                || key.equals("writeOnly")) {
+                            sup.add("annotation:" + key);
+                        }
+                    });
                 }
     }
 
@@ -2027,15 +2237,16 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
             record(ledger, "$dynamicRef", location, VOCAB_CORE, KeywordOccurrenceStatus.PARSER_GAP,
                     "dynamic reference; Wave 4.2 (K-16)");
         }
-        if (schema.get$comment() != null) {
+if (schema.get$comment() != null) {
             record(ledger, "$comment", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
-                    "no validity action / no annotation (K-32; string shape Wave 3)");
+                    "no validity action / no annotation (K-32; string shape Wave-4.3 GA1)");
         }
         if (schema.get$vocabulary() != null) {
             record(ledger, "$vocabulary", location, VOCAB_CORE, KeywordOccurrenceStatus.ANNOTATION,
                     "metaschema declaration; Wave 4.3 (K-27)");
         }
 
+        // ---- Validation vocabulary (plan §3.4) ----
         // ---- Validation vocabulary (plan §3.4) ----
         if (schema.getType() != null || (schema.getTypes() != null && !schema.getTypes().isEmpty())) {
             record(ledger, "type", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
@@ -6744,6 +6955,10 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
                 Integer idx = indexOf.get(n.containsChild);
                 if (idx != null) n.containsIndex = idx;
             }
+            if (n.annContentSchemaNode != null) {
+                Integer idx = indexOf.get(n.annContentSchemaNode);
+                if (idx != null) n.annContentSchemaIndex = idx;
+            }
             if (n.ifChild != null) {
                 Integer idx = indexOf.get(n.ifChild);
                 if (idx != null) n.ifIndex = idx;
@@ -6801,6 +7016,7 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
         if (n.unevaluatedSchemaChild != null) out.add(n.unevaluatedSchemaChild);
         if (n.unevaluatedItemsSchemaChild != null) out.add(n.unevaluatedItemsSchemaChild);
         if (n.containsChild != null) out.add(n.containsChild);
+        if (n.annContentSchemaNode != null) out.add(n.annContentSchemaNode);
         if (n.ifChild != null) out.add(n.ifChild);
         if (n.thenChild != null) out.add(n.thenChild);
         if (n.elseChild != null) out.add(n.elseChild);
@@ -6970,6 +7186,26 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
         }
         java.util.List<DependentRequiredEntry> dependentRequired = new ArrayList<>();
         boolean selfRef = false;   // $ref resolves to THIS node (self/root ref)
+
+        // -- Wave-4.3 (GA1) annotation keywords (JSON-text values; "" absent).
+        //    $comment is carried for the STRING-SHAPE check only — it never
+        //    produces annotation output (GA1).
+        String annTitle = "";
+        String annDescription = "";
+        String annDefaultJson = "";
+        java.util.List<String> annExamplesJson = new ArrayList<>();
+        String annDeprecatedJson = "";
+        String annReadOnlyJson = "";
+        String annWriteOnlyJson = "";
+        String annFormat = "";
+        String annContentEncoding = "";
+        String annContentMediaType = "";
+        IrNode annContentSchemaNode = null;
+        int annContentSchemaIndex = -1;
+        String annComment = "";
+        boolean annCommentShapeViolation = false;
+        java.util.List<java.util.Map.Entry<String, String>> annExtras =
+                new ArrayList<>();
 
         /** Deterministic child-row id suffix counter (per node). */
         private int childCounter = 0;
@@ -7405,6 +7641,10 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
                 n.dependentRequired.add(de);
             }
         }
+
+        // Wave-4.3 (GA1): annotation keywords (vp channel from
+                // scanSurfaceAssertions).
+                readAnnotationVp(vp, n);
 
         boolean hasKeyword = n.hasType
                 || n.booleanValue != BooleanValueKind.NOT_BOOLEAN
@@ -7868,6 +8108,8 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
                 n.dependentRequired.add(de);
             }
         }
+        // Wave-4.3 (GA1): annotation keywords (raw path).
+        readAnnotationRaw(schema, n);
         return n;
     }
 
@@ -8464,6 +8706,67 @@ private String dynamicRefAnchorOf(String refStr) {
                             .append("\"");
                 }
                 sb.append("}});\n");
+            }
+            // -- Wave-4.3 (GA1) annotation payloads ---------------------------
+            if (!node.annTitle.isEmpty()) {
+                sb.append("        n.annTitle = \"").append(escapeCppStringContent(node.annTitle)).append("\";\n");
+            }
+            if (!node.annDescription.isEmpty()) {
+                sb.append("        n.annDescription = \"")
+                        .append(escapeCppStringContent(node.annDescription))
+                        .append("\";\n");
+            }
+            if (!node.annDefaultJson.isEmpty()) {
+                sb.append("        n.annDefaultJson = \"")
+                        .append(escapeCppStringContent(node.annDefaultJson))
+                        .append("\";\n");
+            }
+            for (String ex : node.annExamplesJson) {
+                sb.append("        n.annExamplesJson.push_back(\"")
+                        .append(escapeCppStringContent(ex)).append("\");\n");
+            }
+            if (!node.annDeprecatedJson.isEmpty()) {
+                sb.append("        n.annDeprecatedJson = \"")
+                        .append(node.annDeprecatedJson).append("\";\n");
+            }
+            if (!node.annReadOnlyJson.isEmpty()) {
+                sb.append("        n.annReadOnlyJson = \"")
+                        .append(node.annReadOnlyJson).append("\";\n");
+            }
+            if (!node.annWriteOnlyJson.isEmpty()) {
+                sb.append("        n.annWriteOnlyJson = \"")
+                        .append(node.annWriteOnlyJson).append("\";\n");
+            }
+            if (!node.annFormat.isEmpty()) {
+                sb.append("        n.annFormat = \"").append(escapeCppStringContent(node.annFormat)).append("\";\n");
+            }
+            if (!node.annContentEncoding.isEmpty()) {
+                sb.append("        n.annContentEncoding = \"")
+                        .append(escapeCppStringContent(node.annContentEncoding))
+                        .append("\";\n");
+            }
+            if (!node.annContentMediaType.isEmpty()) {
+                sb.append("        n.annContentMediaType = \"")
+                        .append(escapeCppStringContent(node.annContentMediaType))
+                        .append("\";\n");
+            }
+            if (node.annContentSchemaIndex >= 0) {
+                sb.append("        n.annContentSchema = ")
+                        .append(node.annContentSchemaIndex).append(";\n");
+            }
+            if (node.annCommentShapeViolation) {
+                sb.append("        n.annCommentShapeViolation = true;\n");
+            }
+            for (java.util.Map.Entry<String, String> ex : node.annExtras) {
+                sb.append("        n.annExtras.push_back({\"")
+                        .append(escapeCppStringContent(ex.getKey()))
+                        .append("\", \"").append(escapeCppStringContent(ex.getValue()))
+                        .append("\"});\n");
+            }
+            if (node.validatorId != null && !node.validatorId.isEmpty()) {
+                sb.append("        n.sourceName = \"")
+                        .append(escapeCppStringContent(node.validatorId))
+                        .append("\";\n");
             }
             sb.append("        reg.nodes.push_back(n);\n");
             sb.append("    }\n");
