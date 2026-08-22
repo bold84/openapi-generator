@@ -98,7 +98,10 @@ _vault_processing = set()  # in-flight URLs (cycle guard)
 
 
 def _vault_load(full):
-    """Load a localhost:1234 resource from the vendored remotes vault."""
+    """Load a vault resource from the vendored remotes: localhost:1234 URIs
+    (the suite's remotes) and https://json-schema.org/draft/2020-12/... URIs
+    (the official metaschema + meta/* — vendored under vendor/remotes with
+    the same path shape)."""
     if full in _vault_cache:
         return _vault_cache[full]
     if full in _vault_processing:
@@ -106,11 +109,18 @@ def _vault_load(full):
     _vault_processing.add(full)
     try:
         u = _urlparse.urlsplit(full)
-        if u.scheme != "http" or u.hostname != "localhost":
+        if u.scheme == "http" and u.hostname == "localhost" \
+                and u.port in (None, 1234):
+            rel = u.path.lstrip("/")
+        elif u.scheme == "https" and u.hostname == "json-schema.org" \
+                and (u.path.startswith("/draft2020-12/")
+                     or u.path.startswith("/draft/2020-12/")):
+            # Official URI form is /draft/2020-12/... ; the vendored vault
+            # keeps the suite's localhost-style path shape draft2020-12/...
+            rel = u.path.lstrip("/")
+            rel = rel.replace("draft/2020-12/", "draft2020-12/", 1)
+        else:
             return None
-        if u.port not in (None, 1234):
-            return None
-        rel = u.path.lstrip("/")
         fp = os.path.join(_VAULT_DIR, rel)
         if not os.path.isfile(fp):
             return None
@@ -254,9 +264,12 @@ def _hop_refs(branch, group_index=0):
     # ---- pass 0: index resources by RESOLVED $id (deep walk) ----------------
     def idx_walk(node, ctx_id, hint):
         if isinstance(node, dict):
+            # $id must be a string to be a resource declaration (see the
+            # walk() comment: the metaschema's properties-container has an
+            # "$id"-NAMED property binding).
             rid = node.get("$id")
             eff = ctx_id
-            if rid is not None and str(rid):
+            if isinstance(rid, str) and rid:
                 eff = _urljoin(str(ctx_id or ""), str(rid))
                 id_index.setdefault(eff, node)
                 id_name.setdefault(eff, hint)
@@ -332,6 +345,9 @@ def _hop_refs(branch, group_index=0):
         """Try to rewrite node['$ref'] (a local-or-$id-resolvable ref) to a
         components ref. Returns the hoisted component name when rewritten
         (None when the ref stays unresolvable/inert)."""
+        if os.getenv("JSTS_TRACE") and ref.startswith("https://"):
+            print("RESOLVE ref=%s ctx_id=%r" % (ref[:70], ctx_id),
+                  file=sys.stderr)
         if ref.startswith("#"):
             base, frag = "", ref[1:]
             base_obj = ctx_obj if ctx_obj is not None else branch
@@ -345,7 +361,9 @@ def _hop_refs(branch, group_index=0):
             elif ctx_id and full == ctx_id:
                 # self-resource full ref -> the enclosing resource itself
                 base_obj = ctx_obj if ctx_obj is not None else branch
-            elif full.startswith("http://localhost"):
+            elif full.startswith("http://localhost") \
+                    or full.startswith("https://json-schema.org/draft2020-12/") \
+                    or full.startswith("https://json-schema.org/draft/2020-12/"):
                 # refRemote: resolve against the vendored remotes vault. The
                 # vault subdocument is registered as an in-doc resource and its
                 # OWN inner refs are recursively rewritten in a nested walk
@@ -354,6 +372,10 @@ def _hop_refs(branch, group_index=0):
                 # and the cached pristine copy must never leak rewritten refs
                 # into later groups' specs.
                 vdoc = copy.deepcopy(_vault_load(full))
+                import sys as _sys
+                if _sys.stderr and os.getenv("JSTS_TRACE"):
+                    print("VAULT full=%s loaded=%s" % (full, vdoc is not None),
+                          file=_sys.stderr)
                 if vdoc is None or not isinstance(vdoc, dict):
                     return False
                 # Wave-3: the vault document is a distinct RESOURCE — its own
@@ -458,8 +480,15 @@ def _hop_refs(branch, group_index=0):
     # ---- pass 1: rewrite refs with context-aware resource tracking ----------
     def walk(node, ctx_obj, ctx_id):
         if isinstance(node, dict):
+            # $id declares a resource ONLY when its value is a URI string. A
+            # dict like {"properties": {"$id": {...}}} is a properties
+            # CONTAINER whose "$id" KEY names a property — never a resource
+            # boundary (the official 2020-12 metaschema's meta/core has this
+            # exact shape and a bindings-dict must not rebase the walk
+            # context — the inner $dynamicRefs would then resolve against the
+            # wrong base and stay raw).
             rid = node.get("$id")
-            if rid is not None and str(rid):
+            if isinstance(rid, str) and rid:
                 eff = _urljoin(str(ctx_id or ""), str(rid)) if ctx_id else str(rid)
                 ctx_obj, ctx_id = node, eff
             ref = node.get("$ref")
@@ -479,7 +508,11 @@ def _hop_refs(branch, group_index=0):
             if isinstance(dref, str):
                 frag = dref.split("#", 1)[1] if "#" in dref else dref
                 if frag and not frag.startswith("/"):
+                    if os.getenv("JSTS_TRACE"):
+                        print("DREFSEEN frag=%s ctx_id=%s" % (frag, ctx_id), file=sys.stderr)
                     nm = resolve_and_rewrite(node, dref, ctx_obj, ctx_id)
+                    if os.getenv("JSTS_TRACE"):
+                        print("DREFRES frag=%s nm=%r" % (frag, nm), file=sys.stderr)
                     if nm:
                         res_id = res_of_obj.get(id(node), res_base)
                         safe = _re.sub(r"[^0-9A-Za-z_.~-]+", "_", frag) or "anchor"
@@ -677,6 +710,39 @@ def _hop_refs(branch, group_index=0):
     return hoisted
 
 
+def _vocab_validation_enabled(branch):
+    """2020-12 dialect: a schema resource's active vocabularies come from
+    its metaschema ($schema URI -> metaschema document -> $vocabulary).
+    No $schema / no $vocabulary / unresolvable metaschema -> the default
+    dialect (full 2020-12, validation active). Only vault-resolvable
+    metaschemas are inspected (best-effort, mirroring the remotes vault)."""
+    if not isinstance(branch, dict):
+        return True
+    sch = branch.get("$schema")
+    if not isinstance(sch, str) or not sch:
+        return True
+    try:
+        meta = _vault_load(sch)
+    except Exception:
+        return True
+    if not isinstance(meta, dict):
+        return True
+    vocab = meta.get("$vocabulary")
+    if not isinstance(vocab, dict):
+        return True
+    return bool(vocab.get(
+        "https://json-schema.org/draft/2020-12/vocab/validation", False))
+
+
+def _stamp_dialect(branch, comp, group_index):
+    """Stamp the resource root with the validation-vocabulary status before
+    the $schema key is dropped (the IR carries dialect info per resource)."""
+    if not isinstance(branch, dict):
+        return
+    if not _vocab_validation_enabled(branch):
+        branch["x-oas31-vocab-inert"] = True
+
+
 def wrap_spec(groups):
     """OAS-wrap each group's schema as a single-branch oneOf so the Wave-1 IR
     emitter lowers it to a validate_G<i>_branch_0 dispatch. Wave-2 (contract
@@ -692,6 +758,7 @@ def wrap_spec(groups):
         s = g.get("schema", {})
         branch = dict(s) if isinstance(s, dict) else s
         if isinstance(branch, dict):
+            _stamp_dialect(branch, comp, i)
             branch.pop("$schema", None)
         comp["G%d" % i] = {"oneOf": [branch]}
         if isinstance(branch, dict):
@@ -905,6 +972,7 @@ def wrap_specs_batch(groups):
         s = g.get("schema", {})
         branch = dict(s) if isinstance(s, dict) else s
         if isinstance(branch, dict):
+            _stamp_dialect(branch, comp, i)
             branch.pop("$schema", None)
         comp["G%d" % i] = {"oneOf": [branch]}
         if isinstance(branch, dict):

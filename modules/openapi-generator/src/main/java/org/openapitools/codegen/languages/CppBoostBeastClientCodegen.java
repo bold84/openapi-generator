@@ -354,6 +354,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     }
     final Map<String, DynamicAnchorReg> dynamicAnchorRegs = new LinkedHashMap<>();
 
+    // Wave-4.2: synthetic resource ids whose validation vocabulary is inert
+    // (see the emission comment in buildSchemaIrSource).
+    final java.util.TreeSet<Integer> vocabInertResources = new java.util.TreeSet<>();
+
     // Wave-4: names of REAL spec components (the __dynref_ decode consults
     // this set; the model layer synthesises virtual <parent>_oneOf branches
     // that must never decode as dynamicRef anchors).
@@ -1211,6 +1215,10 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
                     if (Boolean.TRUE.equals(dynroot) || (dynroot instanceof Number
                             && ((Number) dynroot).intValue() != 0)) {
                         validateParams.put("validation-resource-root", Boolean.TRUE);
+                    }
+                    Object vinert = ext.get("x-oas31-vocab-inert");
+                    if (Boolean.TRUE.equals(vinert)) {
+                        validateParams.put("validation-vocab-inert", Boolean.TRUE);
                     }
                     Object dynref = ext.get("x-oas31-dynref");
                     if (dynref != null) {
@@ -6867,6 +6875,10 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
         boolean resourceRoot = false;
         String  dynamicAnchorName = null;
         String  dynamicRefAnchor = null;
+        // Wave-4.2 dialect: this resource runs WITHOUT the validation
+        // vocabulary (the metaschema's $vocabulary omitted it); validation
+        // keywords become inert annotations (2020-12 §8.1.2).
+        boolean dialectValidationInert = false;
 
         // -- Wave-2 object structural (FROZEN §10) --
         static final class PropertySchema {
@@ -7124,6 +7136,9 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
         }
         if (Boolean.TRUE.equals(vp.get("validation-resource-root"))) {
             n.resourceRoot = true;
+        }
+        if (Boolean.TRUE.equals(vp.get("validation-vocab-inert"))) {
+            n.dialectValidationInert = true;
         }
         Object dynRef = vp.get("validation-dynamic-ref-anchor");
         if (dynRef != null) {
@@ -7478,6 +7493,10 @@ Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
                 if (Boolean.TRUE.equals(dynroot) || (dynroot instanceof Number
                         && ((Number) dynroot).intValue() != 0)) {
                     n.resourceRoot = true;
+                }
+                Object vinert = ext.get("x-oas31-vocab-inert");
+                if (Boolean.TRUE.equals(vinert)) {
+                    n.dialectValidationInert = true;
                 }
                 Object dynref = ext.get("x-oas31-dynref");
                 if (dynref != null) {
@@ -8448,7 +8467,22 @@ private String dynamicRefAnchorOf(String refStr) {
             }
             sb.append("        reg.nodes.push_back(n);\n");
             sb.append("    }\n");
+            if (node.dialectValidationInert) {
+                vocabInertResources.add(node.dynamicResource);
+            }
             index++;
+        }
+
+        // ---- Wave-4.2: validation-vocabulary inert resources (dialect) ----
+        // A resource whose metaschema's $vocabulary omits the validation
+        // vocabulary runs its validation keywords as inert annotations
+        // (2020-12 §8.1.2). The runner stamps x-oas31-vocab-inert on the
+        // resource root; the engine resolves each row's resource through the
+        // DYNAMIC SCOPE (rows carry synthetic res ids; unmarked rows inherit
+        // the enclosing resource from the scope top).
+        for (int rid : vocabInertResources) {
+            sb.append("        reg.vocabInertResources.insert(")
+                    .append(rid).append(");\n");
         }
 
         // ---- Wave-4: $dynamicAnchor tables (per synthetic resource) ----

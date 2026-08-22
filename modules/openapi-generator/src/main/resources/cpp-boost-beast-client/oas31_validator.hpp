@@ -337,12 +337,20 @@ struct ValidationContext {
     std::set<std::string>& curProps() { return evaluatedPropertiesStack.back(); }
     std::set<std::size_t>& curItems() { return evaluatedItemsStack.back(); }
     // Wave-3 dynamic scope: ordered chain of synthetic resource ids NAVIGATED
-    // during evaluation (outermost = element 0). Pushed ONLY at resourceRoot
-    // nodes; popped when evaluation leaves that subtree. Frame counts are
+    // during evaluation (outermost = element 0). Pushed when evaluation
+    // ENTERS a resource (resource id differs from the current top — every
+    // evaluation-path resource joins the scope, not only resourceRoot rows,
+    // which also push re-entries), popped when leaving. Frame counts are
     // deliberately NOT deduplicated (2020-12: re-entering a resource adds a
     // fresh frame). Branch snapshots copy the scope so failed anyOf/oneOf
     // branches do not leak frames.
     std::vector<int> dynamicScope;
+    // Wave-4.2: the effective resource of the row currently being validated
+    // (its own dynamicResource when stamped, else the innermost enclosing
+    // marked resource — the scope top before the row's own push). Updated by
+    // SchemaEvaluator::validate(); consumed by the validation-vocabulary
+    // gates (dialect $vocabulary).
+    int currentValidationRes = 0;
     void pushScopeFrame(int resId) { dynamicScope.push_back(resId); }
     void popScopeFrame() { if (!dynamicScope.empty()) dynamicScope.pop_back(); }
     /// Outermost-to-innermost walk for $dynamicRef: 2020-12 applies the anchor
@@ -465,6 +473,16 @@ public:
     ValidationResult validate(SchemaIndex node, RawInstance const& instance,
                               ValidationPath& path, ValidationContext& ctx) const {
         SchemaNode const& n = registry_.node(node);
+        // Wave-4.2: effective resource for vocabulary gating — the row's own
+        // synthetic id when stamped, else the innermost enclosing marked
+        // resource (the scope top BEFORE this row's own push).
+        if (n.dynamicResource != 0) {
+            ctx.currentValidationRes = n.dynamicResource;
+        } else if (!ctx.dynamicScope.empty()) {
+            ctx.currentValidationRes = ctx.dynamicScope.back();
+        } else {
+            ctx.currentValidationRes = 0;
+        }
         if (n.dynamicResource != 0 || n.resourceRoot) {
             int const top = ctx.dynamicScope.empty()
                     ? -1 : ctx.dynamicScope.back();
@@ -481,6 +499,16 @@ public:
     /// Validate a single schema object against one raw instance.
     ValidationResult validateSchemaNode(SchemaNode const& node, RawInstance const& instance,
                                         ValidationPath& path, ValidationContext& ctx) const {
+        // Wave-4.2 dialect: validation-vocabulary gating. A resource whose
+        // metaschema's $vocabulary omits the validation vocabulary runs its
+        // validation keywords as inert annotations (2020-12 §8.1.2):
+        // type/enum/const/ranges/lengths/counts/required/dependentRequired
+        // are skipped; applicators, core boolean schemas and annotations are
+        // unaffected. ctx.currentValidationRes holds the row's effective
+        // resource (see validate()).
+        bool const vInert =
+            !registry_.validationVocabActive(ctx.currentValidationRes);
+
         // Boolean value-schema (OAS 3.1).
         if (node.booleanValue == BooleanValue::true_) return ValidationResult::valid();
         if (node.booleanValue == BooleanValue::false_)
@@ -528,7 +556,7 @@ public:
         // `integer` matches only numbers whose exact mathematical value is an
         // integer (ADR D1) — so 1 and 1.0 both satisfy `type: integer`, 1.5 does
         // not. All numeric reasoning goes through ExactNumber, never `double`.
-        if (node.typeFlags != 0) {
+        if (!vInert && node.typeFlags != 0) {
             JsonType const k = instance.kind();
             if (k == JsonType::number) {
                 bool const wantNumber = (node.typeFlags &
@@ -546,7 +574,7 @@ public:
         }
 
         // Exact-number range constraints.
-        if (instance.isNumber()) {
+        if (!vInert && instance.isNumber()) {
             ExactNumber const n = instance.asExactNumber();
             if (node.hasMinimum && n < node.minimum)
                 return ValidationResult::invalidAt(path, "below minimum");
@@ -573,7 +601,7 @@ public:
         // behave identically. pattern uses ECMAScript-subset semantics with an
         // UNANCHORED search (2020-12: a pattern matches by substring search;
         // only the pattern author's own ^ and $ anchors bound it).
-        if (instance.kind() == JsonType::string) {
+        if (!vInert && instance.kind() == JsonType::string) {
             std::string const s = instance.asString();
             std::size_t const codePoints = countCodePoints(s);
             if (node.hasMinLength && ExactNumber::fromUint(codePoints) < node.minLength)
@@ -613,9 +641,9 @@ public:
         }
         bool const hasAnyEnum = node.hasEnumJson || !node.enumNumbers.empty()
                 || !node.enumStrings.empty() || !node.enumBooleans.empty();
-        if (hasAnyEnum && !enumFound)
+        if (!vInert && hasAnyEnum && !enumFound)
             return ValidationResult::invalidAt(path, "not in enum");
-        if (node.hasConst) {
+        if (!vInert && node.hasConst) {
             if (node.constIsJson) {
                 if (!deepInstanceEqual(instance, node.constJson))
                     return ValidationResult::invalidAt(path, "const mismatch");
@@ -656,12 +684,15 @@ public:
         }
 
         // Object structural traversal (FROZEN §10.3).
+        int const savedValidationRes = ctx.currentValidationRes;
         ValidationResult objRes = this->validateObjectTraversal(node, instance, path, ctx);
         if (!objRes.success) return objRes;
+        ctx.currentValidationRes = savedValidationRes;
 
         // Array structural traversal (FROZEN §10.3).
         ValidationResult arrRes = this->validateArrayTraversal(node, instance, path, ctx);
         if (!arrRes.success) return arrRes;
+        ctx.currentValidationRes = savedValidationRes;
 
         // if/then/else + dependentSchemas (annotations of the APPLIED branches
         // count for unevaluated*; evaluated BEFORE the uneval check so the
@@ -1018,7 +1049,14 @@ private:
     ValidationResult validateObjectTraversal(SchemaNode const& node, RawInstance const& instance,
                                              ValidationPath& path, ValidationContext& ctx) const {
         if (!instance.isObject()) return ValidationResult::valid();
+        // Wave-4.2: counts/required/dependentRequired belong to the
+        // validation vocabulary (gated by the resource dialect).
+        bool const vInert =
+            !registry_.validationVocabActive(ctx.currentValidationRes);
 
+        // Wave-4.2: the object-validation block (counts, required,
+        // dependentRequired) is gated by the validation vocabulary.
+        if (!vInert) {
         // minProperties / maxProperties — ExactNumber from the instance size,
         // never a double; a decimal bound (1.0) compares equal to 1.
         std::size_t const n = instance.size();
@@ -1045,6 +1083,7 @@ private:
                         path, "dependentRequired '" + dep.first
                             + "' missing '" + rn + "'");
             }
+        }
         }
 
         // Declared properties: validate each present member against its
@@ -1147,12 +1186,19 @@ private:
     ValidationResult validateArrayTraversal(SchemaNode const& node, RawInstance const& instance,
                                             ValidationPath& path, ValidationContext& ctx) const {
         if (!instance.isArray()) return ValidationResult::valid();
+        // Wave-4.2: item-count bounds belong to the validation vocabulary
+        // (the contains MATCHING below stays applicator-active; only the
+        // min/maxContains bound enforcement is gated with them).
+        bool const vInert =
+            !registry_.validationVocabActive(ctx.currentValidationRes);
 
         std::size_t const n = instance.size();
+        if (!vInert) {
         if (node.hasMinItems && ExactNumber::fromUint(n) < node.minItems)
             return ValidationResult::invalidAt(path, "array has fewer items than minItems");
         if (node.hasMaxItems && node.maxItems < ExactNumber::fromUint(n))
             return ValidationResult::invalidAt(path, "array has more items than maxItems");
+        }
 
         // prefixItems: each schema applies to the item at ITS index. Item
         // values live at nested array locations (fresh scopes).
@@ -1201,6 +1247,7 @@ private:
                 if (r.success) matched.push_back(i);
             }
             std::size_t const matchCount = matched.size();
+            if (!vInert) {
             bool const minWaived =
                 node.hasMinContains && node.minContains.isZero();
             if (!minWaived) {
@@ -1214,6 +1261,7 @@ private:
                     && node.maxContains < ExactNumber::fromUint(matchCount))
                 return ValidationResult::invalidAt(
                     path, "contains: more matches than maxContains");
+            }
             for (std::size_t i : matched) ctx.curItems().insert(i);
         }
 

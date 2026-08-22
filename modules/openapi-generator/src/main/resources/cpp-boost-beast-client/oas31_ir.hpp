@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -237,6 +238,18 @@ struct SchemaResourceRegistry {
     // emitter; index by SchemaNode::dynamicResource. Each row maps an anchor
     // name to the SchemaIndex of the CONTAINING subschema of the declaration.
     std::vector<std::vector<std::pair<std::string, SchemaIndex>>> dynamicAnchorTables;
+
+    // Wave-4.2 dialect: synthetic resource ids whose metaschema's
+    // $vocabulary omits the validation vocabulary (2020-12 §8.1.2): their
+    // validation keywords act as inert annotations.
+    std::set<int> vocabInertResources;
+
+    /// Validation-vocabulary status for a row, resolved through ITS OWN
+    /// resource id: the runner stamps every object with x-oas31-res, so rows
+    /// carry their resource directly (0 = the outermost group resource).
+    bool validationVocabActive(int resourceId) const {
+        return vocabInertResources.count(resourceId) == 0;
+    }
 
     SchemaNode const& node(SchemaIndex i) const {
         return nodes[static_cast<std::size_t>(i)];
