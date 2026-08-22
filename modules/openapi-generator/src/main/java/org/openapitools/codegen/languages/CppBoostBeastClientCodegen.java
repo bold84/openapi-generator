@@ -337,6 +337,28 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      *  inspection as the semantic source for branch lowering. */
     final Map<String, CompositionDescriptor> compositionDescriptors = new LinkedHashMap<>();
 
+    // Wave-4: $dynamicAnchor registration records. Keyed by resourceId + '\0'
+    // + anchor name; LATER puts override earlier ones (a hoisted anchor
+    // component wrapper's explicit registration wins over the branch's
+    // self-registration of the same (resource, name)). Rows are resolved after
+    // registry numbering; emitted as dynamicAnchorTables in buildSchemaIrSource.
+    static final class DynamicAnchorReg {
+        final IrNode node;
+        final int    resource;
+        final String name;
+        final boolean self;      // true: target row IS node; false: node's first composed child
+        int row = -1;
+        DynamicAnchorReg(IrNode node, int resource, String name, boolean self) {
+            this.node = node; this.resource = resource; this.name = name; this.self = self;
+        }
+    }
+    final Map<String, DynamicAnchorReg> dynamicAnchorRegs = new LinkedHashMap<>();
+
+    // Wave-4: names of REAL spec components (the __dynref_ decode consults
+    // this set; the model layer synthesises virtual <parent>_oneOf branches
+    // that must never decode as dynamicRef anchors).
+    final java.util.Set<String> oasComponentNames = new java.util.HashSet<>();
+
     // Wave-2: per-component "is composed (oneOf/anyOf/allOf)" snapshot captured
     // at IR emission time (post-model-extraction), used to choose the ref-target
     // row id suffix: composed components resolve via their branch row
@@ -402,6 +424,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             // flattening so all inline schemas have been extracted to component
             // references with stable $ref targets.
             compositionDescriptors.clear();
+            dynamicAnchorRegs.clear();
             for (Map.Entry<String, Schema> entry : schemas.entrySet()) {
                 String schemaName = entry.getKey();
                 Schema schema = entry.getValue();
@@ -649,10 +672,227 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             Schema owner = nearestComponentBefore(keysAt, em.start(), schemas);
             if (owner != null) markComponentEmptyEnum(owner);
         }
+        // (c) dependentRequired maps: swagger-parser MERGES the required
+        // lists of EVERY entry into ONE shared list and yields that same
+        // corrupt list for every trigger key (proven on two-entry maps with
+        // exotic keys; pinned by DependentRequiredParserRetentionTest). The
+        // exact literal map is recovered from the raw spec text and carried
+        // per-carrier via x-oas31-dependent-required; generators preferring
+        // the extension when the parser's native map is non-empty.
+        java.util.regex.Matcher depM = java.util.regex.Pattern.compile(
+                "(?:\"dependentRequired\"|dependentRequired)\\s*:(?=\\s*\\{)").matcher(text);
+        while (depM.find()) {
+            int brace = text.indexOf('{', depM.end());
+            if (brace < 0) continue;
+            int end = matchingBrace(text, brace);
+            if (end < 0) continue;
+            String frag = text.substring(brace, end + 1);
+            try {
+                com.fasterxml.jackson.databind.ObjectMapper om =
+                        new com.fasterxml.jackson.databind.ObjectMapper();
+                com.fasterxml.jackson.databind.JsonNode node = om.readTree(frag);
+                java.util.Map<String, Object> built =
+                        new java.util.LinkedHashMap<>();
+                java.util.Iterator<java.util.Map.Entry<String,
+                        com.fasterxml.jackson.databind.JsonNode>> it = node.fields();
+                while (it.hasNext()) {
+                    java.util.Map.Entry<String,
+                            com.fasterxml.jackson.databind.JsonNode> e = it.next();
+                    java.util.List<String> vals = new java.util.ArrayList<>();
+                    if (e.getValue().isArray()) {
+                        for (com.fasterxml.jackson.databind.JsonNode el : e.getValue()) {
+                            vals.add(el.isTextual() ? el.textValue()
+                                    : el.toString());
+                        }
+                    }
+                    built.put(e.getKey(), vals);
+                }
+                markDependentRequiredCarrier(keysAt, depM.start(), schemas,
+                        text, built);
+                if (System.getenv("OAS31_DEBUG") != null) {
+                    System.err.println("[depReqRecover] pos=" + depM.start()
+                            + " literal=" + frag.replace("\n", "\\n")
+                                    .replace("\r", "\\r"));
+                }
+            } catch (Exception e) {
+                // best-effort: unparseable literal -> nothing marked; the
+                // group is then honestly measured as FAIL, never silently
+                // passed.
+            }
+        }
+        recoverCountAndTypeLiterals(text, keysAt, schemas);
+    }
+
+    /** Locate the raw position of char `ch` at or after `from`, ignoring
+     *  string literals. Returns -1 when absent. */
+    private static int rawIndexOf(String text, char ch, int from) {
+        for (int i = from; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (c == '"') {
+                i++;                        // skip string literal
+                while (i < text.length()) {
+                    if (text.charAt(i) == '\\') i++;
+                    else if (text.charAt(i) == '"') break;
+                    i++;
+                }
+            } else if (c == ch) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /** Mark the exact carrier schema of a dependentRequired literal (the
+     *  oneOf/anyOf/allOf MEMBER whose raw span contains `pos`) with
+     *  x-oas31-dependent-required. Members are located inside the owning
+     *  component's raw span (nearest preceding component key) by splitting
+     *  top-level member objects, so multi-member compositions with several
+     *  maps each get THEIR OWN literal. */
+    private void markDependentRequiredCarrier(
+            java.util.TreeMap<Integer, String> keysAt, int pos,
+            Map<String, Schema> schemas, String text,
+            java.util.Map<String, Object> map) {
+        java.util.Map.Entry<Integer, String> ownerKey = keysAt.floorEntry(pos);
+        if (System.getenv("OAS31_DEBUG") != null) {
+            System.err.println("[depReqCarrier] pos=" + pos + " keysAt="
+                    + keysAt.size() + " floor=" + ownerKey
+                    + " hasG0=" + keysAt.containsValue("G0"));
+        }
+        // keysAt indexes EVERY "name": token (incl. keywords like
+        // "dependentRequired" and x-oas31-* markers); walk back to the
+        // nearest REAL component name.
+        while (ownerKey != null
+                && !schemas.containsKey(ownerKey.getValue())) {
+            ownerKey = keysAt.lowerEntry(ownerKey.getKey());
+        }
+        if (ownerKey == null) return;
+        Schema owner = schemas.get(ownerKey.getValue());
+        if (owner == null) return;
+        int spanEnd = text.length();
+        java.util.Map.Entry<Integer, String> next =
+                keysAt.higherEntry(ownerKey.getKey() + 1);
+        while (next != null && !schemas.containsKey(next.getValue())) {
+            next = keysAt.higherEntry(next.getKey());
+        }
+        if (next != null) spanEnd = next.getKey();
+        if (System.getenv("OAS31_DEBUG") != null) {
+            System.err.println("[depReqCarrier] owner=" + ownerKey.getValue()
+                    + " pos=" + pos + " spanEnd=" + spanEnd);
+        }
+        // the applicator key inside the owner span
+        for (String app : new String[]{"oneOf", "anyOf", "allOf"}) {
+            // find the applicator key occurrence within the span at depth 1
+            int depth = 0;
+            boolean inStr = false;
+            int arrOpen = -1;
+            for (int i = ownerKey.getKey(); i < spanEnd; i++) {
+                char c = text.charAt(i);
+                if (inStr) {
+                    if (c == '\\') i++;
+                    else if (c == '"') inStr = false;
+                } else if (c == '"') {
+                    inStr = true;
+                } else if (c == '{') {
+                    depth++;
+                } else if (c == '}') {
+                    depth--;
+                } else if (c == '[' && depth == 1) {
+                    arrOpen = i;
+                    break;
+                }
+            }
+            if (arrOpen < 0) {
+                if (System.getenv("OAS31_DEBUG") != null) {
+                    System.err.println("[depReqCarrier] no arr for " + app);
+                }
+                continue;
+            }
+            int memberIdx = 0;
+            depth = 0;
+            for (int i = arrOpen; i < spanEnd; i++) {
+                char c = text.charAt(i);
+                if (inStr) {
+                    if (c == '\\') i++;
+                    else if (c == '"') inStr = false;
+                } else if (c == '"') {
+                    inStr = true;
+                } else if (c == '{') {
+                    depth++;
+                    if (depth == 1) {  // member objects relative to the array
+                        int end = matchingBrace(text, i);
+                        Schema member = memberAt(owner, memberIdx);
+                        if (member != null && i <= pos && pos <= end) {
+                            member.addExtension(
+                                    "x-oas31-dependent-required", map);
+                            if (System.getenv("OAS31_DEBUG") != null) {
+                                System.err.println("[depReqCarrier] marked member="
+                                        + memberIdx + " pos=" + pos
+                                        + " in [" + i + "," + end + "]"
+                                        + " owner=" + ownerKey.getValue());
+                            }
+                            return;
+                        }
+                        i = end;
+                        memberIdx++;
+                    }
+                } else if (c == '}') {
+                    if (depth > 0) depth--;
+                } else if (c == ']' && depth == 0) {
+                    return;
+                }
+            }
+            return;
+        }
+    }
+
+    private Schema memberAt(Schema owner, int idx) {
+        if (owner.getOneOf() != null && !owner.getOneOf().isEmpty()) {
+            return idx < owner.getOneOf().size()
+                    ? (Schema) owner.getOneOf().get(idx) : null;
+        }
+        if (owner.getAnyOf() != null && !owner.getAnyOf().isEmpty()) {
+            return idx < owner.getAnyOf().size()
+                    ? (Schema) owner.getAnyOf().get(idx) : null;
+        }
+        if (owner.getAllOf() != null && !owner.getAllOf().isEmpty()) {
+            return idx < owner.getAllOf().size()
+                    ? (Schema) owner.getAllOf().get(idx) : null;
+        }
+        return null;
+    }
+
+    /** Index of the '}' matching the '{' at `open`, honouring strings. */
+    private static int matchingBrace(String text, int open) {
+        int depth = 0;
+        boolean inStr = false;
+        for (int i = open; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inStr) {
+                if (c == '\\') i++;
+                else if (c == '"') inStr = false;
+            } else if (c == '"') {
+                inStr = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+        // (b) float-form count bounds -> inject the exact raw lexeme. This
+        // pass (b) and the pristine-type-null pass (c) run from
+        // recoverPristineLiterals; they live here so the raw-literals
+        // recovery stays in one place.
+    private void recoverCountAndTypeLiterals(
+            String text, java.util.TreeMap<Integer, String> keysAt,
+            Map<String, Schema> schemas) {
         // (b) float-form count bounds -> inject the exact raw lexeme.
         java.util.regex.Matcher bm = java.util.regex.Pattern.compile(
-                "(?:\"(minItems|maxItems|minProperties|maxProperties|minLength|maxLength)\"|"
-              + "(minItems|maxItems|minProperties|maxProperties|minLength|maxLength))\\s*:"
+                "(?:\"(minItems|maxItems|minProperties|maxProperties|minLength|maxLength|minContains|maxContains)\"|"
+              + "(minItems|maxItems|minProperties|maxProperties|minLength|maxLength|minContains|maxContains))\\s*:"
               + "\\s*(-?[0-9]+(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)").matcher(text);
         while (bm.find()) {
             String kw = bm.group(1) != null ? bm.group(1) : bm.group(2);
@@ -672,8 +912,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         java.util.regex.Matcher tm = java.util.regex.Pattern.compile(
                 "(?:\"type\"|type)\\s*:\\s*\\[[^{}]*?\"null\"[^{}]*?\\]").matcher(text);
         while (tm.find()) {
-            Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
-            if (owner != null) markPristineTypeNull(owner);
+Schema owner = nearestComponentBefore(keysAt, tm.start(), schemas);
+                if (owner != null) markPristineTypeNull(owner);
         }
     }
 
@@ -765,6 +1005,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             schema.setExtensions(new java.util.LinkedHashMap<>());
         }
         schema.addExtension(ext, lexeme);
+    }
+
+    /** Hex-escape a string for debug output (control chars stay visible). */
+    private static String hexDump(String s) {
+        if (s == null) return "null";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c >= 0x20 && c < 0x7f) sb.append(c);
+            else sb.append(String.format("\\u%04x", (int) c));
+        }
+        return sb.toString();
     }
 
     /** Read a recovered count-bound lexeme extension (null when absent). */
@@ -938,6 +1190,46 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     // branch-driven; sibling keywords are emitted inline.
                     scanSurfaceAssertions(branchSchema, openAPI,
                             supported, unsupported, validateParams, true);
+                }
+            }
+
+            // Wave-4 dynamic-scope markers live ONLY on the branch's own schema
+            // surface (never the ref target): the runner rewrites $dynamicRef to
+            // $ref + x-oas31-dynref and marks resource boundaries with
+            // x-oas31-res / x-oas31-res-root; $dynamicAnchor stays a native
+            // getter. These flow into validateParams so irNodeFromBranch can
+            // materialise the dynamic-scope fields for this row.
+            if (branchSchema != null) {
+                java.util.Map ext = branchSchema.getExtensions();
+                if (ext != null) {
+                    Object dynres = ext.get("x-oas31-res");
+                    if (dynres instanceof Number) {
+                        validateParams.put("validation-dynamic-resource",
+                                ((Number) dynres).intValue());
+                    }
+                    Object dynroot = ext.get("x-oas31-res-root");
+                    if (Boolean.TRUE.equals(dynroot) || (dynroot instanceof Number
+                            && ((Number) dynroot).intValue() != 0)) {
+                        validateParams.put("validation-resource-root", Boolean.TRUE);
+                    }
+                    Object dynref = ext.get("x-oas31-dynref");
+                    if (dynref != null) {
+                        validateParams.put("validation-dynamic-ref-anchor",
+                                String.valueOf(dynref));
+                    }
+                }
+                if (branchSchema.get$dynamicAnchor() != null
+                        && !branchSchema.get$dynamicAnchor().isEmpty()) {
+                    validateParams.put("validation-dynamic-anchor",
+                            branchSchema.get$dynamicAnchor());
+                }
+                if (System.getenv("OAS31_DEBUG") != null) {
+                    System.err.println("[branchScan] " + schemaName + "_branch_" + index
+                            + " dynRes=" + validateParams.get("validation-dynamic-resource")
+                            + " root=" + validateParams.get("validation-resource-root")
+                            + " dynref=" + validateParams.get("validation-dynamic-ref-anchor")
+                            + " dynanch=" + validateParams.get("validation-dynamic-anchor")
+                            + " ext=" + (ext == null ? "null" : String.valueOf(ext.keySet())));
                 }
             }
 
@@ -1285,11 +1577,53 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 if (surface.getElse() != null) {
                     validateParams.put("validation-else-schema", surface.getElse());
                 }
-                if (surface.getDependentRequired() != null) {
-                    unsupported.add("dependencies");
+                // dependentRequired: the parser MERGES the required lists of
+                // multi-entry maps into one shared corrupt list (see
+                // recoverPristineLiterals (c) +
+                // DependentRequiredParserRetentionTest); the raw-literal
+                // recovery extension is authoritative when present.
+                Object depReqNative = surface.getDependentRequired();
+                if (depReqNative != null
+                        && !((java.util.Map<?, ?>) depReqNative).isEmpty()
+                        && surface.getExtensions() != null
+                        && surface.getExtensions().containsKey(
+                                "x-oas31-dependent-required")) {
+                    depReqNative = surface.getExtensions()
+                            .get("x-oas31-dependent-required");
                 }
+                if (depReqNative instanceof java.util.Map
+                        && !((java.util.Map<?, ?>) depReqNative).isEmpty()) {
+                    supported.add("dependent-required");
+                    validateParams.put("validation-dependent-required",
+                            depReqNative);
+                }
+                // contains family (Wave-3.1 / K-08): the contains subschema is
+                // densified as a child row; min/maxContains are exact count
+                // bounds. Per 2020-12 both bounds are INERT without contains —
+                // the keys are still surfaced so the ledger stays honest.
                 if (surface.getContains() != null) {
-                    unsupported.add("contains");
+                    supported.add("contains");
+                    validateParams.put("validation-contains-schema",
+                            surface.getContains());
+                    String minC = countBoundLexemeOf(surface, "minContains");
+                    String maxC = countBoundLexemeOf(surface, "maxContains");
+                    if (surface.getMinContains() != null || minC != null) {
+                        validateParams.put("validation-min-contains",
+                                surface.getMinContains() != null
+                                        ? surface.getMinContains() : minC);
+                    }
+                    if (surface.getMaxContains() != null || maxC != null) {
+                        validateParams.put("validation-max-contains",
+                                surface.getMaxContains() != null
+                                        ? surface.getMaxContains() : maxC);
+                    }
+                } else {
+                    if (surface.getMinContains() != null
+                            || surface.getMaxContains() != null) {
+                        // inert per 2020-12 (no adjacent contains) — never
+                        // fail generation, never fail validation.
+                        supported.add("contains-count-inert");
+                    }
                 }
                 if (surface.getUnevaluatedProperties() != null) {
                     supported.add("unevaluated");
@@ -1762,16 +2096,16 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     "validation-max-properties (Wave-2 object-property-count)");
         }
         if (schema.getMinContains() != null) {
-            record(ledger, "minContains", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; contains family Wave 3.1 (K-08)");
+            record(ledger, "minContains", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-min-contains; exact count bound, inert without contains (2020-12, Wave-3.1 K-08)");
         }
         if (schema.getMaxContains() != null) {
-            record(ledger, "maxContains", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; contains family Wave 3.1 (K-08)");
+            record(ledger, "maxContains", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-max-contains; exact count bound, inert without contains (2020-12, Wave-3.1 K-08)");
         }
         if (schema.getDependentRequired() != null && !schema.getDependentRequired().isEmpty()) {
-            record(ledger, "dependentRequired", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; dependencies Wave 3.4 (K-11)");
+            record(ledger, "dependentRequired", location, VOCAB_VALIDATION, KeywordOccurrenceStatus.EMITTED,
+                    "validation-dependent-required (Wave-3.4 K-11)");
         }
 
         // ---- Applicator vocabulary (plan §3.2) ----
@@ -1803,15 +2137,15 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             scanSchemaNode(schema.getPropertyNames(), location + "/propertyNames", ledger, depth + 1);
         }
         if (schema.getDependentSchemas() != null && !schema.getDependentSchemas().isEmpty()) {
-            record(ledger, "dependentSchemas", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; Wave 3.4 (K-11) — previously a silent skip");
+            record(ledger, "dependentSchemas", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "validation-dependent-schemas (Wave-3 K-11)");
             for (Map.Entry<String, Schema> d : schema.getDependentSchemas().entrySet()) {
                 scanSchemaNode(d.getValue(), location + "/dependentSchemas/" + d.getKey(), ledger, depth + 1);
             }
         }
         if (schema.getPrefixItems() != null && !schema.getPrefixItems().isEmpty()) {
-            record(ledger, "prefixItems", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "fail-closed; Wave 2.2 (K-06)");
+            record(ledger, "prefixItems", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "validation-prefix-items; tuple validation by index (Wave-2.2 K-06)");
             for (int i = 0; i < schema.getPrefixItems().size(); i++) {
                 scanSchemaNode(schema.getPrefixItems().get(i), location + "/prefixItems/" + i, ledger, depth + 1);
             }
@@ -1822,8 +2156,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             scanSchemaNode(schema.getItems(), location + "/items", ledger, depth + 1);
         }
         if (schema.getContains() != null) {
-            record(ledger, "contains", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; Wave 3.1 (K-08)");
+            record(ledger, "contains", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                    "validation-contains-schema; matched indices feed unevaluatedItems (Wave-3.1 K-08)");
             scanSchemaNode(schema.getContains(), location + "/contains", ledger, depth + 1);
         }
         if (schema.getNot() != null) {
@@ -1833,18 +2167,18 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
         if (schema.getIf() != null || schema.getThen() != null || schema.getElse() != null) {
             if (schema.getIf() != null) {
-                record(ledger, "if", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                        "conditional; Wave 3.5 (K-02)");
+                record(ledger, "if", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                        "validation-if; transactional guard (Wave-3.5 K-02)");
                 scanSchemaNode(schema.getIf(), location + "/if", ledger, depth + 1);
             }
             if (schema.getThen() != null) {
-                record(ledger, "then", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                        "conditional; Wave 3.5 (K-02)");
+                record(ledger, "then", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                        "validation-then; applied branch only (Wave-3.5 K-02)");
                 scanSchemaNode(schema.getThen(), location + "/then", ledger, depth + 1);
             }
             if (schema.getElse() != null) {
-                record(ledger, "else", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.FAIL_CLOSED,
-                        "conditional; Wave 3.5 (K-02)");
+                record(ledger, "else", location, VOCAB_APPLICATOR, KeywordOccurrenceStatus.EMITTED,
+                        "validation-else; applied branch only (Wave-3.5 K-02)");
                 scanSchemaNode(schema.getElse(), location + "/else", ledger, depth + 1);
             }
         }
@@ -1880,8 +2214,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         }
         if (schema.getUnevaluatedItems() != null) {
             record(ledger, "unevaluatedItems", location, VOCAB_UNEVALUATED,
-                    KeywordOccurrenceStatus.FAIL_CLOSED,
-                    "no generated validator; Wave 4.1 (K-12) — previously a silent skip");
+                    KeywordOccurrenceStatus.EMITTED,
+                    "validation-unevaluated-items; evaluation-path semantics (Wave-3/4 K-12)");
             Schema ui = schema.getUnevaluatedItems();
             scanSchemaNode(ui, location + "/unevaluatedItems", ledger, depth + 1);
         }
@@ -6231,6 +6565,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         || (compSchema.getAllOf() != null && !compSchema.getAllOf().isEmpty());
                 irComponentComposed.put(name, composed);
             }
+            // Wave-4: __dynref_ decode-eligibility must see REAL spec component
+            // names while the MAIN path builds (its items/props rows carry the
+            // runner's __dynref_<resid>_<anchor> refs); the componentRows loop
+            // re-adds later (idempotent). Without this, main-path refs decode
+            // against an empty set and $dynamicRef degenerates to static $ref
+            // (dynamicRef g13 "strict-tree").
+            oasComponentNames.addAll(
+                    openAPI.getComponents().getSchemas().keySet());
         }
 
         List<IrNode> mainNodes = new ArrayList<>();
@@ -6279,6 +6621,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                     openAPI.getComponents().getSchemas().keySet());
             java.util.Collections.sort(names);
             for (String name : names) {
+                // Wave-4: only refs naming REAL spec components are eligible
+                // for the __dynref_ decode (the model layer synthesises
+                // virtual <parent>_oneOf branch components that must NOT be
+                // mistaken for dynamicRef wrappers).
+                oasComponentNames.add(name);
                 Schema compSchema = openAPI.getComponents().getSchemas().get(name);
                 if (compSchema == null) continue;
                 IrNode row = irNodeFromRawSchema(compSchema,
@@ -6385,6 +6732,10 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 Integer idx = indexOf.get(n.unevaluatedItemsSchemaChild);
                 if (idx != null) n.unevaluatedItemsSchemaIndex = idx;
             }
+            if (n.containsChild != null) {
+                Integer idx = indexOf.get(n.containsChild);
+                if (idx != null) n.containsIndex = idx;
+            }
             if (n.ifChild != null) {
                 Integer idx = indexOf.get(n.ifChild);
                 if (idx != null) n.ifIndex = idx;
@@ -6412,6 +6763,19 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 }
             }
         }
+        // Wave-4: resolve $dynamicAnchor registrations to concrete registry rows
+        // now that numbering is final. self=false entries target the wrapper's
+        // FIRST composed child (the runner single-branch oneOf content).
+        for (DynamicAnchorReg reg : dynamicAnchorRegs.values()) {
+            if (reg.self) {
+                Integer idx = indexOf.get(reg.node);
+                reg.row = idx != null ? idx.intValue() : -1;
+            } else {
+                reg.row = (reg.node.oneOfChildIndices != null
+                        && reg.node.oneOfChildIndices.size() > 0)
+                        ? reg.node.oneOfChildIndices.get(0).intValue() : -1;
+            }
+        }
         // (resolveChildList is a helper below; definitions live with the loop)
 
         processed.put("oas31SchemaIrHeader", buildSchemaIrHeader(allRows));
@@ -6428,6 +6792,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (n.itemsChild != null) out.add(n.itemsChild);
         if (n.unevaluatedSchemaChild != null) out.add(n.unevaluatedSchemaChild);
         if (n.unevaluatedItemsSchemaChild != null) out.add(n.unevaluatedItemsSchemaChild);
+        if (n.containsChild != null) out.add(n.containsChild);
         if (n.ifChild != null) out.add(n.ifChild);
         if (n.thenChild != null) out.add(n.thenChild);
         if (n.elseChild != null) out.add(n.elseChild);
@@ -6489,6 +6854,19 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         boolean isRef = false;          // this node is a $ref to another component (K-29)
         String  refTargetId = null;     // validatorId of the ref target
         int     refTargetIndex = -1;    // resolved combined-registry index; -1 => unresolved (inline)
+
+        // -- Wave-4 dynamic scope ($dynamicRef / $dynamicAnchor) --
+        // dynamicResource: synthetic global resource id (runner-globalized); a
+        // resourceRoot row pushes a dynamic-scope frame when validated.
+        // dynamicAnchorName: set when THIS schema carries a $dynamicAnchor
+        // declaration. dynamicRefAnchor: set when THIS schema carries a
+        // $dynamicRef (runner rewrites it to $ref + this marker; the engine
+        // resolves the anchor through the dynamic scope, falling back to the
+        // static ref target children[0]).
+        int     dynamicResource = 0;
+        boolean resourceRoot = false;
+        String  dynamicAnchorName = null;
+        String  dynamicRefAnchor = null;
 
         // -- Wave-2 object structural (FROZEN §10) --
         static final class PropertySchema {
@@ -6552,6 +6930,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         IrNode  unevaluatedItemsSchemaChild = null;
         int     unevaluatedItemsSchemaIndex = -1;
 
+        // -- Wave-3.1 contains family (K-08) --
+        IrNode  containsChild = null;    // `contains` subschema row
+        int     containsIndex = -1;
+        String  minContainsLexeme = null;  boolean minContainsPresent = false;
+        String  maxContainsLexeme = null;  boolean maxContainsPresent = false;
+
         // -- Wave-2.5 if/then/else --
         IrNode  ifChild   = null;
         int     ifIndex   = -1;
@@ -6567,6 +6951,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             int     index = -1;   // resolved registry row of child
         }
         java.util.List<DependentSchema> dependentSchemas = new ArrayList<>();
+        // -- Wave-3.4 dependentRequired (K-11): property-name prerequisites --
+        static final class DependentRequiredEntry {
+            String name;
+            java.util.List<String> required = new ArrayList<>();
+        }
+        java.util.List<DependentRequiredEntry> dependentRequired = new ArrayList<>();
         boolean selfRef = false;   // $ref resolves to THIS node (self/root ref)
 
         /** Deterministic child-row id suffix counter (per node). */
@@ -6717,6 +7107,41 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         if (refObj != null) {
             n.isRef = true;
             n.refTargetId = refTargetIdOf(String.valueOf(refObj));
+            // Wave-4: $dynamicRef anchor name rides in the ref target name
+            // (runner __dynref_<resid>_<anchor> convention; parser drops
+            // sibling extensions on $ref schemas, so the marker path below
+            // is a compatibility fallback only).
+            String dynAnchor = dynamicRefAnchorOf(String.valueOf(refObj));
+            if (dynAnchor != null && n.dynamicRefAnchor == null) {
+                n.dynamicRefAnchor = dynAnchor;
+            }
+        }
+
+        // -- Wave-4 dynamic-scope fields (from the branch-scan marker reads) --
+        Object dynRes = vp.get("validation-dynamic-resource");
+        if (dynRes instanceof Number) {
+            n.dynamicResource = ((Number) dynRes).intValue();
+        }
+        if (Boolean.TRUE.equals(vp.get("validation-resource-root"))) {
+            n.resourceRoot = true;
+        }
+        Object dynRef = vp.get("validation-dynamic-ref-anchor");
+        if (dynRef != null) {
+            n.dynamicRefAnchor = String.valueOf(dynRef);
+            if (!n.isRef && n.refTargetId == null) {
+                // a $dynamicRef whose static target failed to rewrite stays a
+                // pure marker node (still materialised + fail-closed later).
+                n.isRef = true;
+                n.refTargetId = "__unresolved_dynamic_ref";
+            }
+        }
+        Object dynAnchor = vp.get("validation-dynamic-anchor");
+        if (dynAnchor != null) {
+            n.dynamicAnchorName = String.valueOf(dynAnchor);
+            // Self-registration: the anchor decl sits ON this row. Later
+            // wrapper-level registrations (x-oas31-dyanchor) override it.
+            dynamicAnchorRegs.put(n.dynamicResource + "\u0000" + n.dynamicAnchorName,
+                    new DynamicAnchorReg(n, n.dynamicResource, n.dynamicAnchorName, true));
         }
 
         // ====================================================================
@@ -6928,6 +7353,44 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             }
         }
 
+        // -- Wave-3.1 contains family (K-08) --
+        Object containsObj = vp.get("validation-contains-schema");
+        if (containsObj instanceof Schema) {
+            n.containsChild = irNodeFromRawSchema((Schema) containsObj,
+                    n.childId("contains"));
+        }
+        n.minContainsLexeme = lexemeOf(vp.get("validation-min-contains"));
+        n.maxContainsLexeme = lexemeOf(vp.get("validation-max-contains"));
+        if (n.minContainsLexeme != null) n.minContainsPresent = true;
+        if (n.maxContainsLexeme != null) n.maxContainsPresent = true;
+
+        // -- Wave-3.4 dependentRequired (K-11): when key K is present, every
+        //    name in its list must also be present (string-instance assertion
+        //    on the enclosing object). The parser MERGES the required lists
+        //    of multi-entry maps into one shared corrupt list (see
+        //    recoverPristineLiterals (c)); scanSurfaceAssertions has already
+        //    applied the recovered literal extension when present.
+        Object depReqObj = vp.get("validation-dependent-required");
+        if (depReqObj instanceof java.util.Map) {
+            if (System.getenv("OAS31_DEBUG") != null) {
+                for (java.util.Map.Entry<?, ?> e
+                        : ((java.util.Map<?, ?>) depReqObj).entrySet()) {
+                    System.err.println("[depReqScan] trigger=" + hexDump(String.valueOf(e.getKey()))
+                            + " required=" + hexDump(String.valueOf(e.getValue())));
+                }
+            }
+            for (java.util.Map.Entry<?, ?> e
+                    : ((java.util.Map<?, ?>) depReqObj).entrySet()) {
+                if (!(e.getValue() instanceof java.util.List)) continue;
+                IrNode.DependentRequiredEntry de = new IrNode.DependentRequiredEntry();
+                de.name = String.valueOf(e.getKey());
+                for (Object r : (java.util.List<?>) e.getValue()) {
+                    de.required.add(String.valueOf(r));
+                }
+                n.dependentRequired.add(de);
+            }
+        }
+
         boolean hasKeyword = n.hasType
                 || n.booleanValue != BooleanValueKind.NOT_BOOLEAN
                 || n.minimum != null || n.maximum != null
@@ -6951,8 +7414,12 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 || !n.oneOfChildren.isEmpty()
                 || n.unevaluatedPropertiesPresent
                 || n.unevaluatedItemsPresent
+                || n.containsChild != null || n.minContainsPresent || n.maxContainsPresent
                 || n.ifChild != null || n.thenChild != null || n.elseChild != null
-                || !n.dependentSchemas.isEmpty();
+                || !n.dependentSchemas.isEmpty()
+                || !n.dependentRequired.isEmpty()
+                || n.resourceRoot || n.dynamicRefAnchor != null
+                || n.dynamicAnchorName != null;
         return hasKeyword ? n : null;
     }
 
@@ -6975,13 +7442,71 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             System.err.println("[irNodeFromRawSchema] " + validatorId + " type=" + schema.getType()
                     + " props=" + (schema.getProperties() == null ? 0 : schema.getProperties().size())
                     + " enum=" + (schema.getEnum() == null ? "null" : String.valueOf(schema.getEnum().size()))
-                    + " $ref=" + schema.get$ref());
+                    + " $ref=" + schema.get$ref()
+                    + " ext=" + (schema.getExtensions() == null ? "null"
+                            : String.valueOf(schema.getExtensions().keySet())));
         }
         if (schema.get$ref() != null) {
             // Local ref: resolve against the combined registry later. Siblings
             // are still densified (2020-12: $ref and siblings BOTH apply).
             n.isRef = true;
             n.refTargetId = refTargetIdOf(schema.get$ref());
+            // Wave-4: decode a $dynamicRef anchor from the runner's
+            // __dynref_<resid>_<anchor> ref-target naming convention (the
+            // parser drops sibling extensions on $ref-carrying schemas, so
+            // x-oas31-dynref is not a reliable carrier).
+            String dynAnchor = dynamicRefAnchorOf(schema.get$ref());
+            if (dynAnchor != null && n.dynamicRefAnchor == null) {
+                n.dynamicRefAnchor = dynAnchor;
+            }
+        }
+
+        // -- Wave-4 dynamic-scope markers (x-oas31-* extensions) --
+        // The runner rewrites $dynamicRef to $ref + x-oas31-dynref, marks
+        // resource boundaries (x-oas31-res / x-oas31-res-root), and tags
+        // hoisted anchor components with x-oas31-dyanchor (anchor name). A
+        // $dynamicAnchor declaration surfaces via the native getter; a hoisted
+        // anchor WRAPPER carries only the extension, never the getter.
+        {
+            java.util.Map ext = schema.getExtensions();
+            if (ext != null) {
+                Object dynres = ext.get("x-oas31-res");
+                if (dynres instanceof Number) {
+                    n.dynamicResource = ((Number) dynres).intValue();
+                }
+                Object dynroot = ext.get("x-oas31-res-root");
+                if (Boolean.TRUE.equals(dynroot) || (dynroot instanceof Number
+                        && ((Number) dynroot).intValue() != 0)) {
+                    n.resourceRoot = true;
+                }
+                Object dynref = ext.get("x-oas31-dynref");
+                if (dynref != null) {
+                    n.dynamicRefAnchor = String.valueOf(dynref);
+                    if (!n.isRef && n.refTargetId == null) {
+                        n.isRef = true;
+                        n.refTargetId = "__unresolved_dynamic_ref";
+                    }
+                }
+                Object dynanch = ext.get("x-oas31-dyanchor");
+                if (dynanch != null) {
+                    // Hoisted anchor component wrapper: the anchor target row is
+                    // this wrapper's FIRST composed child (the runner single-
+                    // branch oneOf). Overrides any earlier self-registration of
+                    // the same (resource, name) pair.
+                    n.dynamicAnchorName = String.valueOf(dynanch);
+                    dynamicAnchorRegs.put(
+                            n.dynamicResource + "\u0000" + n.dynamicAnchorName,
+                            new DynamicAnchorReg(n, n.dynamicResource,
+                                    n.dynamicAnchorName, false));
+                }
+            }
+            if (n.dynamicAnchorName == null && schema.get$dynamicAnchor() != null
+                    && !schema.get$dynamicAnchor().isEmpty()) {
+                n.dynamicAnchorName = schema.get$dynamicAnchor();
+                dynamicAnchorRegs.put(n.dynamicResource + "\u0000" + n.dynamicAnchorName,
+                        new DynamicAnchorReg(n, n.dynamicResource,
+                                n.dynamicAnchorName, true));
+            }
         }
         if (schema.getType() != null) {
             n.hasType = true;
@@ -7279,6 +7804,51 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                 n.dependentSchemas.add(d);
             }
         }
+
+        // ---- Wave-3.1 contains family (raw path) ----
+        if (schema.getContains() != null) {
+            n.containsChild = irNodeFromRawSchema(schema.getContains(),
+                    n.childId("contains"));
+        }
+        String minCLex = schema.getMinContains() != null
+                ? String.valueOf(schema.getMinContains())
+                : countBoundLexemeOf(schema, "minContains");
+        if (minCLex != null) {
+            n.minContainsLexeme = minCLex;
+            n.minContainsPresent = true;
+        }
+        String maxCLex = schema.getMaxContains() != null
+                ? String.valueOf(schema.getMaxContains())
+                : countBoundLexemeOf(schema, "maxContains");
+        if (maxCLex != null) {
+            n.maxContainsLexeme = maxCLex;
+            n.maxContainsPresent = true;
+        }
+
+        // ---- Wave-3.4 dependentRequired (raw path) ----
+        // The parser merges multi-entry maps (see (c)); the recovered literal
+        // extension is authoritative when present.
+        java.util.Map<String, java.util.List<String>> depReqMap =
+                schema.getDependentRequired();
+        if (depReqMap != null && schema.getExtensions() != null
+                && schema.getExtensions().containsKey(
+                        "x-oas31-dependent-required")) {
+            Object ext = schema.getExtensions()
+                    .get("x-oas31-dependent-required");
+            if (ext instanceof java.util.Map) {
+                depReqMap = (java.util.Map<String, java.util.List<String>>) ext;
+            }
+        }
+        if (depReqMap != null && !depReqMap.isEmpty()) {
+            for (java.util.Map.Entry<String, java.util.List<String>> e
+                    : depReqMap.entrySet()) {
+                if (e.getValue() == null || e.getValue().isEmpty()) continue;
+                IrNode.DependentRequiredEntry de = new IrNode.DependentRequiredEntry();
+                de.name = e.getKey();
+                de.required.addAll(e.getValue());
+                n.dependentRequired.add(de);
+            }
+        }
         return n;
     }
 
@@ -7379,6 +7949,46 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
         int slash = base.lastIndexOf('/');
         String tail = slash >= 0 ? base.substring(slash + 1) : base;
         return tail.isEmpty() ? base : tail;
+    }
+
+    /**
+     * Wave-4: derive the $dynamicRef anchor name from the ref target component
+     * name. The JSTS runner rewrites `$dynamicRef: "#anchor"` to
+     * `$ref: #/components/schemas/__dynref_<resid>_<anchor>` (a wrapper whose
+     * oneOf child is the STATIC fallback) because swagger-parser DROPS sibling
+     * extensions on $ref-carrying schemas — the encoded name is the only
+     * reliable channel through generation. Returns the anchor name, or null
+     * when refStr is not a __dynref_ ref (plain $ref / pointer / empty
+     * fragment semantics).
+     */
+private String dynamicRefAnchorOf(String refStr) {
+        String name = refSimpleName(refStr);
+        if (System.getenv("OAS31_DEBUG") != null) {
+            System.err.println("[dynrefDecode] ref=" + refStr + " name=" + name);
+        }
+        if (name == null || !name.startsWith("__dynref_")) {
+            return null;
+        }
+        // The codegen's model layer synthesises virtual "<parent>_oneOf"
+        // branch components during composed-ref resolution; those must never
+        // decode as dynamicRef anchors (only refs naming REAL spec components
+        // are the runner's __dynref_<resid>_<anchor> wrappers).
+        if (!oasComponentNames.contains(name)) {
+            return null;
+        }
+        String rest = name.substring("__dynref_".length());
+        int cut = rest.indexOf('_');
+        if (cut <= 0) {
+            return null;
+        }
+        String resDigits = rest.substring(0, cut);
+        for (int i = 0; i < resDigits.length(); i++) {
+            if (!Character.isDigit(resDigits.charAt(i))) {
+                return null;
+            }
+        }
+        String anchor = rest.substring(cut + 1);
+        return anchor.isEmpty() ? null : anchor;
     }
 
     /** Serialize an arbitrary swagger value (const/enum) into a JSON literal. */
@@ -7601,6 +8211,27 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             sb.append("\n    { // node ").append(index).append(": ").append(node.resolvedName).append("\n");
             sb.append("        SchemaNode n;\n");
             sb.append("        n.resourceIdentity = 0;\n");
+            // Wave-4: dynamic-scope identity. dynamicResource is the synthetic
+            // (runner-globalized) resource id; resourceRoot rows push a scope
+            // frame when validated; dynamicAnchorName declares this row as the
+            // containing subschema of a $dynamicAnchor; dynamicRefAnchor marks
+            // a $dynamicRef node (the static fallback is children[0]).
+            if (node.dynamicResource != 0) {
+                sb.append("        n.dynamicResource = ").append(node.dynamicResource).append(";\n");
+            }
+            if (node.resourceRoot) {
+                sb.append("        n.resourceRoot = true;\n");
+            }
+            if (node.dynamicAnchorName != null) {
+                sb.append("        n.dynamicAnchorName = \"");
+                sb.append(escapeCppStringContent(node.dynamicAnchorName));
+                sb.append("\";\n");
+            }
+            if (node.dynamicRefAnchor != null && resolvedRef) {
+                sb.append("        n.dynamicRefAnchor = \"");
+                sb.append(escapeCppStringContent(node.dynamicRefAnchor));
+                sb.append("\";\n");
+            }
             // K-29: genuine local $ref node -> applicator to the resolved
             // target node. 2020-12: $ref and sibling keywords BOTH apply, so
             // the inline keyword copy below is emitted ALWAYS (a pure-ref node
@@ -7794,9 +8425,48 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
                         .append(escapeCppStringContent(d.name))
                         .append("\", ").append(d.index).append("});\n");
             }
+            // -- Wave-3.1 contains family (K-08) ---------------------
+            if (node.containsIndex >= 0) {
+                sb.append("        n.hasContains = true;\n");
+                sb.append("        n.containsSchema = ").append(node.containsIndex).append(";\n");
+            }
+            emitSetExact(sb, "n.minContains", "n.hasMinContains",
+                    node.minContainsLexeme);
+            emitSetExact(sb, "n.maxContains", "n.hasMaxContains",
+                    node.maxContainsLexeme);
+            // -- Wave-3.4 dependentRequired (K-11) --------------------
+            for (IrNode.DependentRequiredEntry de : node.dependentRequired) {
+                if (de.required.isEmpty()) continue;
+                sb.append("        n.dependentRequired.push_back({\"")
+                        .append(escapeCppStringContent(de.name)).append("\", {");
+                for (int ri = 0; ri < de.required.size(); ri++) {
+                    if (ri > 0) sb.append(", ");
+                    sb.append("\"").append(escapeCppStringContent(de.required.get(ri)))
+                            .append("\"");
+                }
+                sb.append("}});\n");
+            }
             sb.append("        reg.nodes.push_back(n);\n");
             sb.append("    }\n");
             index++;
+        }
+
+        // ---- Wave-4: $dynamicAnchor tables (per synthetic resource) ----
+        // Only registrations that resolved to a real registry row are emitted;
+        // unresolvable ones are simply absent (engine falls back statically).
+        {
+            int maxRes = 0;
+            for (DynamicAnchorReg reg : dynamicAnchorRegs.values()) {
+                if (reg.row >= 0 && reg.resource > maxRes) maxRes = reg.resource;
+            }
+            sb.append("    reg.dynamicAnchorTables.resize(").append(maxRes + 1).append(");\n");
+            for (DynamicAnchorReg reg : dynamicAnchorRegs.values()) {
+                if (reg.row < 0) continue;
+                sb.append("    reg.dynamicAnchorTables[").append(reg.resource)
+                    .append("].push_back({\"");
+                sb.append(escapeCppStringContent(reg.name));
+                    sb.append("\", ").append(reg.row).append("});\n");
+            }
         }
 
         sb.append("\n    return reg;\n");

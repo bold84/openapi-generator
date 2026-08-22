@@ -3898,7 +3898,8 @@ public class CppBoostBeastClientCodegenTest {
                 new io.swagger.v3.oas.models.Components();
         Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
 
-        // Schema with conditional (now supported) + contains (still unsupported)
+        // Schema with conditional (now supported) + contains (Wave-3.1
+        // supported) + contentEncoding (the remaining fail-closed keyword)
         ComposedSchema schema = new ComposedSchema();
         StringSchema conditionalBranch = new StringSchema();
         conditionalBranch.setMinLength(1);
@@ -3911,24 +3912,28 @@ public class CppBoostBeastClientCodegenTest {
 
         ArraySchema arrayWithContains = new ArraySchema();
         arrayWithContains.setContains(new StringSchema());
+        arrayWithContains.setItems(new StringSchema());
         schema.addOneOfItem(arrayWithContains);
+
+        StringSchema contentEncoded = new StringSchema();
+        contentEncoded.setContentEncoding("base64");
+        schema.addOneOfItem(contentEncoded);
 
         schemas.put("SchemaWithUnsupported", schema);
         components.setSchemas(schemas);
         openAPI.setComponents(components);
 
-        // preprocessOpenAPI must still throw — but the FIRST unsupported
-        // keyword is `contains` (the only remaining fail-closed keyword on
-        // this schema). `conditional` is no longer unsupported.
-        // The descriptor map is populated BEFORE validateDescriptorAssertions
-        // throws, so we can inspect the branches afterwards.
+        // preprocessOpenAPI must still throw — the FIRST unsupported keyword
+        // is now contentEncoding (`conditional` and `contains` are supported
+        // since Wave 2.5/3.1). The descriptor map is populated BEFORE
+        // validateDescriptorAssertions throws, so branches are inspectable.
         try {
             codegen.preprocessOpenAPI(openAPI);
-            org.testng.Assert.fail("expected UnsupportedSchemaAssertionException for 'contains'");
+            org.testng.Assert.fail("expected UnsupportedSchemaAssertionException for 'content-encoding'");
         } catch (CppBoostBeastClientCodegen.UnsupportedSchemaAssertionException e) {
             String msg = e.getMessage();
-            Assert.assertTrue(msg.contains("contains"),
-                    "Exception must mention 'contains'. Got: " + msg);
+            Assert.assertTrue(msg.contains("content-encoding"),
+                    "Exception must mention content-encoding. Got: " + msg);
         }
 
         CppBoostBeastClientCodegen.CompositionDescriptor desc =
@@ -3945,12 +3950,22 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertNotNull(
                 conditionalBranchDesc.getValidateParams().get("validation-if-schema"),
                 "validation-if-schema must be surfaced for the conditional branch");
-        // The contains branch (branch 1) must still be flagged unsupported.
+        // The contains branch (branch 1) must be SUPPORTED (Wave-3.1): its
+        // subschema is surfaced for IR emission; the contentEncoding branch
+        // (branch 2) is flagged unsupported.
         CppBoostBeastClientCodegen.CompositionBranchDescriptor containsBranchDesc =
                 desc.getBranches().get(1);
-        Assert.assertTrue(
+        Assert.assertFalse(
                 containsBranchDesc.getUnsupportedAssertions().contains("contains"),
-                "contains must remain unsupported (fail-closed)");
+                "contains must be supported (Wave-3.1)");
+        Assert.assertNotNull(
+                containsBranchDesc.getValidateParams().get("validation-contains-schema"),
+                "validation-contains-schema must be surfaced for the contains branch");
+        CppBoostBeastClientCodegen.CompositionBranchDescriptor encodedBranchDesc =
+                desc.getBranches().get(2);
+        Assert.assertTrue(
+                encodedBranchDesc.getUnsupportedAssertions().contains("content-encoding"),
+                "contentEncoding must remain unsupported (fail-closed)");
     }
 
     @Test
@@ -4709,9 +4724,9 @@ public class CppBoostBeastClientCodegenTest {
         Map<String, Schema> schemas = new HashMap<>();
 
         ComposedSchema schema = new ComposedSchema();
-        ArraySchema arrayWithContains = new ArraySchema();
-        arrayWithContains.setContains(new StringSchema());
-        schema.addAnyOfItem(arrayWithContains);
+        StringSchema contentEncodedBranch = new StringSchema();
+        contentEncodedBranch.setContentEncoding("base64");
+        schema.addAnyOfItem(contentEncodedBranch);
         schemas.put("SchemaWithUnsupportedAnyOf", schema);
         components.setSchemas(schemas);
         openAPI.setComponents(components);
@@ -5175,20 +5190,21 @@ public class CppBoostBeastClientCodegenTest {
                 codegen.scanSchemaKeywordOccurrences(openAPI);
 
         // These keywords were previously not scanned at all -> silent-skip gaps.
-        // The exhaustive scanner must classify them as fail-closed (never
-        // silent) — except patternProperties, which the Wave-2.5 pattern engine
-        // now EMITS (it must be classified EMITTED, not SILENT_SKIP).
+        // The exhaustive scanner must classify them as EMITTED (never
+        // silent): dependentSchemas/minContains/maxContains/unevaluatedItems
+        // now have real validators (Wave-3/3.1), while patternProperties is
+        // emitted by the Wave-2.5 pattern engine.
         java.util.List<String> previouslyMissed = Arrays.asList(
                 "dependentSchemas", "minContains",
                 "maxContains", "unevaluatedItems");
         for (String k : previouslyMissed) {
             Assert.assertTrue(ledger.hasKeyword(k),
                     "previously-missed keyword '" + k + "' must now be indexed");
-            boolean allFailClosed = ledger.forKeyword(k).stream()
+            boolean allEmitted = ledger.forKeyword(k).stream()
                     .allMatch(o -> o.getStatus()
-                            == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.FAIL_CLOSED);
-            Assert.assertTrue(allFailClosed,
-                    "'".concat(k).concat("' must be FAIL_CLOSED, not SILENT_SKIP"));
+                            == CppBoostBeastClientCodegen.KeywordOccurrenceStatus.EMITTED);
+            Assert.assertTrue(allEmitted,
+                    "'".concat(k).concat("' must be EMITTED (validator present), not SILENT_SKIP"));
         }
         // patternProperties is now EMITTED by the Wave-2.5 pattern engine
         // (K-09) — the ledger must say EMITTED, never SILENT_SKIP nor
@@ -5305,19 +5321,23 @@ public class CppBoostBeastClientCodegenTest {
                 openApiWithSchemas("3.1.0", Collections.singletonMap("Root", root));
 
         java.util.Set<String> fc = codegen.failClosedKeywords(openAPI);
-        // Wave-1/Wave-2/Wave-2.5 generated+run keywords must NOT be fail-closed
-        // any more (the ledger records them EMITTED; runtime: not.json 40/0/0,
+        // Wave-1..Wave-3.1 generated+run keywords must NOT be fail-closed
+        // (the ledger records them EMITTED; runtime: not.json 40/0/0,
         // min/maxProperties 10/0/0, patternProperties + propertyNames suites
-        // green through the GENERATED dispatch). `contains` remains genuinely
-        // fail-closed until Wave 3.1.
+        // green through the GENERATED dispatch, contains family green after
+        // the Wave-3.1 slice). contentEncoding remains fail-closed (S-A
+        // annotation surface, Wave 3.7).
         Assert.assertFalse(fc.contains("minProperties"), "minProperties is emitted (object-property-count)");
         Assert.assertFalse(fc.contains("not"), "not is emitted (K-01 evaluator)");
         Assert.assertFalse(fc.contains("patternProperties"), "patternProperties is emitted (Wave-2.5 pattern engine)");
         Assert.assertFalse(fc.contains("propertyNames"), "propertyNames is emitted (Wave-2.5)");
-        Assert.assertTrue(fc.contains("contains"), "contains must be fail-closed (Wave 3.1)");
+        Assert.assertFalse(fc.contains("contains"), "contains must be supported (Wave-3.1 K-08)");
+        Assert.assertFalse(fc.contains("minContains"), "minContains is emitted (Wave-3.1 count bound)");
+        Assert.assertFalse(fc.contains("maxContains"), "maxContains is emitted (Wave-3.1 count bound)");
         CppBoostBeastClientCodegen.KeywordOccurrenceLedger ledger =
                 codegen.scanSchemaKeywordOccurrences(openAPI);
-        Assert.assertTrue(ledger.failClosed().contains("contains"));
+        Assert.assertFalse(ledger.failClosed().contains("contains"),
+                "contains must be EMITTED in the ledger (Wave-3.1)");
         Assert.assertFalse(ledger.failClosed().contains("patternProperties"));
         Assert.assertFalse(ledger.failClosed().contains("propertyNames"));
         Assert.assertFalse(ledger.failClosed().contains("minProperties"));

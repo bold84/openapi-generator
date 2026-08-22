@@ -148,7 +148,7 @@ def _ptr_unescape(seg):
     return seg.replace("~1", "/").replace("~0", "~")
 
 
-def _hop_refs(branch):
+def _hop_refs(branch, group_index=0):
     """Wave-2 `$ref`/`$defs`/`$id` surfacing (FROZEN contract §10.3). Rewrites
     every ref that RESOLVES WITHIN the current group doc into
     `#/components/schemas/<name>` and returns {name: {"oneOf": [target]}} extra
@@ -158,6 +158,13 @@ def _hop_refs(branch):
     fragments) are resolved against the nearest enclosing `$id` resource;
     relative/qualified bases are merged (urllib.parse.urljoin) against the
     containing resource id and matched against in-doc `$id` values.
+
+    Wave-3: synthetic resource identity ((group_index<<20)|local, globally
+    unique) is stamped as x-oas31-res / x-oas31-res-root boundary markers on
+    resource ROOT objects; $dynamicRef is rewritten to $ref + x-oas31-dynref
+    anchor marker; every $dynamicAnchor-bearing subschema is hoisted as a
+    __da_* component tagged with x-oas31-dyanchor (except the group root and
+    embedded-$id resource roots, whose anchors self-register in the engine).
 
     Refs that do NOT resolve inside the doc (remote `http(s)`, `urn:`, the
     metaschema) are left untouched — the engine emits them as inert nodes and
@@ -176,21 +183,73 @@ def _hop_refs(branch):
     id_index = {}           # resolved-resource-id -> target dict
     id_name = {}            # resolved-resource-id -> preferred hoist name
     used = set()
+    obj_hoisted = {}        # id(target object) -> hoisted component name (dedupe)
+    res_base = group_index << 20
+    # Wave-3: synthetic resource identity (init BEFORE resolve_and_rewrite so
+    # the VAULT branch can allocate vault-document resource ids and stamp
+    # vault-document resource roots). Individual $id'd subtrees + the group
+    # root are (re)numbered by assign_resources (call site is after walk, but
+    # the DEFINITION must precede walk so the vault branch can invoke it).
+    res_counter = [res_base + 1]
+    res_of_obj = {}     # id(obj) -> containing synthetic resource id
+    root_of_obj = {}    # id(obj) -> True for resource ROOT objects
+    anchor_meta = {}    # hoisted name -> $dynamicAnchor name
 
-    def capture(name, target):
-        """Register a live target for later capture (first-referenced wins)."""
+    def assign_resources(node, outer_res):
+        """Assign each object to its innermost enclosing resource. An $id'd
+        object starts a NEW resource (stamped with boundary markers); its
+        siblings stay in the outer resource (correct restore semantics — the
+        walk() ctx rebasing above intentionally does NOT restore, but resource
+        scoping must)."""
+        if isinstance(node, dict):
+            eff = outer_res
+            rid2 = node.get("$id")
+            if isinstance(rid2, str) and rid2:
+                eff = res_counter[0]; res_counter[0] += 1
+                node["x-oas31-res"] = eff
+                node["x-oas31-res-root"] = True
+                root_of_obj[id(node)] = True
+            res_of_obj[id(node)] = eff
+            for v in node.values():
+                if isinstance(v, dict):
+                    assign_resources(v, eff)
+                elif isinstance(v, list):
+                    for vv in v:
+                        assign_resources(vv, eff)
+        elif isinstance(node, list):
+            for vv in node:
+                assign_resources(vv, outer_res)
+
+    def capture(name, target, force_name=False):
+        """Register a live target for later capture (first-referenced wins).
+        Object-identity dedupe: the same live object hoisted under ANY name
+        returns its first hoisted name (anchor hoists and $dynamicRef static
+        fallbacks frequently point at the SAME subschema). force_name bypasses
+        the dedupe: the $dynamicRef static-fallback wrapper (__dynref_*) MUST
+        exist under its encoded name even when the same object was already
+        hoisted under the anchor-derived name."""
+        oid = id(target)
+        if not force_name and oid in obj_hoisted:
+            return obj_hoisted[oid]
         if name not in pending:
             pending[name] = target
-        elif pending[name] is not target:
-            # same hoist name resolved to a DIFFERENT live object — dedupe
-            k = 2
-            while "%s__%d" % (name, k) in used:
-                k += 1
-            nm = "%s__%d" % (name, k)
-            used.add(nm)
-            pending[nm] = target
-            return nm
-        return name
+            if not force_name:
+                obj_hoisted[oid] = name
+            return name
+        if pending[name] is target:
+            if not force_name:
+                obj_hoisted[oid] = name
+            return name
+        # same hoist name resolved to a DIFFERENT live object — dedupe
+        k = 2
+        while "%s__%d" % (name, k) in used:
+            k += 1
+        nm = "%s__%d" % (name, k)
+        used.add(nm)
+        pending[nm] = target
+        if not force_name:
+            obj_hoisted[oid] = nm
+        return nm
 
     # ---- pass 0: index resources by RESOLVED $id (deep walk) ----------------
     def idx_walk(node, ctx_id, hint):
@@ -243,7 +302,14 @@ def _hop_refs(branch):
         # bare anchor fragment (e.g. '#bigint') — scan subtree for $anchor in
         # DOCUMENT ORDER (the first $anchor with that name wins in 2020-12;
         # a LIFO stack would reverse sibling precedence and can pick the wrong
-        # $anchor when several schemas share a name).
+        # $anchor when several schemas share a name). Wave-3: a plain-name
+        # fragment also identifies a $dynamicAnchor declaration (2020-12
+        # §8.2.3: $dynamicRef = anchor-name resolution with dynamic scoping;
+        # the static target is located exactly like a $ref fragment).
+        # Wave-4 anchor g3: anchor lookup is scoped to the base RESOURCE —
+        # subtrees declaring their own $id are separate resources and must
+        # NOT contribute anchors (child1#my_anchor must find the anchor in
+        # child1, not inside an embedded child2 resource).
         if isinstance(base_obj, list):
             base_obj = {"items": base_obj}
         from collections import deque as _deque
@@ -251,18 +317,21 @@ def _hop_refs(branch):
         while dq:
             n = dq.popleft()
             if isinstance(n, dict):
-                if n.get("$anchor") == frag:
+                if n.get("$anchor") == frag or n.get("$dynamicAnchor") == frag:
                     return n
                 for v in n.values():
                     if isinstance(v, (dict,)):
-                        dq.append(v)
+                        if "$id" not in v:
+                            dq.append(v)
                     elif isinstance(v, list):
-                        dq.extend(x for x in v if isinstance(x, dict))
+                        dq.extend(x for x in v
+                                 if isinstance(x, dict) and "$id" not in x)
         return None
 
     def resolve_and_rewrite(node, ref, ctx_obj, ctx_id):
         """Try to rewrite node['$ref'] (a local-or-$id-resolvable ref) to a
-        components ref. Returns True when rewritten (target hoisted)."""
+        components ref. Returns the hoisted component name when rewritten
+        (None when the ref stays unresolvable/inert)."""
         if ref.startswith("#"):
             base, frag = "", ref[1:]
             base_obj = ctx_obj if ctx_obj is not None else branch
@@ -287,6 +356,15 @@ def _hop_refs(branch):
                 vdoc = copy.deepcopy(_vault_load(full))
                 if vdoc is None or not isinstance(vdoc, dict):
                     return False
+                # Wave-3: the vault document is a distinct RESOURCE — its own
+                # synthetic resource id + scope-frame root markers (the
+                # doc-root object), and every $id'd subtree inside receives its
+                # own nested resource via assign_resources.
+                vr = res_counter[0]; res_counter[0] += 1
+                vdoc["x-oas31-res"] = vr
+                vdoc["x-oas31-res-root"] = True
+                root_of_obj[id(vdoc)] = True
+                assign_resources(vdoc, vr)
                 id_index.setdefault(full, vdoc)
                 tail = full.split("?")[0].lstrip("/").split("/")[-1] or "res"
                 id_name.setdefault(full, "__vault_"
@@ -318,7 +396,7 @@ def _hop_refs(branch):
         nm = _re.sub(r"[^0-9A-Za-z_.~-]+", "_", nm) or "__empty"
         nm = capture(nm, target)
         node["$ref"] = "#/components/schemas/" + nm
-        return True
+        return nm
 
     def _hoist_name_of(ref, base_obj, frag, ctx_obj, ctx_id, target):
         # local pointer refs derive their name from the pointer leaf
@@ -351,6 +429,32 @@ def _hop_refs(branch):
             return nm
         return "__root"  # self/root alias (base resolves to the root resource)
 
+    # ---- Wave-3 pass 1b: synthetic resource identity (PRE-WALK) ----------
+    # Every group lives in a globally unique resource-id space
+    # ((group_index<<20) | local). The GROUP ROOT is resource `res_base`;
+    # embedded-$id subtrees and vault documents receive fresh ids. Only the
+    # resource ROOT OBJECTS carry x-oas31-res / x-oas31-res-root markers (the
+    # emitter needs them exactly there). Stamp BEFORE the ref walk so
+    # $dynamicRef rewrites can encode the CONTAINING resource id into the
+    # __dynref_<res>_<anchor> component name (the parser drops sibling
+    # extensions on $ref-carrying schemas; the name channel is the only
+    # reliable carrier) and so $anchor/$dynamicAnchor hoists capture the
+    # correct owner resource at finalize time. The branch root itself must be
+    # a scope-frame resource: if it declares no $id, stamp resource res_base
+    # here (assign_resources would skip it); with an $id, assign_resources
+    # rebases it to a fresh id + stamps the boundary.
+    if isinstance(branch, dict):
+        # The group root is the outermost dynamic-scope frame (2020-12: the
+        # scope of the initial resource). If the root itself declares an $id,
+        # assign_resources rebases it to a fresh id + stamps the boundary;
+        # otherwise stamp resource res_base here (never re-stamped below).
+        if not branch.get("$id"):
+            branch["x-oas31-res"] = res_base
+            branch["x-oas31-res-root"] = True
+        res_of_obj[id(branch)] = res_base
+        root_of_obj[id(branch)] = True
+    assign_resources(branch if isinstance(branch, dict) else None, res_base)
+
     # ---- pass 1: rewrite refs with context-aware resource tracking ----------
     def walk(node, ctx_obj, ctx_id):
         if isinstance(node, dict):
@@ -361,8 +465,36 @@ def _hop_refs(branch):
             ref = node.get("$ref")
             if isinstance(ref, str):
                 resolve_and_rewrite(node, ref, ctx_obj, ctx_id)
+            # Wave-3/4 $dynamicRef: resolve the STATIC fallback exactly like a
+            # $ref (pointer/empty fragments are plain $ref semantics). A bare
+            # anchor fragment is rewritten to a dedicated
+            # __dynref_<resid>_<anchor> component whose oneOf child is the
+            # static fallback, with the anchor name encoded into the component
+            # NAME: swagger-parser drops sibling extensions on $ref-carrying
+            # schemas, so x-oas31-dynref never survives generation — the name
+            # channel is the only reliable carrier for the engine's
+            # dynamic-scope walk. An unresolvable static target leaves the raw
+            # keyword in place (inert node, measured honestly).
+            dref = node.get("$dynamicRef")
+            if isinstance(dref, str):
+                frag = dref.split("#", 1)[1] if "#" in dref else dref
+                if frag and not frag.startswith("/"):
+                    nm = resolve_and_rewrite(node, dref, ctx_obj, ctx_id)
+                    if nm:
+                        res_id = res_of_obj.get(id(node), res_base)
+                        safe = _re.sub(r"[^0-9A-Za-z_.~-]+", "_", frag) or "anchor"
+                        tgt = pending.get(nm)
+                        if tgt is not None:
+                            dynnm = capture(
+                                "__dynref_%d_%s" % (res_id, safe),
+                                tgt, force_name=True)
+                            node["$ref"] = "#/components/schemas/" + dynnm
+                        node.pop("$dynamicRef", None)
+                elif resolve_and_rewrite(node, dref, ctx_obj, ctx_id):
+                    node.pop("$dynamicRef", None)
             for k, v in node.items():
-                if isinstance(v, str) and (k == "$ref" or k == "$schema"):
+                if isinstance(v, str) and (k == "$ref" or k == "$schema"
+                                           or k == "$dynamicRef"):
                     continue
                 # enum/const members are literal JSON DATA, not schemas — a
                 # `$ref` inside them must NOT be dereferenced (2020-12: an enum
@@ -383,6 +515,41 @@ def _hop_refs(branch):
     walk(branch, branch if isinstance(branch, dict) else None,
          branch.get("$id") if isinstance(branch, dict) else None)
 
+    # ---- Wave-3 pass 3: hoist every $dynamicAnchor-bearing subschema ------
+    # The anchor CONTAINING-subschema must exist as a registry row for the
+    # dynamic-scope walk to apply it. EVERY such subschema is hoisted to a
+    # __da_* component (except the GROUP ROOT, whose own row self-registers
+    # via the native getter); capture()'s object-identity dedupe guarantees a
+    # single component even when $dynamicRef fallbacks hoist the same object.
+    # The hoist name is recorded in anchor_meta so the finalize loop stamps
+    # x-oas31-dyanchor on the component wrapper.
+    anchor_seq = [0]
+    branch_oid = id(branch) if isinstance(branch, dict) else None
+    def discover_anchors(node):
+        if isinstance(node, dict):
+            anch = node.get("$dynamicAnchor")
+            if isinstance(anch, str) and anch and id(node) != branch_oid:
+                # Stamp the owner resource on the CONTAINING-SUBSchema object:
+                # the hoisted __da_* content is densified as a component branch
+                # and its branch-scan self-registration must key the WRAPPER's
+                # owner resource (never the default 0) so (resource, anchor)
+                # keys can never collide across groups or with the group root.
+                node["x-oas31-res"] = res_of_obj.get(id(node), res_base)
+                safe = _re.sub(r"[^0-9A-Za-z_.~-]+", "_", anch) or "anchor"
+                anchor_seq[0] += 1
+                nm = capture("__da_%s_%d" % (safe, anchor_seq[0]), node)
+                anchor_meta[nm] = anch
+            for v in node.values():
+                if isinstance(v, dict):
+                    discover_anchors(v)
+                elif isinstance(v, list):
+                    for vv in v:
+                        discover_anchors(vv)
+        elif isinstance(node, list):
+            for vv in node:
+                discover_anchors(vv)
+    discover_anchors(branch if isinstance(branch, dict) else None)
+
     # ---- Wave-3 pass 2: hoist INLINE allOf members ----------------
     # openapi-generator's InlineModelResolver FOLDS pure-constraint inline
     # allOf members ({allOf:[{maximum:30},{minimum:20}]} -> member emptied,
@@ -392,14 +559,37 @@ def _hop_refs(branch):
     # are left alone (never folded; avoids double-wrapping). Inner refs inside
     # a member were already rewritten by pass 1 in the live tree.
     def hoist_allof(node, counter):
+        """Lift composed members (allOf/anyOf/oneOf) to components ($ref
+        replacement) so the model layer cannot fold inline members into the
+        composition's branch models. Folding is destructive in TWO ways:
+        (a) inline oneOf/anyOf branch extraction re-typecasts boolean
+        property schemas (`foo: true` becomes `foo: {"type":"string"}`),
+        silently changing VALIDITY (not.json g8 "annotations inside a not":
+        anyOf branch on `{"properties":{"foo":true}}` rejects numeric foo);
+        (b) the content-dedupe across groups collapses identical members
+        into one synthesized <name>_oneOf component. Pure-$ref members are
+        left alone (never folded). `counter[0]` names the hoists;
+        `counter[1]` is the group index used for the x-oas31-gid uniqueness
+        marker (batch generation shares one OAS doc across groups)."""
         if isinstance(node, dict):
-            al = node.get("allOf")
-            if isinstance(al, list):
+            for app in ("allOf", "anyOf", "oneOf"):
+                al = node.get(app)
+                if not isinstance(al, list):
+                    continue
                 for i, mem in enumerate(al):
                     if (isinstance(mem, dict)
                             and not (len(mem) == 1 and "$ref" in mem)):
                         counter[0] += 1
-                        nm = capture("__allof_%d" % counter[0], mem)
+                        # Group-distinct marker (batch mode): the codegen's
+                        # inline-model resolver dedupes IDENTICAL member
+                        # content across groups into ONE synthesized
+                        # <name>_oneOf component, collapsing the second
+                        # group's member into a ref to the first (the dedupe
+                        # path drops the member's unevaluated* boolean). This
+                        # inert extension makes every hoisted member's
+                        # content unique per group.
+                        mem.setdefault("x-oas31-gid", counter[1])
+                        nm = capture("__comp_%d" % counter[0], mem)
                         al[i] = {"$ref": "#/components/schemas/" + nm}
             for v in node.values():
                 if isinstance(v, dict):
@@ -411,13 +601,61 @@ def _hop_refs(branch):
             for vv in node:
                 hoist_allof(vv, counter)
 
-    hoist_allof(branch, [0])
+    hoist_allof(branch, [0, group_index])
+
+    # Wave-4.1: the codegen's inline-model resolver EXTRACTS inline object
+    # subschemas into components — and both the extraction and the
+    # content-dedupe across groups DROP `unevaluatedProperties/Items: false`
+    # (and vendor extensions) from the copy, silently tolerating unevaluated
+    # keys. Hoist every sub that carries an unevaluated* boolean into a
+    # component (same wrapper pattern as allOf members, with the group-unique
+    # x-oas31-gid marker) so the assertions survive generation verbatim.
+    # Pure-$ref subs and the group's own root are left alone ($ref siblings
+    # still ride the native path; the root is the composed content itself).
+    def hoist_uneval(node, counter, is_root):
+        if isinstance(node, dict):
+            if not is_root and "$ref" not in node and (
+                    node.get("unevaluatedProperties") is False
+                    or node.get("unevaluatedItems") is False):
+                counter[0] += 1
+                node.setdefault("x-oas31-gid", counter[1])
+                nm = capture("__upr_%d" % counter[0], node)
+                return {"$ref": "#/components/schemas/" + nm}
+            out = dict(node)
+            for k, v in node.items():
+                if isinstance(v, dict):
+                    out[k] = hoist_uneval(v, counter, False)
+                elif isinstance(v, list):
+                    out[k] = [hoist_uneval(vv, counter, False)
+                              if isinstance(vv, dict) else vv for vv in v]
+            return out
+        return node
+
+    branch = hoist_uneval(branch, [0, group_index], True)
 
     # Capture hoisted targets AFTER pass 1 so any inner refs inside a target
-    # were already rewritten in the live tree (never a stale copy).
+    # were already rewritten in the live tree (never a stale copy). Wave-3:
+    # every hoisted wrapper carries x-oas31-res = the CONTAINING synthetic
+    # resource id of its target (rooted at res_base when unmapped); resource
+    # ROOT targets additionally get x-oas31-res-root (scope-frame boundary);
+    # $dynamicAnchor hoists get x-oas31-dyanchor (anchor name).
     for name in sorted(pending):
         if name not in hoisted:
-            hoisted[name] = {"oneOf": [_copy.deepcopy(pending[name])]}
+            tgt = pending[name]
+            wr = {"oneOf": [_copy.deepcopy(tgt)]}
+            oid = id(tgt)
+            wr["x-oas31-res"] = res_of_obj.get(oid, res_base)
+            if name.startswith("__dynref_"):
+                # Static-fallback container: it must NOT push a scope frame
+                # (its resource may repeat a frame already on the path) and
+                # it registers no anchor of its own.
+                pass
+            elif root_of_obj.get(oid, False):
+                wr["x-oas31-res-root"] = True
+            anch = anchor_meta.get(name)
+            if anch is not None:
+                wr["x-oas31-dyanchor"] = anch
+            hoisted[name] = wr
     # HARD REQUIREMENT for the upstream reader: openapi-generator's OAS-3.1
     # parsing NPEs when a composed oneOf branch carries a non-"file:" `$id`.
     # The ENGINE never reads source `$id` (its resourceIdentity/baseUri comes
@@ -445,8 +683,10 @@ def wrap_spec(groups):
     §10.3): local `$defs`/pointer/`$id`-resolvable refs inside a group are
     hoisted into synthetic composed `components.schemas` and the refs rewritten
     to `#/components/schemas/<name>` (the engine's `refTargetIdOf`/`refSimpleName`
-    expect exactly this shape). Unresolvable remote/URN refs are left in place
-    (inert nodes — measured honestly)."""
+    expect exactly this shape). Wave-3: the group root is stamped as the
+    OUTERMOST dynamic-scope resource (x-oas31-res = (i<<20)|0 + root marker);
+    Unresolvable remote/URN refs are left in place (inert nodes — measured
+    honestly)."""
     comp = {}
     for i, g in enumerate(groups):
         s = g.get("schema", {})
@@ -455,7 +695,7 @@ def wrap_spec(groups):
             branch.pop("$schema", None)
         comp["G%d" % i] = {"oneOf": [branch]}
         if isinstance(branch, dict):
-            comp.update(_hop_refs(branch))
+            comp.update(_hop_refs(branch, i))
     return {"openapi": "3.1.0", "info": {"title": "jsts-genpath-slice",
                                          "version": "1.0.0"},
             "paths": {}, "components": {"schemas": comp}}
@@ -649,6 +889,141 @@ def evaluate_file(suite, jar, work_dir, filename, timeout):
                       "seconds": round(time.time() - t0, 2)}
 
 
+def wrap_specs_batch(groups):
+    """wrap_spec for ALL groups in ONE OAS document (batch mode): one
+    generation + one compile per FILE instead of per group.
+
+    Hoisted component keys are per-group closure state and would collide in
+    the shared components map (two groups hoisting distinct schemas under the
+    same generated name), so every non-__dynref_ hoist is suffixed __g<i> and
+    the group's refs (inside the branch AND inside hoisted content) are
+    rewritten to the suffixed key. __dynref_ names keep their raw form: their
+    resource ids are already globally unique and the emitter's anchor decode
+    depends on the exact __dynref_<res>_<anchor> shape."""
+    comp = {}
+    for i, g in enumerate(groups):
+        s = g.get("schema", {})
+        branch = dict(s) if isinstance(s, dict) else s
+        if isinstance(branch, dict):
+            branch.pop("$schema", None)
+        comp["G%d" % i] = {"oneOf": [branch]}
+        if isinstance(branch, dict):
+            grp = _hop_refs(branch, i)
+
+            def _rewrite(obj):
+                if isinstance(obj, dict):
+                    for k, v in list(obj.items()):
+                        if k == "$ref" and isinstance(v, str):
+                            base = "#/components/schemas/"
+                            if v.startswith(base):
+                                nm = v[len(base):]
+                                if nm in grp and not nm.startswith("__dynref_"):
+                                    obj[k] = base + nm + "__g%d" % i
+                        elif isinstance(v, (dict, list)):
+                            _rewrite(v)
+                elif isinstance(obj, list):
+                    for v in obj:
+                        _rewrite(v)
+
+            _rewrite(comp["G%d" % i])
+            renamed = {}
+            for k, v in grp.items():
+                if k.startswith("__dynref_"):
+                    renamed[k] = v
+                else:
+                    renamed[k + "__g%d" % i] = v
+            for _v in renamed.values():
+                _rewrite(_v)
+            comp.update(renamed)
+    return {"openapi": "3.1.0", "info": {"title": "jsts-genpath-slice",
+                                         "version": "1.0.0"},
+            "paths": {}, "components": {"schemas": comp}}
+
+
+def evaluate_file_batch(suite, jar, work_dir, filename, timeout):
+    """Evaluate one JSTS file with a SINGLE generation + compile (batch
+    mode): all groups share one OAS document (validate_G<i>_branch_0 per
+    group) and one driver binary exercises every case. Verdict keys are the
+    real (gi, ci) pairs directly."""
+    path = os.path.join(resolve_draft_dir(suite), filename)
+    groups = load_groups(path)
+    tag = filename.replace(".json", "")
+    per_group = {}
+    verdicts = {}
+    pass_n = fail_n = blocked_n = 0
+    t0 = time.time()
+
+    gen_dir = os.path.join(work_dir, "gen", tag)
+    os.makedirs(gen_dir, exist_ok=True)
+    spec_path = os.path.join(work_dir, "spec_%s.json" % tag)
+    with open(spec_path, "w") as f:
+        json.dump(wrap_specs_batch(groups), f)
+
+    r = generate(jar, spec_path, gen_dir)
+    vpath = os.path.join(gen_dir, "model", "schema_validate.generated.cpp")
+    gen_ok = (r.returncode == 0) and os.path.exists(vpath)
+    if not gen_ok:
+        reason = "generation rejected (fail-closed): " + next(
+            (l.strip() for l in r.stderr.splitlines()
+             if "UnsupportedSchemaAssertionException" in l
+             or "Exception" in l), "see generator stderr")[:200]
+        for gi, g in enumerate(groups):
+            bc = len(g["tests"])
+            cd = {"PASS": 0, "FAIL": 0, "BLOCKED": bc,
+                  "note": reason, "stage": "generation"}
+            per_group[gi] = cd
+            blocked_n += bc
+            for ci in range(bc):
+                verdicts["%d:%d" % (gi, ci)] = "BLOCKED"
+        return filename, {"generation": "PARTIAL", "groups": per_group,
+                          "verdicts": verdicts, "pass": 0, "fail": 0,
+                          "blocked": blocked_n,
+                          "seconds": round(time.time() - t0, 2)}
+
+    main_path = write_driver(groups, work_dir, tag)
+    binary = os.path.join(work_dir, "run_%s" % tag)
+    rr, err = compile_run(main_path, gen_dir, work_dir, binary, timeout, tag)
+    if rr is None:
+        for gi, g in enumerate(groups):
+            bc = len(g["tests"])
+            cd = {"PASS": 0, "FAIL": 0, "BLOCKED": bc,
+                  "note": "compile shortfall: " + (err or "")[:160],
+                  "stage": "compile"}
+            per_group[gi] = cd
+            blocked_n += bc
+            for ci in range(bc):
+                verdicts["%d:%d" % (gi, ci)] = "BLOCKED"
+        return filename, {"generation": "OK", "groups": per_group,
+                          "verdicts": verdicts, "pass": 0, "fail": 0,
+                          "blocked": blocked_n,
+                          "seconds": round(time.time() - t0, 2)}
+
+    observed = parse_results(rr.stdout)
+    for gi, g in enumerate(groups):
+        cd = {"PASS": 0, "FAIL": 0, "BLOCKED": 0, "stage": "run"}
+        for ci, t in enumerate(g["tests"]):
+            key = (gi, ci)
+            if key not in observed:
+                cd["BLOCKED"] += 1
+                verdicts["%d:%d" % (gi, ci)] = "BLOCKED"
+            elif observed[key] == "PASS":
+                cd["PASS"] += 1
+                verdicts["%d:%d" % (gi, ci)] = "PASS"
+            elif observed[key] == "FAIL":
+                cd["FAIL"] += 1
+                verdicts["%d:%d" % (gi, ci)] = "FAIL"
+            else:
+                cd["BLOCKED"] += 1
+                verdicts["%d:%d" % (gi, ci)] = "BLOCKED"
+        per_group[gi] = cd
+        pass_n += cd["PASS"]; fail_n += cd["FAIL"]; blocked_n += cd["BLOCKED"]
+
+    return filename, {"generation": "OK", "groups": per_group,
+                      "verdicts": verdicts, "pass": pass_n, "fail": fail_n,
+                      "blocked": blocked_n,
+                      "seconds": round(time.time() - t0, 2)}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--suite", required=True)
@@ -657,6 +1032,12 @@ def main():
     ap.add_argument("--files", default=None)
     ap.add_argument("--out", default=None)
     ap.add_argument("--timeout", type=int, default=300)
+    ap.add_argument("--workers", type=int, default=6,
+                    help="parallel evaluation of independent files")
+    ap.add_argument("--gen-mode", default="batch",
+                    choices=["batch", "serial"],
+                    help="batch: one generate+compile per FILE (default); "
+                         "serial: one per GROUP (isolation for debugging)")
     args = ap.parse_args()
 
     if not os.path.exists(args.jar):
@@ -669,13 +1050,28 @@ def main():
     work = args.work or "/tmp/jsts-genpath-run"
     os.makedirs(work, exist_ok=True)
 
+    eval_fn = evaluate_file if args.gen_mode == "serial" else evaluate_file_batch
     report = {"runner": "jsts_genpath_slice.py (Wave-1 GENERATED path)",
+              "mode": args.gen_mode, "workers": args.workers,
               "suite": args.suite, "files": {},
               "totals": {"files": 0, "cases": 0, "PASS": 0, "FAIL": 0,
                          "BLOCKED": 0}}
+    results = {}
+    if args.workers > 1 and len(files) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=args.workers) as ex:
+            futs = {ex.submit(eval_fn, args.suite, args.jar, work, fn,
+                              args.timeout): fn for fn in files}
+            for fut in futs:
+                fn, res = fut.result()
+                results[fn] = res
+    else:
+        for fn in files:
+            _, res = eval_fn(args.suite, args.jar, work, fn, args.timeout)
+            results[fn] = res
     for fn in files:
+        res = results[fn]
         print("== %s ==" % fn, flush=True)
-        _, res = evaluate_file(args.suite, args.jar, work, fn, args.timeout)
         report["files"][fn] = res
         report["totals"]["files"] += 1
         fp = ff = fb = 0

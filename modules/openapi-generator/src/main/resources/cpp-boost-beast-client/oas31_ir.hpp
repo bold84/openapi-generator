@@ -86,6 +86,23 @@ struct SchemaNode {
     std::uint32_t resourceIdentity = 0;   // index into SchemaResourceRegistry::resources
     SchemaIndex   parent = kNoSchema;
 
+    // -- Wave-3 dynamic-scope ($dynamicRef/$dynamicAnchor) --
+    // Synthetic resource identifier for the dynamic scope: the emitter assigns
+    // a distinct id to the group root, to every embedded-$id resource subtree,
+    // and to every referenced/hoisted external resource. The dynamic scope
+    // stack is built exclusively at nodes flagged resourceRoot (the ONLY scope
+    // frames); plain target components never push a frame (they belong to
+    // their origin resource). dynamicAnchorName is set on the CONTAINING
+    // subschema of a $dynamicAnchor declaration; the registry-level
+    // dynamicAnchorTables[resource] maps name -> SchemaIndex.
+    int            dynamicResource = 0;
+    bool           resourceRoot = false;
+    std::string    dynamicAnchorName;
+    // $dynamicRef: the plain-name fragment anchor; evaluation walks the scope
+    // from OUTERMOST inward and applies the first resource whose anchor table
+    // has this name; if none, the static fallback (children[0]) is applied.
+    std::string    dynamicRefAnchor;
+
     // -- value schema --
     BooleanValue  booleanValue = BooleanValue::notBoolean;  // OAS 3.1 true/false value schema
     std::uint8_t  typeFlags = 0;          // bitmask of JsonType (type or type-array)
@@ -161,6 +178,16 @@ struct SchemaNode {
     bool         unevaluatedItemsRejects = false;
     SchemaIndex  unevaluatedItemsSchema = kNoSchema;
 
+    // -- Wave-3.1 contains family (K-08) -------------------------------
+    // containsSchema applies to every array item; matching indices are
+    // annotated as evaluated (they satisfy unevaluatedItems). minContains
+    // defaults to 1; explicit 0 waives the floor. maxContains caps matches.
+    // Both bounds are INERT when contains is absent (2020-12).
+    bool         hasContains = false;
+    SchemaIndex  containsSchema = kNoSchema;
+    ExactNumber  minContains;  bool hasMinContains = false;
+    ExactNumber  maxContains;  bool hasMaxContains = false;
+
     // if/then/else (Wave-2.5 conditional applicator set; annotations of the
     // APPLIED branch count toward unevaluated*, the guard's never leak).
     bool         hasIf = false;
@@ -173,6 +200,11 @@ struct SchemaNode {
     // dependentSchemas: trigger key -> schema; the triggered dependent schema
     // is validated in the current context (its annotations count).
     std::vector<std::pair<std::string, SchemaIndex>> dependentSchemas;
+
+    // -- Wave-3.4 dependentRequired (K-11): trigger key -> required names.
+    //    When the key is present on the object, every listed name must also
+    //    be present (string-present assertion, no schema evaluation).
+    std::vector<std::pair<std::string, std::vector<std::string>>> dependentRequired;
 
     // -- applicators: ALL of allOf/anyOf/oneOf may coexist (2020-12); each
     //    member is a densified child row. `children` is used by the REF
@@ -201,6 +233,10 @@ struct SchemaResource {
 struct SchemaResourceRegistry {
     std::vector<SchemaResource> resources;
     std::vector<SchemaNode>     nodes;
+    // Wave-3: per-synthetic-resource $dynamicAnchor tables. Sized by the
+    // emitter; index by SchemaNode::dynamicResource. Each row maps an anchor
+    // name to the SchemaIndex of the CONTAINING subschema of the declaration.
+    std::vector<std::vector<std::pair<std::string, SchemaIndex>>> dynamicAnchorTables;
 
     SchemaNode const& node(SchemaIndex i) const {
         return nodes[static_cast<std::size_t>(i)];

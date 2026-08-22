@@ -336,6 +336,29 @@ struct ValidationContext {
 
     std::set<std::string>& curProps() { return evaluatedPropertiesStack.back(); }
     std::set<std::size_t>& curItems() { return evaluatedItemsStack.back(); }
+    // Wave-3 dynamic scope: ordered chain of synthetic resource ids NAVIGATED
+    // during evaluation (outermost = element 0). Pushed ONLY at resourceRoot
+    // nodes; popped when evaluation leaves that subtree. Frame counts are
+    // deliberately NOT deduplicated (2020-12: re-entering a resource adds a
+    // fresh frame). Branch snapshots copy the scope so failed anyOf/oneOf
+    // branches do not leak frames.
+    std::vector<int> dynamicScope;
+    void pushScopeFrame(int resId) { dynamicScope.push_back(resId); }
+    void popScopeFrame() { if (!dynamicScope.empty()) dynamicScope.pop_back(); }
+    /// Outermost-to-innermost walk for $dynamicRef: 2020-12 applies the anchor
+    /// of the OUTERMOST resource in the dynamic scope that declares it, else
+    /// the static fallback. Returns the anchor target index or kNoSchema.
+    SchemaIndex resolveDynamicAnchor(
+            SchemaResourceRegistry const& reg, std::string const& name) const {
+        for (int resId : dynamicScope) {
+            if (resId < 0 || static_cast<std::size_t>(resId)
+                    >= reg.dynamicAnchorTables.size()) continue;
+            for (auto const& entry : reg.dynamicAnchorTables[resId]) {
+                if (entry.first == name) return entry.second;
+            }
+        }
+        return kNoSchema;
+    }
     void pushLocation() {
         evaluatedPropertiesStack.emplace_back();
         evaluatedItemsStack.emplace_back();
@@ -349,6 +372,7 @@ struct ValidationContext {
         std::size_t annotationMark = 0;
         std::vector<std::set<std::string>> evaluatedProperties;
         std::vector<std::set<std::size_t>> evaluatedItems;
+        std::vector<int> dynamicScope;
     };
 
     Branch beginBranch() {
@@ -356,15 +380,17 @@ struct ValidationContext {
         b.annotationMark = annotations.snapshot();
         b.evaluatedProperties = evaluatedPropertiesStack;
         b.evaluatedItems = evaluatedItemsStack;
+        b.dynamicScope = dynamicScope;
         return b;
     }
     /// Keep this branch's additions (annotations + evaluated coverage) in place.
     void commitBranch(Branch const&) { /* current state already includes branch output */ }
-    /// Discard this branch's output and restore annotations + coverage.
+    /// Discard this branch's output and restore annotations + coverage + scope.
     void rollbackBranch(Branch const& b) {
         annotations.rollbackTo(b.annotationMark);
         evaluatedPropertiesStack = b.evaluatedProperties;
         evaluatedItemsStack = b.evaluatedItems;
+        dynamicScope = b.dynamicScope;
     }
 
     /// Run a child evaluator against the CURRENT (base) coverage, capture only
@@ -379,6 +405,7 @@ struct ValidationContext {
                                         std::set<std::size_t>& accItems) {
         std::vector<std::set<std::string>> baseProps = evaluatedPropertiesStack;
         std::vector<std::set<std::size_t>> baseItems = evaluatedItemsStack;
+        std::vector<int> const baseScope = dynamicScope;
         std::set<std::string> const bProps = curProps();
         std::set<std::size_t> const bItems = curItems();
         ValidationResult r = fn();
@@ -388,6 +415,7 @@ struct ValidationContext {
             if (bItems.count(it) == 0) accItems.insert(it);
         evaluatedPropertiesStack = baseProps;
         evaluatedItemsStack = baseItems;
+        dynamicScope = baseScope;
         return r;
     }
 
@@ -400,6 +428,7 @@ struct ValidationContext {
                                              std::set<std::size_t>& accItems) {
         std::vector<std::set<std::string>> baseProps = evaluatedPropertiesStack;
         std::vector<std::set<std::size_t>> baseItems = evaluatedItemsStack;
+        std::vector<int> const baseScope = dynamicScope;
         std::set<std::string> const bProps = curProps();
         std::set<std::size_t> const bItems = curItems();
         ValidationResult r = fn();
@@ -411,6 +440,7 @@ struct ValidationContext {
         }
         evaluatedPropertiesStack = baseProps;
         evaluatedItemsStack = baseItems;
+        dynamicScope = baseScope;
         return r;
     }
 };
@@ -425,9 +455,26 @@ public:
     SchemaResourceRegistry const& registry() const { return registry_; }
 
     /// Thin-dispatch entry: validate the schema referenced by `node`.
+    /// Wave-3/4 dynamic scope: entering a schema RESOURCE pushes a
+    /// dynamic-scope frame. Frames are pushed when the row's synthetic
+    /// resource differs from the current top-of-scope (every evaluation-path
+    /// resource joins 2020-12's dynamic scope — not only resourceRoot rows,
+    /// which otherwise miss embedded-resource members like g20's $defs.stuff
+    /// chain) and re-entering an already-active resource pushes again (frame
+    /// counts are never deduplicated). RAII — popped on EVERY return path.
     ValidationResult validate(SchemaIndex node, RawInstance const& instance,
                               ValidationPath& path, ValidationContext& ctx) const {
-        // schemaNodeFor(<id>) resolves id -> SchemaIndex; here node is that index.
+        SchemaNode const& n = registry_.node(node);
+        if (n.dynamicResource != 0 || n.resourceRoot) {
+            int const top = ctx.dynamicScope.empty()
+                    ? -1 : ctx.dynamicScope.back();
+            if (n.dynamicResource != top || n.resourceRoot) {
+                ctx.pushScopeFrame(n.dynamicResource);
+                ValidationResult r = validateSchemaNode(n, instance, path, ctx);
+                ctx.popScopeFrame();
+                return r;
+            }
+        }
         return validateSchemaNode(registry_.node(node), instance, path, ctx);
     }
 
@@ -456,9 +503,20 @@ public:
         // K-29 $ref: validate the generation-time-resolved target first, then
         // FALL THROUGH to this node's OWN sibling keywords (2020-12: $ref and
         // siblings BOTH apply). Pure-ref nodes carry no siblings, so their
-        // behaviour is unchanged (transparent applicator).
+        // behaviour is unchanged (transparent applicator). Wave-3: a
+        // $dynamicRef node carries dynamicRefAnchor + the STATIC fallback in
+        // children[0]; when the anchor resolves in the dynamic scope
+        // (outermost declaring resource wins), the resolved target replaces
+        // the fallback — otherwise the static fallback applies unchanged.
         if (node.applicator == ApplicatorKind::ref && !node.children.empty()) {
-            ValidationResult rr = this->validate(node.children[0], instance, path, ctx);
+            SchemaIndex target = node.children[0];
+            if (!node.dynamicRefAnchor.empty()
+                    && dynamicAnchorEligible(target, node.dynamicRefAnchor)) {
+                SchemaIndex dyn =
+                    ctx.resolveDynamicAnchor(registry_, node.dynamicRefAnchor);
+                if (dyn != kNoSchema) target = dyn;
+            }
+            ValidationResult rr = this->validate(target, instance, path, ctx);
             if (!rr.success) return rr;
         }
 
@@ -692,6 +750,36 @@ public:
 
 private:
     static bool kindIsBool(RawInstance const& i) { return i.kind() == JsonType::boolean; }
+
+    /// 2020-12 §8.2.3.2: dynamic replacement at a $dynamicRef applies ONLY
+    /// when the initially resolved target is itself a $dynamicAnchor
+    /// declaration with the same name. A plain $anchor or a non-matching
+    /// $dynamicAnchor initial target behaves exactly like $ref (dynamicRef
+    /// g7/g8/g10: never scope-walked). `wrapperIndex` is the __dynref_
+    /// static-fallback container row; its oneOf child is the anchored
+    /// subschema (the DECLARING row carries dynamicAnchorName). The model
+    /// layer may insert pure-$ref hops between the wrapper and the declaring
+    /// row (composed-ref inlining), so the check follows ref chains.
+    bool dynamicAnchorEligible(SchemaIndex wrapperIndex,
+                               std::string const& name) const {
+        SchemaIndex cur = wrapperIndex;
+        for (int hop = 0; hop < 16 && cur != kNoSchema; ++hop) {
+            SchemaNode const& w = registry_.node(cur);
+            if (w.dynamicAnchorName == name) return true;
+            // wrapper rows carry the anchored content as their oneOf child
+            SchemaIndex content = w.oneOfChildren.empty()
+                    ? kNoSchema : w.oneOfChildren[0];
+            if (content == kNoSchema) return false;
+            SchemaNode const& c = registry_.node(content);
+            if (c.dynamicAnchorName == name) return true;
+            if (c.applicator == ApplicatorKind::ref && !c.children.empty()) {
+                cur = c.children[0];   // follow the ref hop
+                continue;
+            }
+            return false;
+        }
+        return false;
+    }
 
     /// True when the exact value has zero fractional part (JSON Schema integer).
     static bool numberIsIntegral(ExactNumber const& n) {
@@ -946,6 +1034,19 @@ private:
                 return ValidationResult::invalidAt(path, "missing required property '" + rn + "'");
         }
 
+        // Wave-3.4 dependentRequired (K-11): when a trigger key is present,
+        // every name in its list must also be present. Present-ness is a
+        // string-location assertion — no subschema is evaluated.
+        for (auto const& dep : node.dependentRequired) {
+            if (!instance.hasMember(dep.first.c_str())) continue;
+            for (std::string const& rn : dep.second) {
+                if (!instance.hasMember(rn.c_str()))
+                    return ValidationResult::invalidAt(
+                        path, "dependentRequired '" + dep.first
+                            + "' missing '" + rn + "'");
+            }
+        }
+
         // Declared properties: validate each present member against its
         // property subschema; absent members are not evaluated. Member VALUES
         // live at a nested instance location, so their evaluation happens in
@@ -1079,6 +1180,41 @@ private:
                 if (!r.success) return r;
                 ctx.curItems().insert(i);
             }
+        }
+
+        // Wave-3.1 contains family (K-08): every item is tested against the
+        // contains subschema; MATCHING indices are annotated as evaluated at
+        // the current array location (unevaluatedItems sees them). The match
+        // count must satisfy minContains (default 1; explicit 0 waives the
+        // floor) and maxContains. Both bounds are inert without contains.
+        if (node.hasContains) {
+            std::vector<std::size_t> matched;
+            matched.reserve(n);
+            for (std::size_t i = 0; i < n; ++i) {
+                RawInstance const m = instance.atIndex(i);
+                ValidationPath childPath = path;
+                childPath.enterIndex(i);
+                ctx.pushLocation();
+                ValidationResult r =
+                    this->validate(node.containsSchema, m, childPath, ctx);
+                ctx.popLocation();
+                if (r.success) matched.push_back(i);
+            }
+            std::size_t const matchCount = matched.size();
+            bool const minWaived =
+                node.hasMinContains && node.minContains.isZero();
+            if (!minWaived) {
+                ExactNumber const minC = node.hasMinContains
+                    ? node.minContains : ExactNumber::fromUint(1);
+                if (ExactNumber::fromUint(matchCount) < minC)
+                    return ValidationResult::invalidAt(
+                        path, "contains: fewer matches than minContains");
+            }
+            if (node.hasMaxContains
+                    && node.maxContains < ExactNumber::fromUint(matchCount))
+                return ValidationResult::invalidAt(
+                    path, "contains: more matches than maxContains");
+            for (std::size_t i : matched) ctx.curItems().insert(i);
         }
 
         return ValidationResult::valid();
