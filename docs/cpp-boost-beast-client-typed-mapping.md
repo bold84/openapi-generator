@@ -14,6 +14,8 @@ axis — documentation cannot drift from behavior.
 | `number` no format / `format: double` | `double` | yes (finite) | non-finite input (1e309, 1e400) → representation error; see §4 |
 | `format: float` | `float` | no — **narrowed** (§3) | idempotent; > FLT_MAX → representation error |
 | `string` | `std::string` | yes | |
+| `string` + format (`date-time`, `date`, `uuid`, `byte`, `binary`, `password`) | `std::string` | yes | formats are **annotations** (2020-12 default); see §1a |
+| `decimal` | `double` | yes (finite) | exact decimals are not a declared C++ type; see §1a |
 | `boolean` | `bool` | yes | |
 | `string` + `enum` | `std::string` | yes (closed set) | unknown value → schema-invalid at decode |
 | `string`/`integer` via type-array `[T, "null"]` (3.1) | `NullableField<T>` | yes (null/missing/value tri-state) | 3.1 `nullable: true` is NOT a keyword — plain type |
@@ -21,6 +23,32 @@ axis — documentation cannot drift from behavior.
 | `oneOf`/`anyOf` + discriminator | `std::variant<A, B>` | yes (matched branch) | unknown/missing discriminator → schema-invalid |
 | `array` | `std::vector<T>` / `std::vector<std::shared_ptr<Model>>` | yes | |
 | `object` / `additionalProperties` | `std::map<…>` / model class | yes | |
+
+## 1a. Format destinations (annotations, no distinct types)
+
+`format` is part of the **Format-Annotation** vocabulary in the pinned OAS 3.1
+dialect (2020-12 default): formats carry **no validation semantics** and
+therefore require **no runtime validation**. The generator maps every
+string-domain format to the plain `std::string` destination, and `decimal` to
+`double` — it declares **no format-specific destinations** and **no
+format-specific `DataTypeFeature` entries** (Uuid, Date, DateTime, Byte,
+Binary, Password are all absent from the FeatureSet). Asserted by the JVM test
+`formatDestinationsMapToStringOrDoubleAndFeatureSetStaysClean`
+(`CppBoostBeastClientApiCodegenTest`) over `format-destinations.yaml`.
+
+| OAS `format` | Destination |
+| --- | --- |
+| `date-time` | `std::string` |
+| `date` | `std::string` |
+| `uuid` | `std::string` |
+| `byte` | `std::string` |
+| `binary` | `std::string` |
+| `password` | `std::string` |
+| `decimal` | `double` |
+
+Format-Assertion (validating formats) is intentionally **not** claimed: the
+2020-12 dialect default treats formats as annotations, so there is no validity
+surface to implement.
 
 ## 2. Error taxonomy (five classes, distinguishable)
 

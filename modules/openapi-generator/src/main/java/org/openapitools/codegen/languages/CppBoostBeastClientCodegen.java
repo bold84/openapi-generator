@@ -2713,7 +2713,21 @@ if (schema.get$comment() != null) {
                         // No decimal destination domain exists (format:
                         // decimal maps to double; exact decimals are not
                         // a declared C++ type) — the base set lists it.
-                        DataTypeFeature.Decimal
+                        DataTypeFeature.Decimal,
+                        // Gap-5 closure: formats are Format-Annotation
+                        // vocabulary (2020-12 default) — string-domain
+                        // formats (date/date-time/uuid/byte/binary/password)
+                        // all map to the plain std::string destination, so no
+                        // format-specific data-type feature is declared. The
+                        // base DefaultCodegen set lists them; the JVM test
+                        // formatDestinationsMapToStringOrDoubleAndFeatureSetStaysClean
+                        // asserts this exclusion.
+                        DataTypeFeature.Date,
+                        DataTypeFeature.DateTime,
+                        DataTypeFeature.Uuid,
+                        DataTypeFeature.Byte,
+                        DataTypeFeature.Binary,
+                        DataTypeFeature.Password
                 )
                 .includeParameterFeatures(
                         ParameterFeature.Cookie   // Wave 5.1: form-style cookie

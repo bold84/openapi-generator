@@ -349,4 +349,53 @@ public class CppBoostBeastClientApiCodegenTest {
         assertFalse(types.contains(DataTypeFeature.Uuid),
                 "Uuid must NOT be declared (uuid maps to the string destination)");
     }
+
+    @Test
+    public void formatDestinationsMapToStringOrDoubleAndFeatureSetStaysClean() throws IOException {
+        // Gap-5 closure: OAS 3.1 string formats (date-time/date/uuid/byte/
+        // binary/password) map to the std::string destination, `decimal`
+        // maps to double, and NO format-specific DataTypeFeature entries
+        // (Date/DateTime/Uuid/Byte/Binary/Password/Decimal) are declared —
+        // formats are annotations (2020-12 Format-Annotation default), so
+        // they need no distinct C++ destination.
+        Path testOutputRoot = Files.createDirectories(Path.of("target"));
+        Path generatedClientDirectory = Files.createTempDirectory(
+                testOutputRoot, "cpp-boost-beast-format-destinations");
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/format-destinations.yaml")
+                .setOutputDir(generatedClientDirectory.toString())
+                .addAdditionalProperty("apiPackage", "api")
+                .addAdditionalProperty("modelPackage", "model");
+
+        new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+
+        // Every string-format box must be a std::string destination.
+        for (String box : java.util.Arrays.asList(
+                "DateTimeBox", "DateBox", "UuidBox", "ByteBox", "BinaryBox", "PasswordBox")) {
+            String header = Files.readString(
+                    generatedClientDirectory.resolve(Path.of("model", box + ".h")));
+            assertTrue(header.contains("std::string m_v"),
+                    box + " must map to the std::string destination");
+            assertFalse(header.contains(" double m_v"),
+                    box + " must not be a double destination");
+        }
+        // decimal maps to double (no distinct decimal destination).
+        String decimal = Files.readString(
+                generatedClientDirectory.resolve(Path.of("model", "DecimalBox.h")));
+        assertTrue(decimal.contains("double m_v"),
+                "decimal must map to the double destination");
+
+        // FeatureSet stays clean: NO format-specific data-type features.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        java.util.Set<DataTypeFeature> types = codegen.getFeatureSet().getDataTypeFeatures();
+        for (DataTypeFeature forbidden : java.util.Arrays.asList(
+                DataTypeFeature.Date, DataTypeFeature.DateTime, DataTypeFeature.Uuid,
+                DataTypeFeature.Byte, DataTypeFeature.Binary, DataTypeFeature.Password,
+                DataTypeFeature.Decimal)) {
+            assertFalse(types.contains(forbidden),
+                    "format-specific DataTypeFeature " + forbidden + " must NOT be declared");
+        }
+    }
 }
