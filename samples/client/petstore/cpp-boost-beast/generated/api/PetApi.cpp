@@ -43,8 +43,10 @@ namespace openapitools {
 namespace client {
 namespace api {
 
-using namespace org::openapitools::client::model;
+// Wave 5.7 (GC3) preserved inbound metadata — no listener generated:
+// 
 
+using namespace org::openapitools::client::model;
 
 namespace {
 std::string selectPreferredContentType(const std::vector<std::string>& contentTypes) {
@@ -261,30 +263,302 @@ inline std::string percentEncodeQueryValue(const std::string& unencodedValue) {
     return percentEncodeRfc3986Value(unencodedValue);
 }
 
-template<typename T>
-std::string serializePathParameterValue(const T& pathParameterValue) {
-    return percentEncodePathValue(toFormParameterValue(pathParameterValue));
+// ---- Wave 5.1 (GC1): OAS 3.1 parameter serialization ---------------------
+// The wire layer is JSON-driven: every emitted parameter value converts to a
+// boost::json::value (toJsonValue overloads below, incl. the generated
+// parameter/model classes' toJsonValue()), then style/explode/allowReserved
+// render it into the exact wire bytes of OAS 3.1 §Parameter Serialization.
+
+// allowReserved=true: keep the RFC 3986 reserved set raw in the query value
+// (:/?#[]@!$&'()*+,;=). Default (false) = strict percent-encoding.
+inline std::string percentEncodeQueryReservedValue(const std::string& unencodedValue) {
+    static const char hexDigits[] = "0123456789ABCDEF";
+    std::string encodedValue;
+    encodedValue.reserve(unencodedValue.size());
+    for (const unsigned char character : unencodedValue) {
+        if ((character >= 'a' && character <= 'z')
+            || (character >= 'A' && character <= 'Z')
+            || (character >= '0' && character <= '9')
+            || character == '-' || character == '.' || character == '_'
+            || character == '~'
+            || character == ':' || character == '/' || character == '?'
+            || character == '#' || character == '[' || character == ']'
+            || character == '@' || character == '!' || character == '$'
+            || character == '&' || character == '\'' || character == '('
+            || character == ')' || character == '*' || character == '+'
+            || character == ',' || character == ';' || character == '=') {
+            encodedValue.push_back(static_cast<char>(character));
+        } else {
+            encodedValue.push_back('%');
+            encodedValue.push_back(hexDigits[(character >> 4) & 0x0F]);
+            encodedValue.push_back(hexDigits[character & 0x0F]);
+        }
+    }
+    return encodedValue;
 }
 
+inline boost::json::value toJsonValue(const boost::json::value& v) { return v; }
+inline boost::json::value toJsonValue(const std::string& v) { return boost::json::value(v); }
+inline boost::json::value toJsonValue(bool v) { return boost::json::value(v); }
+inline boost::json::value toJsonValue(std::int32_t v) { return boost::json::value(v); }
+inline boost::json::value toJsonValue(std::int64_t v) { return boost::json::value(v); }
+inline boost::json::value toJsonValue(double v) { return boost::json::value(v); }
 template<typename T>
-std::string serializePathParameterValue(const std::vector<T>& pathParameterValues) {
-    std::stringstream serializedValues;
-    const char* separator = "";
-    for (const T& pathParameterValue : pathParameterValues) {
-        serializedValues << separator
-                         << percentEncodePathValue(toFormParameterValue(pathParameterValue));
-        separator = ",";
+boost::json::value toJsonValue(const std::vector<T>& v) {
+    boost::json::array a;
+    a.reserve(v.size());
+    for (const auto& e : v) { a.emplace_back(toJsonValue(e)); }
+    return boost::json::value(std::move(a));
+}
+template<typename V>
+boost::json::value toJsonValue(const std::map<std::string, V>& m) {
+    boost::json::object o;
+    for (const auto& kv : m) { o[kv.first] = toJsonValue(kv.second); }
+    return boost::json::value(std::move(o));
+}
+template<typename T>
+boost::json::value toJsonValue(const std::shared_ptr<T>& v) {
+    // Generated parameter/model classes expose toJsonValue().
+    if (!v) { return boost::json::value(nullptr); }
+    return v->toJsonValue();
+}
+template<typename T>
+boost::json::value toJsonValue(const T& v) {
+    // Legacy/exotic types degrade to the ostringstream string form.
+    return boost::json::value(toFormParameterValue(v));
+}
+
+inline std::string jsonScalarText(const boost::json::value& v) {
+    if (v.is_string()) { return std::string(v.as_string()); }
+    return boost::json::serialize(v);   // numbers, booleans, null
+}
+
+// ---- Wave 5.2: operation server precedence (server URL → path prefix) -----
+inline std::string serverPathPrefix(const std::string& serverUrl) {
+    // The HttpClientImpl owns the connection (scheme, host, port); the API
+    // layer always passes origin-form targets. An absolute server URL
+    // contributes only its PATH prefix; a server host different from the
+    // caller's HttpClient configuration must be pointed at by the caller
+    // (documented seam). Relative server URLs pass through unchanged.
+    std::string s = serverUrl;
+    const std::string authoritySeparator = "://";
+    const std::size_t authority = s.find(authoritySeparator);
+    if (authority != std::string::npos) {
+        const std::size_t slash = s.find('/', authority + authoritySeparator.size());
+        s = slash == std::string::npos ? std::string() : s.substr(slash);
     }
-    return serializedValues.str();
+    // drop trailing slashes (the request path always begins with '/'),
+    // including the lone root slash ('' is the correct empty prefix)
+    while (!s.empty() && s.back() == '/') { s.pop_back(); }
+    return s;
+}
+
+inline std::string operationServerPrefix(const std::string& context,
+                                         const std::string& resolvedServer) {
+    return resolvedServer.empty() ? context : serverPathPrefix(resolvedServer);
+}
+
+// ---- query: form / spaceDelimited / pipeDelimited / deepObject -----------
+template<typename T>
+void appendParamQueryParameter(
+    std::stringstream& queryParameterStream,
+    const char*& queryParameterSeparator,
+    const std::string& parameterName,
+    const T& parameterValue,
+    const std::string& style,
+    bool explode,
+    bool allowReserved,
+    bool allowEmptyValue) {
+    const boost::json::value v = toJsonValue(parameterValue);
+    // Empty-value policy (3.1): without allowEmptyValue an empty string value
+    // is omitted entirely.
+    if (!allowEmptyValue && v.is_string() && v.as_string().empty()) {
+        return;
+    }
+    const std::string encodedName = percentEncodeQueryValue(parameterName);
+    auto enc = [&](const std::string& s) {
+        return allowReserved ? percentEncodeQueryReservedValue(s)
+                             : percentEncodeQueryValue(s);
+    };
+    auto appendRaw = [&](const std::string& name, const std::string& value) {
+        queryParameterStream << queryParameterSeparator << name << '=' << value;
+        queryParameterSeparator = "&";
+    };
+    if (style == "deepObject" && v.is_object()) {
+        // deepObject (3.1): name[k]=v&name[k2]=v2
+        for (const auto& member : v.as_object()) {
+            appendRaw(encodedName + "[" + percentEncodeQueryValue(
+                          std::string(member.key())) + "]",
+                      enc(jsonScalarText(member.value())));
+        }
+        return;
+    }
+    if (style == "form" || style == "spaceDelimited" || style == "pipeDelimited") {
+        // Wire delimiters: form uses a raw comma; spaceDelimited/pipeDelimited
+        // join with the ENCODED delimiter (%20 / %7C) — the raw space or pipe
+        // is not valid in a query string and must never appear on the wire.
+        const char* styleDelimiter =
+            style == "spaceDelimited" ? "%20" :
+            style == "pipeDelimited"  ? "%7C" : ",";
+        if (explode) {
+            if (v.is_array()) {
+                for (const auto& element : v.as_array()) {
+                    appendRaw(encodedName, enc(jsonScalarText(element)));
+                }
+            } else if (v.is_object()) {
+                // form explode=true object: k=v&k2=v2 — no base name
+                for (const auto& member : v.as_object()) {
+                    appendRaw(percentEncodeQueryValue(std::string(member.key())),
+                              enc(jsonScalarText(member.value())));
+                }
+            } else {
+                appendRaw(encodedName, enc(jsonScalarText(v)));
+            }
+        } else {
+            if (v.is_array()) {
+                std::string joined;
+                bool first = true;
+                for (const auto& element : v.as_array()) {
+                    if (!first) { joined += styleDelimiter; }
+                    first = false;
+                    joined += enc(jsonScalarText(element));
+                }
+                appendRaw(encodedName, joined);
+            } else if (v.is_object()) {
+                // form explode=false object: name=k,v,k2,v2
+                std::string joined;
+                bool first = true;
+                for (const auto& member : v.as_object()) {
+                    if (!first) { joined += styleDelimiter; }
+                    first = false;
+                    joined += enc(std::string(member.key()));
+                    joined += styleDelimiter;
+                    joined += enc(jsonScalarText(member.value()));
+                }
+                appendRaw(encodedName, joined);
+            } else {
+                appendRaw(encodedName, enc(jsonScalarText(v)));
+            }
+        }
+        return;
+    }
+    // Unknown styles degrade to the form single-pair form (honest: the
+    // codegen emits only the styles handled above).
+    appendRaw(encodedName, enc(jsonScalarText(v)));
+}
+
+// ---- path: simple / label / matrix ---------------------------------------
+inline std::string pathStyleValue(const boost::json::value& v,
+                                  const std::string& style,
+                                  bool explode,
+                                  const std::string& parameterName) {
+    auto enc = [](const std::string& s) { return percentEncodePathValue(s); };
+    auto scalar = [&](const boost::json::value& e) { return enc(jsonScalarText(e)); };
+    auto encKey = [&](const boost::json::string& key) {
+        return enc(std::string(key));
+    };
+    std::string out;
+    if (style == "label") {
+        out += ".";
+        if (explode && v.is_object()) {
+            bool first = true;
+            for (const auto& member : v.as_object()) {
+                if (!first) { out += '.'; }
+                first = false;
+                out += encKey(member.key()) + '=' + scalar(member.value());
+            }
+        } else if (v.is_array()) {
+            bool first = true;
+            for (const auto& element : v.as_array()) {
+                if (!first) { out += '.'; }
+                first = false;
+                out += scalar(element);
+            }
+        } else if (v.is_object()) {
+            bool first = true;
+            for (const auto& member : v.as_object()) {
+                if (!first) { out += '.'; }
+                first = false;
+                out += encKey(member.key()) + '.' + scalar(member.value());
+            }
+        } else {
+            out += scalar(v);
+        }
+    } else if (style == "matrix") {
+        out += ';';
+        if (explode && v.is_object()) {
+            bool first = true;
+            for (const auto& member : v.as_object()) {
+                if (!first) { out += ';'; }
+                first = false;
+                out += parameterName + '=' + encKey(member.key())
+                     + '=' + scalar(member.value());
+            }
+        } else if (explode && v.is_array()) {
+            bool first = true;
+            for (const auto& element : v.as_array()) {
+                if (!first) { out += ';'; }
+                first = false;
+                out += parameterName + '=' + scalar(element);
+            }
+        } else if (v.is_array()) {
+            out += parameterName + '=';
+            bool first = true;
+            for (const auto& element : v.as_array()) {
+                if (!first) { out += ','; }
+                first = false;
+                out += scalar(element);
+            }
+        } else if (v.is_object()) {
+            out += parameterName + '=';
+            bool first = true;
+            for (const auto& member : v.as_object()) {
+                if (!first) { out += ','; }
+                first = false;
+                out += encKey(member.key()) + ',' + scalar(member.value());
+            }
+        } else {
+            out += parameterName + '=' + scalar(v);
+        }
+    } else {   // simple (path/header default)
+        if (explode && v.is_object()) {
+            bool first = true;
+            for (const auto& member : v.as_object()) {
+                if (!first) { out += ','; }
+                first = false;
+                out += encKey(member.key()) + '=' + scalar(member.value());
+            }
+        } else if (v.is_array()) {
+            bool first = true;
+            for (const auto& element : v.as_array()) {
+                if (!first) { out += ','; }
+                first = false;
+                out += scalar(element);
+            }
+        } else if (v.is_object()) {
+            bool first = true;
+            for (const auto& member : v.as_object()) {
+                if (!first) { out += ','; }
+                first = false;
+                out += encKey(member.key()) + ',' + scalar(member.value());
+            }
+        } else {
+            out += scalar(v);
+        }
+    }
+    return out;
 }
 
 template<typename T>
 void replacePathParameter(
     std::string& path,
     const std::string& parameterName,
-    const T& parameterValue) {
+    const T& parameterValue,
+    const std::string& style,
+    bool explode) {
     const std::string placeholder = "{" + parameterName + "}";
-    const std::string serializedValue = serializePathParameterValue(parameterValue);
+    const std::string serializedValue =
+        pathStyleValue(toJsonValue(parameterValue), style, explode, parameterName);
     std::string::size_type position = 0;
     while ((position = path.find(placeholder, position)) != std::string::npos) {
         path.replace(position, placeholder.size(), serializedValue);
@@ -292,6 +566,7 @@ void replacePathParameter(
     }
 }
 
+// ---- query single-value helpers (legacy call sites) ----------------------
 template<typename T>
 std::string serializeQueryParameterValue(const T& queryParameterValue) {
     return percentEncodeQueryValue(toFormParameterValue(queryParameterValue));
@@ -311,22 +586,6 @@ std::string serializeQueryParameterValue(
     return serializedValues.str();
 }
 
-template<typename T>
-std::string serializeQueryParameterValue(
-    const std::map<std::string, T>& queryParameterValues,
-    const std::string& collectionDelimiter) {
-    std::stringstream serializedValues;
-    const char* separator = "";
-    for (const auto& queryParameterValue : queryParameterValues) {
-        serializedValues << separator
-                         << percentEncodeQueryValue(queryParameterValue.first)
-                         << collectionDelimiter
-                         << percentEncodeQueryValue(toFormParameterValue(queryParameterValue.second));
-        separator = collectionDelimiter.c_str();
-    }
-    return serializedValues.str();
-}
-
 inline void appendQueryParameter(
     std::stringstream& queryParameterStream,
     const char*& queryParameterSeparator,
@@ -338,81 +597,96 @@ inline void appendQueryParameter(
     queryParameterSeparator = "&";
 }
 
+// ---- header: simple (objects exploded as k=v, pairs comma-delimited) -----
 template<typename T>
-void appendMultiQueryParameters(
-    std::stringstream& queryParameterStream,
-    const char*& queryParameterSeparator,
+std::string serializeHeaderParameterValue(const T& v, bool explode) {
+    // RFC 7230 field values: never percent-encoded.
+    const boost::json::value j = toJsonValue(v);
+    auto scalar = [](const boost::json::value& e) { return jsonScalarText(e); };
+    auto key = [](const boost::json::string& k) { return std::string(k); };
+    std::string out;
+    if (explode && j.is_object()) {
+        bool first = true;
+        for (const auto& member : j.as_object()) {
+            if (!first) { out += ','; }
+            first = false;
+            out += key(member.key()) + '=' + scalar(member.value());
+        }
+    } else if (j.is_array()) {
+        bool first = true;
+        for (const auto& element : j.as_array()) {
+            if (!first) { out += ','; }
+            first = false;
+            out += scalar(element);
+        }
+    } else if (j.is_object()) {
+        bool first = true;
+        for (const auto& member : j.as_object()) {
+            if (!first) { out += ','; }
+            first = false;
+            out += key(member.key()) + ',' + scalar(member.value());
+        }
+    } else {
+        out = scalar(j);
+    }
+    return out;
+}
+
+// ---- cookie: form style into the Cookie header (3.1) ---------------------
+template<typename T>
+void appendCookieParameter(
+    std::string& cookieHeader,
     const std::string& parameterName,
-    const std::vector<T>& queryParameterValues) {
-    for (const T& queryParameterValue : queryParameterValues) {
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            parameterName,
-            serializeQueryParameterValue(queryParameterValue));
+    const T& parameterValue,
+    bool explode) {
+    const boost::json::value v = toJsonValue(parameterValue);
+    auto scalar = [](const boost::json::value& e) { return jsonScalarText(e); };
+    auto key = [](const boost::json::string& k) { return std::string(k); };
+    auto push = [&](const std::string& pair) {
+        if (!cookieHeader.empty()) { cookieHeader += "; "; }
+        cookieHeader += pair;
+    };
+    if (explode) {
+        if (v.is_array()) {
+            if (v.as_array().empty()) { return; }   // empty = absent
+            for (const auto& element : v.as_array()) {
+                push(parameterName + '=' + scalar(element));
+            }
+        } else if (v.is_object()) {
+            for (const auto& member : v.as_object()) {
+                push(key(member.key()) + '=' + scalar(member.value()));
+            }
+        } else {
+            push(parameterName + '=' + scalar(v));
+        }
+    } else {
+        if (v.is_array()) {
+            if (v.as_array().empty()) { return; }
+            std::string joined;
+            bool first = true;
+            for (const auto& element : v.as_array()) {
+                if (!first) { joined += ','; }
+                first = false;
+                joined += scalar(element);
+            }
+            push(parameterName + '=' + joined);
+        } else if (v.is_object()) {
+            std::string joined;
+            bool first = true;
+            for (const auto& member : v.as_object()) {
+                if (!first) { joined += ','; }
+                first = false;
+                joined += key(member.key()) + ',' + scalar(member.value());
+            }
+            push(parameterName + '=' + joined);
+        } else {
+            push(parameterName + '=' + scalar(v));
+        }
     }
 }
 
-template<typename T>
-void appendExplodedQueryParameters(
-    std::stringstream& queryParameterStream,
-    const char*& queryParameterSeparator,
-    const std::map<std::string, T>& queryParameterValues) {
-    for (const auto& queryParameterValue : queryParameterValues) {
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            queryParameterValue.first,
-            serializeQueryParameterValue(queryParameterValue.second));
-    }
-}
-
-template<typename T>
-void appendDeepObjectQueryParameters(
-    std::stringstream& queryParameterStream,
-    const char*& queryParameterSeparator,
-    const std::string& parameterName,
-    const std::map<std::string, T>& queryParameterValues) {
-    for (const auto& queryParameterValue : queryParameterValues) {
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            parameterName + "[" + queryParameterValue.first + "]",
-            serializeQueryParameterValue(queryParameterValue.second));
-    }
-}
-
-inline std::string serializeHeaderParameterValue(const std::string& headerParameterValue) {
-    return headerParameterValue;
-}
-
-inline std::string serializeHeaderParameterValue(bool headerParameterValue) {
-    return headerParameterValue ? "true" : "false";
-}
-
-template<typename T>
-typename std::enable_if<std::is_arithmetic<T>::value, std::string>::type
-serializeHeaderParameterValue(const T& headerParameterValue) {
-    return std::to_string(headerParameterValue);
-}
-
-template<typename T>
-typename std::enable_if<!std::is_arithmetic<T>::value, std::string>::type
-serializeHeaderParameterValue(const T&) {
-    throw std::invalid_argument(
-        "Header parameter serialization supports only primitive values and arrays of primitive values");
-}
-
-template<typename T>
-std::string serializeHeaderParameterValue(const std::vector<T>& headerParameterValues) {
-    std::stringstream serializedValues;
-    const char* separator = "";
-    for (const T& headerParameterValue : headerParameterValues) {
-        serializedValues << separator << serializeHeaderParameterValue(headerParameterValue);
-        separator = ",";
-    }
-    return serializedValues.str();
-}
+// ---- header path (Void/raw helpers above; templates' header emission uses
+//      serializeHeaderParameterValue(T, explode) defined earlier) ----------
 
 inline std::string serializeUrlEncodedFormData(const std::vector<FormParameter>& formParameters) {
     std::stringstream serializedFormData;
@@ -968,7 +1242,7 @@ std::shared_ptr<Pet>
 PetApi::addPet(
     const std::shared_ptr<Pet>& pet) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet";
     std::map<std::string, std::string> headers;
     static const std::vector<std::string> contentTypes{ "application/json","application/xml", };
     std::string requestContentType = selectPreferredContentType(contentTypes);
@@ -985,6 +1259,17 @@ PetApi::addPet(
     responseContentType = selectPreferredContentType(acceptTypes);
     headers["Accept"] = responseContentType;
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"petstore_auth", "oauth2", "", "", "", {
+                    "write:pets", "read:pets"
+                } },
+            } },
+        };
+        applyOperationSecurity("addPet", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {
@@ -1020,7 +1305,7 @@ std::shared_ptr<Pet>
 PetApi::updatePet(
     const std::shared_ptr<Pet>& pet) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet";
     std::map<std::string, std::string> headers;
     static const std::vector<std::string> contentTypes{ "application/json","application/xml", };
     std::string requestContentType = selectPreferredContentType(contentTypes);
@@ -1037,6 +1322,17 @@ PetApi::updatePet(
     responseContentType = selectPreferredContentType(acceptTypes);
     headers["Accept"] = responseContentType;
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"petstore_auth", "oauth2", "", "", "", {
+                    "write:pets", "read:pets"
+                } },
+            } },
+        };
+        applyOperationSecurity("updatePet", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {
@@ -1078,14 +1374,25 @@ void
 PetApi::deletePet(
     const std::int64_t& petId, const std::string& apiKey) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet/{petId}";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet/{petId}";
     std::map<std::string, std::string> headers;
-    // path params
-    replacePathParameter(path, "petId", petId);
+    // path params (Wave 5.1: simple/label/matrix via the codegen stamp)
+    replacePathParameter(path, "petId", petId, "simple", false);
     // headers
-    headers.emplace("api_key", serializeHeaderParameterValue(apiKey));
+    headers.emplace("api_key", serializeHeaderParameterValue(apiKey, false));
 
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"petstore_auth", "oauth2", "", "", "", {
+                    "write:pets", "read:pets"
+                } },
+            } },
+        };
+        applyOperationSecurity("deletePet", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {
@@ -1112,16 +1419,27 @@ std::shared_ptr<Pet>
 PetApi::getPetById(
     const std::int64_t& petId) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet/{petId}";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet/{petId}";
     std::map<std::string, std::string> headers;
-    // path params
-    replacePathParameter(path, "petId", petId);
+    // path params (Wave 5.1: simple/label/matrix via the codegen stamp)
+    replacePathParameter(path, "petId", petId, "simple", false);
 
     std::string responseContentType = "application/json";
     static const std::vector<std::string> acceptTypes{ "application/xml","application/json", };
     responseContentType = selectPreferredContentType(acceptTypes);
     headers["Accept"] = responseContentType;
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"api_key", "apiKey", "header", "api_key", "", {
+                    
+                } },
+            } },
+        };
+        applyOperationSecurity("getPetById", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {
@@ -1160,7 +1478,7 @@ void
 PetApi::updatePetWithForm(
     const std::int64_t& petId, const std::string& name, const std::string& status) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet/{petId}";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet/{petId}";
     std::map<std::string, std::string> headers;
     static const std::vector<std::string> contentTypes{ "application/x-www-form-urlencoded", };
     std::string requestContentType = selectPreferredContentType(contentTypes);
@@ -1184,10 +1502,21 @@ PetApi::updatePetWithForm(
     } else {
         serializedRequestBody = serializeUrlEncodedFormData(formParameters);
     }
-    // path params
-    replacePathParameter(path, "petId", petId);
+    // path params (Wave 5.1: simple/label/matrix via the codegen stamp)
+    replacePathParameter(path, "petId", petId, "simple", false);
 
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"petstore_auth", "oauth2", "", "", "", {
+                    "write:pets", "read:pets"
+                } },
+            } },
+        };
+        applyOperationSecurity("updatePetWithForm", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {
@@ -1214,18 +1543,21 @@ std::vector<std::shared_ptr<Pet>>
 PetApi::findPetsByStatus(
     const std::vector<std::string>& status) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet/findByStatus";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet/findByStatus";
     std::map<std::string, std::string> headers;
-    // query params
+    // query params (Wave 5.1: style/explode/allowReserved/allowEmptyValue
+    // stamped per parameter by the codegen)
     std::stringstream queryParameterStream;
     const char* queryParameterSeparator = "?";
-        appendQueryParameter(
+        appendParamQueryParameter(
             queryParameterStream,
             queryParameterSeparator,
             "status",
-            serializeQueryParameterValue(
-                status,
-                ","));
+            status,
+            "form",
+            false,
+            false,
+            false);
     path += queryParameterStream.str();
 
     std::string responseContentType = "application/json";
@@ -1233,6 +1565,17 @@ PetApi::findPetsByStatus(
     responseContentType = selectPreferredContentType(acceptTypes);
     headers["Accept"] = responseContentType;
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"petstore_auth", "oauth2", "", "", "", {
+                    "read:pets"
+                } },
+            } },
+        };
+        applyOperationSecurity("findPetsByStatus", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {
@@ -1268,18 +1611,21 @@ std::vector<std::shared_ptr<Pet>>
 PetApi::findPetsByTags(
     const std::vector<std::string>& tags) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet/findByTags";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet/findByTags";
     std::map<std::string, std::string> headers;
-    // query params
+    // query params (Wave 5.1: style/explode/allowReserved/allowEmptyValue
+    // stamped per parameter by the codegen)
     std::stringstream queryParameterStream;
     const char* queryParameterSeparator = "?";
-        appendQueryParameter(
+        appendParamQueryParameter(
             queryParameterStream,
             queryParameterSeparator,
             "tags",
-            serializeQueryParameterValue(
-                tags,
-                ","));
+            tags,
+            "form",
+            false,
+            false,
+            false);
     path += queryParameterStream.str();
 
     std::string responseContentType = "application/json";
@@ -1287,6 +1633,17 @@ PetApi::findPetsByTags(
     responseContentType = selectPreferredContentType(acceptTypes);
     headers["Accept"] = responseContentType;
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"petstore_auth", "oauth2", "", "", "", {
+                    "read:pets"
+                } },
+            } },
+        };
+        applyOperationSecurity("findPetsByTags", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {
@@ -1322,7 +1679,7 @@ std::shared_ptr<ApiResponse>
 PetApi::uploadFile(
     const std::int64_t& petId, const std::string& additionalMetadata, const std::string& file) {
     std::string serializedRequestBody;
-    std::string path = m_context + "/pet/{petId}/uploadImage";
+    std::string path = operationServerPrefix(m_context, "http://petstore.swagger.io/v2") + "/pet/{petId}/uploadImage";
     std::map<std::string, std::string> headers;
     static const std::vector<std::string> contentTypes{ "multipart/form-data", };
     std::string requestContentType = selectPreferredContentType(contentTypes);
@@ -1346,14 +1703,25 @@ PetApi::uploadFile(
     } else {
         serializedRequestBody = serializeUrlEncodedFormData(formParameters);
     }
-    // path params
-    replacePathParameter(path, "petId", petId);
+    // path params (Wave 5.1: simple/label/matrix via the codegen stamp)
+    replacePathParameter(path, "petId", petId, "simple", false);
 
     std::string responseContentType = "application/json";
     static const std::vector<std::string> acceptTypes{ "application/json", };
     responseContentType = selectPreferredContentType(acceptTypes);
     headers["Accept"] = responseContentType;
 
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            SecurityRequirementGroup{ {
+                SecuritySchemeUse{"petstore_auth", "oauth2", "", "", "", {
+                    "write:pets", "read:pets"
+                } },
+            } },
+        };
+        applyOperationSecurity("uploadFile", operationSecurity, path, headers);
+    }
     auto statusCode = boost::beast::http::status::unknown;
     std::string responseBody;
     try {

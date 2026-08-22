@@ -39,7 +39,7 @@ jobs:
       - name: Install C++ toolchain (Boost gates the C++ Phase-2 + JSTS steps)
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake libboost-all-dev
+          sudo apt-get install -y build-essential cmake libboost-all-dev libssl-dev python3-yaml
 
       - name: Build cpp-boost-beast codegen tests
         shell: bash
@@ -236,29 +236,17 @@ jobs:
           PY
 
       # ---------------------------------------------------------------------
-      # JSTS — pinned 2020-12 subset via the Boost-gated generator/compile/run
-      # pipeline (replaces the old Wave-0 K-18 placement marker).
-      #
-      #  1. tools/vendor.sh clones the pinned suiteCommit and copies the
-      #     tests/draft2020-12 + remotes tree (reproducible, SHA-verified).
-      #  2. tools/jsts_runner.py drives generate (CLI jar) + Boost g++ compile
-      #     + raw-instance run for a representative subset spanning all four
-      #     required vocabularies (Core/Applicator/Unevaluated/Validation).
-      #     The boolean_schema.json file (known crash: build_spec mishandles a
-      #     boolean root schema) and the remote-dependent files (refRemote,
-      #     dynamicRef) are deliberately excluded from the subset.
+      # JSTS — FULL pinned 2020-12 corpus via the Boost-gated
+      # generate/compile/run pipeline (Wave-6 promotion: the runner now
+      # completes the full 46-file suite in the batch mode that matches the
+      # local evidence; the old representative-subset step was replaced).
       #
       # Honesty rules: PASS/FAIL/BLOCKED are the raw runner numbers (BLOCKED =
       # no production model / generation shortfall / compile shortfall; FAIL =
-      # genuine required-vocabulary shortfall). GS2 is NEVER claimed: it is only
-      # met when PASS == total cases, FAIL == 0 and BLOCKED == 0. Because this
-      # pipeline is heavy and the subset is representative-bounded, the step is
-      # best-effort (continue-on-error) but always emits the real report as an
-      # artifact — it never fabricates a pass.
+      # genuine required-vocabulary shortfall). GS2/GS3 are claimed only when
+      # the gate script reports every test PASS with FAIL == 0 and BLOCKED == 0.
       # ---------------------------------------------------------------------
-      - name: JSTS — pinned 2020-12 subset via Boost-gated runner (best-effort, honest report)
-        if: always()
-        continue-on-error: true
+      - name: JSTS — full pinned 2020-12 corpus via Boost-gated runner
         shell: bash
         run: |
           set -euo pipefail
@@ -269,33 +257,62 @@ jobs:
           # 1. Vendor the pinned suite (reads suiteCommit from jsts-exclusions.yaml).
           bash "${J}/tools/vendor.sh" "${J}/vendor"
 
-          # 2. Representative subset across required vocabularies.
-          SUBSET="type,enum,const,required,multipleOf,properties,allOf,anyOf,oneOf,items,contains,unevaluatedProperties,unevaluatedItems,defs"
-          echo "Representative JSTS subset: ${SUBSET}"
-
-          # 3. Run the production pipeline (generate + Boost compile + run).
-          set +e
-          python3 "${J}/tools/jsts_runner.py" run \
-            --suite "${J}/vendor" \
-            --jar "${JAR}" \
-            --work tmp/jsts-work \
-            --files "${SUBSET}" \
-            --out tmp/jsts-reports/jsts-report.json \
-            --timeout 600
-          rc=$?
-          set -e
-
-          echo "::group::JSTS subset totals"
-          if [[ -f tmp/jsts-reports/jsts-report.json ]]; then
-            python3 -c 'import json; t=json.load(open("tmp/jsts-reports/jsts-report.json"))["totals"]; print(f"files={t[\"files\"]} cases={t[\"cases\"]} PASS={t[\"PASS\"]} FAIL={t[\"FAIL\"]} BLOCKED={t[\"BLOCKED\"]}")'
-          else
-            echo "no report produced (runner did not emit jsts-report.json)"
-          fi
+          # 2. Full corpus: every draft2020-12 test file (default of the
+          #    slice runner; same set as the local evidence runs).
+          python3 "${J}/tools/jsts_genpath_slice.py" --suite "${J}/vendor" \
+            --jar "${JAR}" --work tmp/jsts-work \
+            --out tmp/jsts-reports/jsts-report.json --workers 6
+          echo "::group::JSTS full-corpus totals"
+          python3 -c 'import json; t=json.load(open("tmp/jsts-reports/jsts-report.json"))["totals"]; print(f"files={t[\"files\"]} cases={t[\"cases\"]} PASS={t[\"PASS\"]} FAIL={t[\"FAIL\"]} BLOCKED={t[\"BLOCKED\"]}")'
           echo "::endgroup::"
+          echo "GS2 status: claimed only when PASS==total and FAIL==0 and BLOCKED==0."
 
-          echo "JSTS report artifact: tmp/jsts-reports/jsts-report.json (runner exit ${rc})."
-          echo "GS2 status: NOT claimed unless PASS==total and FAIL==0 and BLOCKED==0."
+      # ---------------------------------------------------------------------
+      # Wave-5 C-profile wire gate: the six golden matrices run the generated
+      # client against (a) recording clients asserting exact wire bytes and
+      # (b) a REAL boost::beast loopback HTTP server through the real
+      # HttpClientImpl. Failures fail the job — this is the C-profile
+      # contract surface (parameter styles, servers+variables, security
+      # hooks, requestBody/media types, non-schema refs, callbacks/webhooks/
+      # links metadata, runtime mock HTTP).
+      # ---------------------------------------------------------------------
+      - name: C-profile wire gate — 6 golden matrices incl. runtime mock HTTP
+        shell: bash
+        run: |
+          set -euo pipefail
+          J=modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/oas31-jsts
+          JAR=modules/openapi-generator-cli/target/openapi-generator-cli.jar
+          set +e
+          OMP_JSTS_SSL_LIB=/usr/lib/x86_64-linux-gnu/libssl.a \
+          OMP_JSTS_CRYPTO_LIB=/usr/lib/x86_64-linux-gnu/libcrypto.a \
+            python3 "${J}/tools/jsts_param_wire.py" 2>&1 \
+            | tee tmp/jsts-reports/wire-gate.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          echo "::group::wire-gate totals"
+          grep -E 'PASS$|cells, [0-9]+ PASS' tmp/jsts-reports/wire-gate.log || true
+          echo "::endgroup::"
           exit "${rc}"
+
+      # ---------------------------------------------------------------------
+      # Sample regen + hardening compile: regenerate the committed petstore
+      # sample from the current generator and compile EVERY emitted TU under
+      # -Wall -Wextra -Werror (warnings are errors; the audit gate).
+      # ---------------------------------------------------------------------
+      - name: Sample regen + hardening compile (-Wall -Wextra -Werror)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash bin/generate-samples.sh bin/configs/cpp-boost-beast-client-petstore.yaml
+          git diff --stat samples/client/petstore/cpp-boost-beast > tmp/jsts-reports/sample-diff.stat
+          g++ -std=c++17 -O1 -Wall -Wextra -Werror \
+            -Isamples/client/petstore/cpp-boost-beast/generated \
+            -Isamples/client/petstore/cpp-boost-beast/generated/api \
+            -Isamples/client/petstore/cpp-boost-beast/generated/model \
+            -I/usr/include \
+            -c samples/client/petstore/cpp-boost-beast/generated/api/PetApi.cpp \
+            -o /tmp/petapi.o
+          echo "Sample hardening compile: PASS"
 
       - name: Upload conformance report artifacts
         if: always()
@@ -304,6 +321,8 @@ jobs:
           name: cpp-boost-beast-oas31-conformance
           path: |
             tmp/jsts-reports/jsts-report.json
+            tmp/jsts-reports/wire-gate.log
+            tmp/jsts-reports/sample-diff.stat
             phase2-resolved.tsv
             phase2-results.log
           if-no-files-found: ignore

@@ -61,6 +61,25 @@ private:
 };
 
 
+/// Wave 5.3 (GC2): pluggable credential hooks. Generated operations call
+/// applyOperationSecurity(...) before executing; the DEFAULT implementation
+/// is a no-op — override it in a subclass to attach credentials per the
+/// operation's declared requirements. OR alternatives are listed as separate
+/// groups; within one group every scheme is an AND requirement; an empty
+/// group means anonymous access is allowed for that alternative.
+struct SecuritySchemeUse {
+    std::string schemeName;
+    std::string type;       // apiKey | http | oauth2 | openIdConnect | mutualTLS | unknown
+    std::string in;         // header | query | cookie (apiKey)
+    std::string paramName;  // apiKey parameter name
+    std::string httpScheme; // basic | bearer | <custom> (http)
+    std::vector<std::string> scopes;
+};
+struct SecurityRequirementGroup {
+    std::vector<SecuritySchemeUse> ands;
+};
+
+
 class StoreApi {
 
 public:
@@ -112,6 +131,19 @@ public:
     placeOrder(
         const std::shared_ptr<Order>& order);
 
+
+    /// Wave 5.3 (GC2): credential hook invoked before every operation's
+    /// request with the operation's effective security requirements
+    /// (operation-level > root-level; `security: []` clears). The default
+    /// is a no-op; override to attach credentials. `target` (path + query)
+    /// is mutable for apiKey-in-query placement.
+    virtual void applyOperationSecurity(
+        const std::string& operationId,
+        const std::vector<SecurityRequirementGroup>& requirements,
+        std::string& target,
+        std::map<std::string, std::string>& headers) {
+        (void)operationId; (void)requirements; (void)target; (void)headers;
+    }
 
 protected:
     virtual std::string base64encode(const std::string& str);

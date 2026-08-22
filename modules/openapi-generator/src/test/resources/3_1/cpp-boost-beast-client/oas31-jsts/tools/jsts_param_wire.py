@@ -934,8 +934,10 @@ def main():
             cmd.append(boost_json_src)
         if name == "mock":
             cmd += ["-pthread",
-                    "/opt/homebrew/opt/openssl@3/lib/libssl.a",
-                    "/opt/homebrew/opt/openssl@3/lib/libcrypto.a"]
+                    os.environ.get("OMP_JSTS_SSL_LIB",
+                                   "/opt/homebrew/opt/openssl@3/lib/libssl.a"),
+                    os.environ.get("OMP_JSTS_CRYPTO_LIB",
+                                   "/opt/homebrew/opt/openssl@3/lib/libcrypto.a")]
         compiled = os.path.join(work, "run_" + name)
         cc = subprocess.run(cmd + ["-o", compiled], capture_output=True,
                             text=True, timeout=600)
