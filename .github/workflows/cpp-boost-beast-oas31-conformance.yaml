@@ -337,7 +337,7 @@ jobs:
           PHASE2_M_INC="${W}/phase2_m.inc" M_CORPUS="${J}/mprofile/m-corpus.yaml" \
             python3 "${C}/phase2_m_gen.py" "${W}"
           g++ -std=c++17 -O1 -Wall -Wextra -Werror \
-            -I"${W}/gen" -I"${W}/gen/model" -I/usr/include \
+            -I"${W}" -I"${W}/gen" -I"${W}/gen/model" -I/usr/include \
             "${C}/m_driver.cpp" "${W}/boost_json_src.cpp" \
             "${W}"/gen/model/Int32Box.cpp "${W}"/gen/model/Int64Box.cpp \
             "${W}"/gen/model/FloatBox.cpp "${W}"/gen/model/DoubleBox.cpp \
