@@ -1,0 +1,162 @@
+openapi: 3.1.0
+info:
+  title: content-matrix
+  version: 1.0.0
+paths:
+  /jsonBody:
+    post:
+      operationId: postJson
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+      responses:
+        "200":
+          description: ok
+  /jsonSuffixBody:
+    post:
+      operationId: postJsonSuffix
+      requestBody:
+        required: true
+        content:
+          application/vnd.acme+json:
+            schema:
+              type: object
+              properties:
+                id: { type: integer }
+      responses:
+        "200":
+          description: ok
+  /jsonCharset:
+    post:
+      operationId: postJsonCharset
+      requestBody:
+        content:
+          application/json; charset=utf-8:
+            schema:
+              type: object
+              properties:
+                v: { type: string }
+      responses:
+        "200":
+          description: ok
+  /textRaw:
+    post:
+      operationId: postText
+      requestBody:
+        content:
+          text/plain:
+            schema:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /multipartUpload:
+    post:
+      operationId: postMultipart
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+                doc:
+                  type: string
+                  format: binary
+            encoding:
+              note:
+                contentType: application/x-www-form-urlencoded
+              doc:
+                contentType: application/octet-stream
+      responses:
+        "200":
+          description: ok
+  /urlencoded:
+    post:
+      operationId: postUrlEncoded
+      requestBody:
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                a: { type: string }
+                b: { type: integer }
+      responses:
+        "200":
+          description: ok
+  /exact200:
+    get:
+      operationId: getExact
+      responses:
+        "200":
+          description: ok
+          headers:
+            X-Rate-Limit:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        default:
+          description: fallback
+          content:
+            text/plain:
+              schema:
+                type: string
+  /range2xx:
+    get:
+      operationId: getRange
+      responses:
+        "2XX":
+          description: any 2xx
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        default:
+          description: fallback
+          content:
+            text/plain:
+              schema:
+                type: string
+  /jsonSuffixResp:
+    get:
+      operationId: getJsonSuffix
+      responses:
+        "200":
+          description: ok
+          content:
+            application/vnd.acme+json:
+              schema:
+                type: object
+                properties:
+                  id: { type: integer }
+        default:
+          description: fallback
+          content:
+            text/plain:
+              schema:
+                type: string
+  /unexpected:
+    get:
+      operationId: getUnexpected
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }

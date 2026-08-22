@@ -192,11 +192,15 @@
     // Union-aware response-union path: use executeWithMetadata to capture
     // actual Content-Type from response headers.
     std::string responseBody;
+    std::map<std::string, std::string> responseHeaders;   // Wave 5.4
     try {
         auto responseData = m_client->executeWithMetadata(
             "{{httpMethod}}", path, serializedRequestBody, headers);
         statusCode = responseData.status;
         responseBody = std::move(responseData.body);
+        responseHeaders = responseData.headers;   // Wave 5.4 (copy — the
+                                                  // content-type loop below
+                                                  // still reads them)
         // Use actual Content-Type from response headers; fall back to
         // the requested Accept type for legacy adapters.
         {
@@ -246,6 +250,7 @@
     {{{vendorExtensions.x-codegen-response-union}}} deserializedResponse;
     deserializedResponse.status = statusCode;
     deserializedResponse.contentType = responseContentType;
+    deserializedResponse.headers = std::move(responseHeaders);   // Wave 5.4
 {{/vendorExtensions.x-codegen-response-union}}
 {{^vendorExtensions.x-codegen-response-union}}
 {{#returnType}}

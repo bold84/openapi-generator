@@ -409,6 +409,212 @@ int main() {
 '''
 
 
+CONTENT_MATRIX = os.path.join(SUITE_DIR, "wave5", "content-matrix.yaml")
+CONTENT_DRIVER = r'''
+// Wave-5.4 golden driver (GC4): requestBody/media-type/response negotiation.
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include <boost/beast/http/status.hpp>
+
+#include "api/DefaultApi.h"
+#include "model/PostJson_request.h"
+#include "model/PostJsonSuffix_request.h"
+#include "model/PostJsonCharset_request.h"
+#include "model/GetExact_200_response.h"
+
+using namespace model;
+using namespace org::openapitools::client::api;
+
+struct ScriptedResponse {
+    boost::beast::http::status status;
+    std::string body;
+    std::map<std::string, std::string> headers;
+};
+
+class ScriptedClient : public HttpClient {
+public:
+    std::vector<ScriptedResponse> script;
+    std::string lastVerb, lastTarget, lastBody;
+    std::map<std::string, std::string> lastHeaders;
+
+    HttpResponseData
+    executeWithMetadata(const std::string& verb, const std::string& target,
+                        const std::string& body,
+                        const std::map<std::string, std::string>& headers) override {
+        lastVerb = verb; lastTarget = target; lastBody = body;
+        lastHeaders = headers;
+        ScriptedResponse s = nextResponse();
+        return HttpResponseData{s.status, s.body, std::move(s.headers)};
+    }
+    std::pair<boost::beast::http::status, std::string>
+    execute(const std::string& verb, const std::string& target,
+            const std::string& body,
+            const std::map<std::string, std::string>& headers) override {
+        lastVerb = verb; lastTarget = target; lastBody = body;
+        lastHeaders = headers;
+        ScriptedResponse s = nextResponse();
+        return {s.status, s.body};
+    }
+
+private:
+    ScriptedResponse nextResponse() {
+        if (!script.empty()) {
+            auto s = script.front();
+            script.erase(script.begin());
+            return s;
+        }
+        return {boost::beast::http::status::ok, "{}", {}};
+    }
+};
+
+static int g_failures = 0;
+
+static void check(const char* name, bool ok, const std::string& detail) {
+    if (ok) {
+        printf("CELL|%s|PASS|%s\n", name, detail.c_str());
+    } else {
+        ++g_failures;
+        printf("CELL|%s|FAIL|%s\n", name, detail.c_str());
+    }
+}
+
+int main() {
+    auto client = std::make_shared<ScriptedClient>();
+    DefaultApi api(client);
+
+    // requestBody cells ------------------------------------------------
+    {
+        auto req = std::make_shared<PostJson_request>();
+        req->setName("x");
+        api.postJson(req);
+        check("postJsonContentType", client->lastHeaders["Content-Type"]
+                == "application/json", client->lastHeaders["Content-Type"]);
+        check("postJsonBody", client->lastBody.find("\"name\":\"x\"")
+                != std::string::npos, client->lastBody);
+    }
+    {
+        auto req = std::make_shared<PostJsonSuffix_request>();
+        req->setId(7);
+        api.postJsonSuffix(req);
+        check("postJsonSuffixType", client->lastHeaders["Content-Type"]
+                == "application/vnd.acme+json", client->lastHeaders["Content-Type"]);
+        check("postJsonSuffixBody", client->lastBody.find("\"id\":7")
+                != std::string::npos, client->lastBody);
+    }
+    {
+        auto req = std::make_shared<PostJsonCharset_request>();
+        req->setV("z");
+        api.postJsonCharset(req);
+        check("postJsonCharsetType", client->lastHeaders["Content-Type"]
+                == "application/json; charset=utf-8",
+                client->lastHeaders["Content-Type"]);
+        check("postJsonCharsetBody", client->lastBody.find("\"v\":\"z\"")
+                != std::string::npos, client->lastBody);
+    }
+    {
+        api.postText("raw text");
+        check("postTextType", client->lastHeaders["Content-Type"]
+                == "text/plain", client->lastHeaders["Content-Type"]);
+        check("postTextBody", client->lastBody == "raw text", client->lastBody);
+    }
+    {
+        // Encoding Object applicability: multipart parts carry their own
+        // declared content types (note -> urlencoded, doc -> octet-stream).
+        api.postMultipart("n1", "d1");
+        check("postMultipartType", client->lastHeaders["Content-Type"].find(
+                "multipart/form-data; boundary=") == 0,
+                client->lastHeaders["Content-Type"]);
+        check("postMultipartNote",
+              client->lastBody.find("name=\"note\"") != std::string::npos
+              && client->lastBody.find("application/x-www-form-urlencoded")
+                 != std::string::npos, "note part missing");
+        check("postMultipartDoc",
+              client->lastBody.find("name=\"doc\"") != std::string::npos
+              && client->lastBody.find("application/octet-stream")
+                 != std::string::npos && client->lastBody.find("filename=\"doc\"")
+                 != std::string::npos, "doc part missing");
+        check("postMultipartValues",
+              client->lastBody.find("n1") != std::string::npos
+              && client->lastBody.find("d1") != std::string::npos,
+              "part values missing");
+    }
+    {
+        api.postUrlEncoded("a1", 5);
+        check("postFormType", client->lastHeaders["Content-Type"]
+                == "application/x-www-form-urlencoded",
+                client->lastHeaders["Content-Type"]);
+        check("postFormBody", client->lastBody.find("a=a1") != std::string::npos
+              && client->lastBody.find("b=5") != std::string::npos,
+              client->lastBody);
+    }
+
+    // response cells ----------------------------------------------------
+    {
+        client->script.push_back({boost::beast::http::status::ok,
+            "{\"ok\": true}", {{"X-Rate-Limit", "42"},
+                               {"Content-Type", "application/json"}}});
+        auto r = api.getExact();
+        check("response200", r.status == boost::beast::http::status::ok
+              && std::get<std::shared_ptr<GetExact_200_response>>(r.body)->isOk() == true,
+              "wrong dispatch");
+        check("response200Header",
+              r.headers.count("X-Rate-Limit") > 0 && r.headers["X-Rate-Limit"] == "42",
+              "response headers not surfaced");
+        check("response200ContentType", r.contentType == "application/json",
+              r.contentType);
+    }
+    {
+        client->script.push_back({boost::beast::http::status::created,
+            "{\"ok\": true}", {{"Content-Type", "application/json"}}});
+        auto r = api.getRange();
+        check("responseRange2xx", r.status == boost::beast::http::status::created
+              && std::get<std::shared_ptr<GetExact_200_response>>(r.body)->isOk() == true,
+              "2XX range dispatch failed");
+    }
+    {
+        // +json response: exact application/vnd.acme+json body content type.
+        client->script.push_back({boost::beast::http::status::ok,
+            "{\"id\": 9}", {{"Content-Type", "application/vnd.acme+json"}}});
+        auto r = api.getJsonSuffix();
+        check("responseJsonSuffix",
+              std::get<std::shared_ptr<PostJsonSuffix_request>>(r.body)->getId() == 9,
+              "wrong +json dispatch");
+    }
+    {
+        // default fallback: 500 + text/plain lands in the default branch.
+        client->script.push_back({boost::beast::http::status::internal_server_error,
+            "oops", {{"Content-Type", "text/plain"}}});
+        auto r = api.getExact();
+        check("responseDefault",
+              std::get<std::string>(r.body) == "oops",
+              "default branch dispatch failed");
+    }
+    {
+        // unexpected status: throws the api exception.
+        client->script.push_back({boost::beast::http::status::not_found,
+            "", {{"Content-Type", "text/plain"}}});
+        bool threw = false;
+        try {
+            api.getUnexpected();
+        } catch (const DefaultApiException&) {
+            threw = true;
+        }
+        check("responseUnexpected", threw, "must throw for unexpected status");
+    }
+
+    printf(g_failures == 0 ? "CONTENT MATRIX PASS\n"
+                           : "CONTENT MATRIX FAIL (%d cells)\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
+'''
+
+
 def main():
     import glob
     import subprocess
@@ -418,7 +624,8 @@ def main():
     for name, spec_path, driver in (
             ("param", MATRIX, DRIVER),
             ("server", SERVER_MATRIX, SERVER_DRIVER),
-            ("security", SECURITY_MATRIX, SECURITY_DRIVER)):
+            ("security", SECURITY_MATRIX, SECURITY_DRIVER),
+            ("content", CONTENT_MATRIX, CONTENT_DRIVER)):
         gen_dir = os.path.join(work, name)
         r = sl.generate(JAR, spec_path, gen_dir)
         if r.returncode != 0:

@@ -38,6 +38,7 @@ namespace {{this}} {
 struct {{vendorExtensions.x-codegen-response-union}} {
     boost::beast::http::status status;
     std::string contentType;
+    std::map<std::string, std::string> headers;   // Wave 5.4: response headers
     std::variant<
     {{#responses}}
     {{#vendorExtensions.x-codegen-response-union}}
