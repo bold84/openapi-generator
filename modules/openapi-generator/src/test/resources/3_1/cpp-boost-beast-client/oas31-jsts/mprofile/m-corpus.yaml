@@ -1,0 +1,74 @@
+# Wave-M2 mapping corpus (GM1) — five-class taxonomy over the m-probe
+# destination domains (mprofile/m-probe-schemas.yaml models, generated with
+# apiPackage=api, modelPackage=model).
+#
+# Classes:
+#   transportParseError  boost::json::parse throws
+#   schemaInvalid        validator/type mismatch (validator-first)
+#   unrepresentable      schema-valid value NOT representable in the
+#                        destination (throws "not exact" for integral
+#                        out-of-range; "non-finite destination" for
+#                        float/double overflow) — NEVER silent
+#   representable        decode ok AND exact deep round trip
+#   narrowed             decode ok; nearest-destination value differs (float
+#                        >7-digit decimals); idempotent (stable re-encode)
+cases:
+  # ---- representable ----
+  - { id: int32-max, schema: Int32Box, instance: '{"v":2147483647}', expected: representable }
+  - { id: int32-min, schema: Int32Box, instance: '{"v":-2147483648}', expected: representable }
+  - { id: int32-float-form, schema: Int32Box, instance: '{"v":1.0}', expected: representable }
+  - { id: int64-max, schema: Int64Box, instance: '{"v":9223372036854775807}', expected: representable }
+  - { id: int64-min, schema: Int64Box, instance: '{"v":-9223372036854775808}', expected: representable }
+  - { id: float-exact-half, schema: FloatBox, instance: '{"v":0.5}', expected: representable }
+  - { id: float-exact-max, schema: FloatBox, instance: '{"v":3.4028234663852886e38}', expected: representable }
+  - { id: double-01, schema: DoubleBox, instance: '{"v":0.1}', expected: representable }
+  - { id: double-max, schema: DoubleBox, instance: '{"v":1.7976931348623157e308}', expected: representable }
+  - { id: double-min-normal, schema: DoubleBox, instance: '{"v":2.2250738585072014e-308}', expected: representable }
+  - { id: string-ok, schema: StringBox, instance: '{"v":"hi"}', expected: representable }
+  - { id: bool-ok, schema: BoolBox, instance: '{"v":true}', expected: representable }
+  - { id: enum-known, schema: EnumBox, instance: '{"v":"red"}', expected: representable }
+  - { id: nullable-null, schema: NullableBox, instance: '{"label":"x","v":null}', expected: representable }
+  - { id: nullable-missing, schema: NullableBox, instance: '{"label":"x"}', expected: representable }
+  - { id: nullable-value, schema: NullableBox, instance: '{"label":"x","v":"y"}', expected: representable }
+  - { id: any-string, schema: AnyType, instance: '"str"', expected: representable }
+  - { id: any-int, schema: AnyType, instance: '42', expected: representable }
+  - { id: any-object, schema: AnyType, instance: '{"a":[1,"x"]}', expected: representable }
+  - { id: any-null, schema: AnyType, instance: 'null', expected: representable }
+  - { id: any-bigint-uint64, schema: AnyType, instance: '9223372036854775808', expected: representable }
+  - { id: poly-cat, schema: PolyBox, instance: '{"kind":"cat","meow":true}', expected: representable }
+  - { id: poly-dog, schema: PolyBox, instance: '{"kind":"dog","bark":false}', expected: representable }
+  - { id: coll-ok, schema: CollectionBox, instance: '{"tags":["a","b"],"meta":{"k":"v"},"children":[{"name":"c","n":1}]}', expected: representable }
+  - { id: coll-children, schema: CollectionBox, instance: '{"children":[{"name":"a","n":1},{"name":"b","n":2}]}', expected: representable }
+
+  # ---- unrepresentable (throwing representation diagnostics, never silent) ----
+  - { id: int32-overflow, schema: Int32Box, instance: '{"v":2147483648}', expected: unrepresentable }
+  - { id: int32-underflow, schema: Int32Box, instance: '{"v":-2147483649}', expected: unrepresentable }
+  - { id: int32-2pow63, schema: Int32Box, instance: '{"v":9223372036854775808}', expected: unrepresentable }
+  - { id: int64-2pow63, schema: Int64Box, instance: '{"v":9223372036854775808}', expected: unrepresentable }
+  - { id: int64-uint64max, schema: Int64Box, instance: '{"v":18446744073709551615}', expected: unrepresentable }
+  - { id: int64-2pow64, schema: Int64Box, instance: '{"v":18446744073709551616}', expected: unrepresentable }
+  - { id: float-overflow, schema: FloatBox, instance: '{"v":3.4028236e38}', expected: unrepresentable }
+  - { id: float-1e39, schema: FloatBox, instance: '{"v":1e39}', expected: unrepresentable }
+  - { id: double-1e309, schema: DoubleBox, instance: '{"v":1e309}', expected: unrepresentable }
+  - { id: double-1e400, schema: DoubleBox, instance: '{"v":1e400}', expected: unrepresentable }
+
+  # ---- schemaInvalid (validator-first: type/fraction/enum/discriminator) ----
+  - { id: int32-fraction, schema: Int32Box, instance: '{"v":1.5}', expected: schemaInvalid }
+  - { id: int32-string, schema: Int32Box, instance: '{"v":"x"}', expected: schemaInvalid }
+  - { id: string-num, schema: StringBox, instance: '{"v":42}', expected: schemaInvalid }
+  - { id: bool-int, schema: BoolBox, instance: '{"v":1}', expected: schemaInvalid }
+  - { id: enum-unknown, schema: EnumBox, instance: '{"v":"chartreuse"}', expected: schemaInvalid }
+  - { id: enum-wrongtype, schema: EnumBox, instance: '{"v":5}', expected: schemaInvalid }
+  - { id: nullable-wrongtype, schema: NullableBox, instance: '{"label":"x","v":5}', expected: schemaInvalid }
+  - { id: poly-unknown-kind, schema: PolyBox, instance: '{"kind":"bird"}', expected: schemaInvalid }
+  - { id: poly-missing-kind, schema: PolyBox, instance: '{"meow":true}', expected: schemaInvalid }
+  - { id: coll-wrong-item, schema: CollectionBox, instance: '{"tags":[1,2]}', expected: schemaInvalid }
+
+  # ---- transportParseError ----
+  - { id: parse-missing-brace, schema: Int32Box, instance: '{"v":', expected: transportParseError }
+  - { id: parse-bad-literal, schema: Int32Box, instance: '{"v":tru}', expected: transportParseError }
+  - { id: parse-trailing-garbage, schema: Int32Box, instance: '{"v":1}x', expected: transportParseError }
+
+  # ---- narrowed (float 24-bit mantissa; idempotent) ----
+  - { id: float-01, schema: FloatBox, instance: '{"v":0.1}', expected: narrowed }
+  - { id: float-pi, schema: FloatBox, instance: '{"v":3.14159265358979323846}', expected: narrowed }

@@ -60,6 +60,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <limits>
 #include <map>
 #include <memory>
@@ -340,6 +341,51 @@ struct JsonValueConverter
     static Target fromJsonValue(const boost::json::value& jsonValue)
     {
         return jsonValueConverterFromJsonValue<Target>(jsonValue, HasFromJsonValueMethod<Target>{});
+    }
+};
+
+// Wave-M2 (GM2): floating destinations MUST NOT silently produce non-finite
+// values.  boost::json::value_to<float>/<double> narrows out-of-range input
+// to +-inf; the typed-mapping contract requires a REPRESENTATION diagnostic
+// instead (the mathematical value is not representable in the destination).
+// Finite in-range input behaves exactly as before.
+template <>
+struct JsonValueConverter<float>
+{
+    static boost::json::value toJsonValue(const float& sourceValue)
+    {
+        return boost::json::value_from(sourceValue);
+    }
+
+    static float fromJsonValue(const boost::json::value& jsonValue)
+    {
+        float result = boost::json::value_to<float>(jsonValue);
+        if (!std::isfinite(result)) {
+            throw std::invalid_argument(
+                "Decode failed: value not representable as float "
+                "(non-finite destination)");
+        }
+        return result;
+    }
+};
+
+template <>
+struct JsonValueConverter<double>
+{
+    static boost::json::value toJsonValue(const double& sourceValue)
+    {
+        return boost::json::value_from(sourceValue);
+    }
+
+    static double fromJsonValue(const boost::json::value& jsonValue)
+    {
+        double result = boost::json::value_to<double>(jsonValue);
+        if (!std::isfinite(result)) {
+            throw std::invalid_argument(
+                "Decode failed: value not representable as double "
+                "(non-finite destination)");
+        }
+        return result;
     }
 };
 
