@@ -702,6 +702,113 @@ int main() {
 '''
 
 
+MULTIDOC_SPEC = os.path.join(SUITE_DIR, "..", "oas-compliance",
+                             "multidoc", "main.yaml")
+MULTIDOC_DRIVER = r'''
+// Gap-1 golden driver: multi-document OAD references (GC4 tail).
+// The main spec references a parameter, a requestBody and a response (with
+// header) across files ($ref: './shared.yaml#/components/...'). This driver
+// proves the generated client serializes/emits each externally-resolved
+// surface on the wire exactly as an in-document reference would.
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <variant>
+
+#include <boost/beast/http/status.hpp>
+#include <boost/optional.hpp>
+
+#include "api/DefaultApi.h"
+#include "model/ExternalBody_request.h"
+#include "model/ExternalResponse_200_response.h"
+
+using namespace model;
+using namespace org::openapitools::client::api;
+
+class RecordingClient : public HttpClient {
+public:
+    std::string lastVerb, lastTarget, lastBody;
+    std::map<std::string, std::string> lastHeaders;
+    boost::beast::http::status nextStatus = boost::beast::http::status::ok;
+    std::string nextBody = "{\"ok\": true}";
+    std::map<std::string, std::string> nextRespHeaders{
+        {"Content-Type", "application/json"},
+        {"X-External-Rate-Limit", "42"}};
+
+    HttpResponseData
+    executeWithMetadata(const std::string& verb, const std::string& target,
+                        const std::string& body,
+                        const std::map<std::string, std::string>& headers) override {
+        lastVerb = verb; lastTarget = target; lastBody = body;
+        lastHeaders = headers;
+        HttpResponseData d{nextStatus, nextBody, nextRespHeaders};
+        return d;
+    }
+    std::pair<boost::beast::http::status, std::string>
+    execute(const std::string& verb, const std::string& target,
+            const std::string& body,
+            const std::map<std::string, std::string>& headers) override {
+        lastVerb = verb; lastTarget = target; lastBody = body;
+        lastHeaders = headers;
+        return {nextStatus, nextBody};
+    }
+};
+
+static int g_failures = 0;
+
+static void check(const char* name, bool ok, const std::string& detail) {
+    if (ok) {
+        printf("CELL|%s|PASS|%s\n", name, detail.c_str());
+    } else {
+        ++g_failures;
+        printf("CELL|%s|FAIL|%s\n", name, detail.c_str());
+    }
+}
+
+int main() {
+    auto client = std::make_shared<RecordingClient>();
+    DefaultApi api(client);
+
+    // External parameter (query) from ./shared.yaml -> serialized on wire.
+    api.externalQuery(boost::optional<std::string>("beast"));
+    check("multidocQueryParam",
+          client->lastTarget.find("/externalQuery?tag=beast")
+              != std::string::npos, client->lastTarget);
+
+    // External requestBody from ./shared.yaml -> JSON body emitted.
+    auto req = std::make_shared<ExternalBody_request>();
+    req->setNote("external-note");
+    api.externalBody(req);
+    check("multidocRequestBody",
+          client->lastVerb == "POST"
+              && client->lastTarget.find("/externalBody")
+                 != std::string::npos, client->lastTarget);
+    check("multidocRequestBodyJson",
+          client->lastBody.find("\"note\":\"external-note\"")
+              != std::string::npos, client->lastBody);
+
+    // External response (with header) from ./shared.yaml -> deserialized
+    // model + surfaced header on the runtime path.
+    auto r = api.externalResponse();
+    check("multidocResponse",
+          r.status == boost::beast::http::status::ok
+              && std::get<std::shared_ptr<ExternalResponse_200_response>>(
+                     r.body)->isOk() == true,
+          "external response not dispatched");
+    check("multidocResponseHeader",
+          r.headers.count("X-External-Rate-Limit") > 0
+              && r.headers["X-External-Rate-Limit"] == "42",
+          "external response header not surfaced");
+
+    printf(g_failures == 0 ? "MULTIDOC MATRIX PASS\n"
+                           : "MULTIDOC MATRIX FAIL (%d cells)\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
+'''
+
+
 MOCK_SPEC = os.path.join(SUITE_DIR, "wave5", "mock-http-matrix.yaml")
 
 MOCK_DRIVER = r'''
@@ -888,6 +995,7 @@ def main():
             ("security", SECURITY_MATRIX, SECURITY_DRIVER),
             ("content", CONTENT_MATRIX, CONTENT_DRIVER),
             ("ref", REF_MATRIX, REF_DRIVER),
+            ("multidoc", MULTIDOC_SPEC, MULTIDOC_DRIVER),
             ("mock", MOCK_SPEC, MOCK_DRIVER)):
         gen_dir = os.path.join(work, name)
         r = sl.generate(JAR, spec_path, gen_dir)

@@ -1,0 +1,37 @@
+openapi: 3.1.0
+info:
+  title: Multidoc OAD refs — sibling shared components
+  version: 1.0.0
+paths: {}
+components:
+  parameters:
+    ExternalQueryParam:
+      name: tag
+      in: query
+      required: false
+      schema:
+        type: string
+  requestBodies:
+    ExternalRequestBody:
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              note:
+                type: string
+  responses:
+    ExternalOkResponse:
+      description: ok
+      headers:
+        X-External-Rate-Limit:
+          description: external header from sibling doc
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok:
+                type: boolean

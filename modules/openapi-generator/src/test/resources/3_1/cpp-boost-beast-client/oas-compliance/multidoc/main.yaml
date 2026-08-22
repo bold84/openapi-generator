@@ -1,0 +1,41 @@
+openapi: 3.1.0
+info:
+  title: Multi-doc external-reference probe
+  version: 1.0.0
+paths:
+  /externalQuery:
+    get:
+      operationId: externalQuery
+      parameters:
+        - $ref: "./shared.yaml#/components/parameters/ExternalQueryParam"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: string
+  /externalBody:
+    post:
+      operationId: externalBody
+      requestBody:
+        $ref: "./shared.yaml#/components/requestBodies/ExternalRequestBody"
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: string
+  /externalResponse:
+    get:
+      operationId: externalResponse
+      responses:
+        "200":
+          $ref: "./shared.yaml#/components/responses/ExternalOkResponse"
+        default:
+          description: fallback
+          content:
+            text/plain:
+              schema:
+                type: string
