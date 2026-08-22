@@ -615,6 +615,93 @@ int main() {
 '''
 
 
+REF_MATRIX = os.path.join(SUITE_DIR, "wave5", "ref-callback-matrix.yaml")
+REF_DRIVER = r'''
+// Wave-5.6/5.7 golden driver: non-schema Reference Objects + metadata.
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <variant>
+
+#include <boost/beast/http/status.hpp>
+#include <boost/optional.hpp>
+
+#include "api/DefaultApi.h"
+#include "model/RefEverything_request.h"
+#include "model/Inline_object.h"
+
+using namespace model;
+using namespace org::openapitools::client::api;
+
+class RecordingClient : public HttpClient {
+public:
+    std::string lastVerb, lastTarget, lastBody;
+    std::map<std::string, std::string> lastHeaders;
+    boost::beast::http::status nextStatus = boost::beast::http::status::ok;
+    std::string nextBody = "{\"nextPage\": 9}";
+    std::map<std::string, std::string> nextRespHeaders{
+        {"Content-Type", "application/json"}, {"X-Total", "7"}};
+
+    HttpResponseData
+    executeWithMetadata(const std::string& verb, const std::string& target,
+                        const std::string& body,
+                        const std::map<std::string, std::string>& headers) override {
+        lastVerb = verb; lastTarget = target; lastBody = body;
+        lastHeaders = headers;
+        HttpResponseData d{nextStatus, nextBody, nextRespHeaders};
+        return d;
+    }
+    std::pair<boost::beast::http::status, std::string>
+    execute(const std::string&, const std::string&, const std::string&,
+            const std::map<std::string, std::string>&) override {
+        return {nextStatus, nextBody};
+    }
+};
+
+static int g_failures = 0;
+
+static void check(const char* name, bool ok, const std::string& detail) {
+    if (ok) {
+        printf("CELL|%s|PASS|%s\n", name, detail.c_str());
+    } else {
+        ++g_failures;
+        printf("CELL|%s|FAIL|%s\n", name, detail.c_str());
+    }
+}
+
+int main() {
+    auto client = std::make_shared<RecordingClient>();
+    DefaultApi api(client);
+
+    // $ref'd requestBody, header param, query param, response and response
+    // header all resolve into this operation.
+    auto req = std::make_shared<RefEverything_request>();
+    req->setPayload("p1");
+    auto r = api.refEverything(req, "trace-1",
+                               boost::optional<std::int32_t>(3));
+
+    check("refHeaderParam", client->lastHeaders.count("X-Trace") > 0
+            && client->lastHeaders["X-Trace"] == "trace-1",
+            "ref'd header param not emitted");
+    check("refQueryParam", client->lastTarget.find("page=3")
+            != std::string::npos, client->lastTarget);
+    check("refBody", client->lastBody.find("\"payload\":\"p1\"")
+            != std::string::npos, client->lastBody);
+    check("refResponse", r.status == boost::beast::http::status::ok
+            && std::get<std::shared_ptr<Inline_object>>(r.body)->getNextPage() == 9,
+            "ref'd 200 response not dispatched");
+    check("refResponseHeader", r.headers.count("X-Total") > 0
+            && r.headers["X-Total"] == "7", "ref'd response header not surfaced");
+
+    printf(g_failures == 0 ? "REF MATRIX PASS\n"
+                           : "REF MATRIX FAIL (%d cells)\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
+'''
+
+
 def main():
     import glob
     import subprocess
@@ -625,13 +712,29 @@ def main():
             ("param", MATRIX, DRIVER),
             ("server", SERVER_MATRIX, SERVER_DRIVER),
             ("security", SECURITY_MATRIX, SECURITY_DRIVER),
-            ("content", CONTENT_MATRIX, CONTENT_DRIVER)):
+            ("content", CONTENT_MATRIX, CONTENT_DRIVER),
+            ("ref", REF_MATRIX, REF_DRIVER)):
         gen_dir = os.path.join(work, name)
         r = sl.generate(JAR, spec_path, gen_dir)
         if r.returncode != 0:
             print("GENERATION FAILED (%s)" % name, file=sys.stderr)
             print(r.stderr[-1200:], file=sys.stderr)
             return 2
+        if name == "ref":
+            # Wave 5.7 source-level assertions: the preserved inbound
+            # metadata is a visible diagnostic in the generated api source.
+            api_src = open(os.path.join(gen_dir, "api", "DefaultApi.cpp")).read()
+            for marker, frag in (
+                    ("webhook-preserved",
+                     "preserved inbound metadata"),
+                    ("webhook-name", "newEvent[POST newEventPost]"),
+                    ("callback-name", "callback metadata preserved (no inbound listener): onEvent"),
+                    ("link-name", "link metadata preserved (no automatic traversal): next")):
+                if frag not in api_src:
+                    print("REF SOURCE FAIL: %s missing" % marker,
+                          file=sys.stderr)
+                    return 2
+            print("REF SOURCE PASS (webhook/callback/link metadata markers)")
         main_path = os.path.join(work, name + "_main.cpp")
         with open(main_path, "w") as f:
             f.write(driver)

@@ -4781,7 +4781,59 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
-    public void toValidIdentifierSanitizesBranchNames() {
+    public void webhooksArePreservedAndDoNotSuppressPathOperations() {
+        // Wave 5.7 (GC3): webhooks are inbound-only metadata for a client
+        // generator. Upstream folds them into the api map under the same
+        // fallback classname, silently REPLACING the paths api; the codegen
+        // preserves the metadata and strips them so the paths generate.
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.1.0");
+        openAPI.setServers(new java.util.ArrayList<>());
+        io.swagger.v3.oas.models.Components components =
+                new io.swagger.v3.oas.models.Components();
+        Map<String, Schema> schemas = new java.util.LinkedHashMap<>();
+        schemas.put("Ping", new Schema().type("object"));
+        components.setSchemas(schemas);
+        openAPI.setComponents(components);
+        io.swagger.v3.oas.models.Paths paths = new io.swagger.v3.oas.models.Paths();
+        io.swagger.v3.oas.models.Operation getOp = new io.swagger.v3.oas.models.Operation();
+        getOp.setOperationId("getPing");
+        getOp.responses(new io.swagger.v3.oas.models.responses.ApiResponses()
+                .addApiResponse("200", new io.swagger.v3.oas.models.responses.ApiResponse()
+                        .description("ok").content(new io.swagger.v3.oas.models.media.Content()
+                                .addMediaType("application/json",
+                                        new io.swagger.v3.oas.models.media.MediaType()
+                                                .schema(new io.swagger.v3.oas.models.media.ObjectSchema())))));
+        paths.addPathItem("/ping",
+                new io.swagger.v3.oas.models.PathItem().get(getOp));
+        openAPI.setPaths(paths);
+        io.swagger.v3.oas.models.Operation hookOp = new io.swagger.v3.oas.models.Operation();
+        hookOp.setOperationId("newEventPost");
+        hookOp.responses(new io.swagger.v3.oas.models.responses.ApiResponses()
+                .addApiResponse("200", new io.swagger.v3.oas.models.responses.ApiResponse()
+                        .description("ok")));
+        java.util.Map<String, io.swagger.v3.oas.models.PathItem> webhooks =
+                new java.util.LinkedHashMap<>();
+        webhooks.put("newEvent",
+                new io.swagger.v3.oas.models.PathItem().post(hookOp));
+        openAPI.setWebhooks(webhooks);
+
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+        codegen.preprocessOpenAPI(openAPI);
+
+        Assert.assertEquals(codegen.getWebhookPreservation().size(), 1,
+                "the webhook metadata must be preserved");
+        Assert.assertTrue(
+                codegen.getWebhookPreservation().get(0).contains("newEvent[POST newEventPost]"),
+                "preserved metadata must name the webhook + method + operationId: "
+                        + codegen.getWebhookPreservation());
+        Assert.assertNull(openAPI.getWebhooks(),
+                "webhooks must be stripped from generation (paths api must survive)");
+    }
+
+public void toValidIdentifierSanitizesBranchNames() {
         // Note: Method is private, verified through descriptor builder
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();

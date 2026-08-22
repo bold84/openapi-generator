@@ -32,6 +32,11 @@
 namespace {{this}} {
 {{/apiNamespaceDeclarations}}
 
+{{#x-codegen-webhook-metadata}}
+// Wave 5.7 (GC3) preserved inbound metadata — no listener generated:
+// {{x-codegen-webhook-metadata}}
+{{/x-codegen-webhook-metadata}}
+
 {{#x-codegen-has-models}}using namespace {{modelNamespace}};
 {{/x-codegen-has-models}}
 

@@ -1,0 +1,95 @@
+openapi: 3.1.0
+info:
+  title: refmatrix
+  version: 1.0.0
+paths:
+  /refs:
+    post:
+      operationId: refEverything
+      parameters:
+        - $ref: "#/components/parameters/TraceParam"
+        - $ref: "#/components/parameters/Page"
+      requestBody:
+        $ref: "#/components/requestBodies/PayloadBody"
+      responses:
+        "200":
+          $ref: "#/components/responses/OkWithHeader"
+        default:
+          description: missing
+          content:
+            text/plain:
+              schema:
+                type: string
+      callbacks:
+        onEvent:
+          "{$request.body#/callbackUrl}":
+            post:
+              requestBody:
+                content:
+                  application/json:
+                    schema:
+                      type: object
+                      properties:
+                        evt: { type: string }
+              responses:
+                "200":
+                  description: ok
+      links:
+        next:
+          operationId: refEverything
+          parameters:
+            page: "$response.body#/nextPage"
+components:
+  parameters:
+    TraceParam:
+      name: X-Trace
+      in: header
+      required: false
+      schema:
+        type: string
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+  requestBodies:
+    PayloadBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              payload: { type: string }
+  responses:
+    OkWithHeader:
+      description: ok
+      headers:
+        X-Total:
+          $ref: "#/components/headers/TotalHeader"
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              nextPage: { type: integer }
+  headers:
+    TotalHeader:
+      description: total count
+      schema:
+        type: integer
+webhooks:
+  newEvent:
+    post:
+      operationId: newEventPost
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                kind: { type: string }
+      responses:
+        "200":
+          description: ok

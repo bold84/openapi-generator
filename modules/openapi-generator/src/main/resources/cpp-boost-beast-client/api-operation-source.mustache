@@ -149,6 +149,12 @@
         applyOperationSecurity("{{operationId}}", operationSecurity, path, headers);
     }
 {{/vendorExtensions.x-codegen-op-has-security}}
+{{#vendorExtensions.x-codegen-op-callbacks}}
+    // Wave 5.7: callback metadata preserved (no inbound listener): {{.}}
+{{/vendorExtensions.x-codegen-op-callbacks}}
+{{#vendorExtensions.x-codegen-op-links}}
+    // Wave 5.7: link metadata preserved (no automatic traversal): {{.}}
+{{/vendorExtensions.x-codegen-op-links}}
     auto statusCode = boost::beast::http::status::unknown;
 {{#vendorExtensions.x-codegen-streaming-response}}
 {{#vendorExtensions.x-codegen-sse-representation-mode}}std::vector<std::string>{{/vendorExtensions.x-codegen-sse-representation-mode}}{{^vendorExtensions.x-codegen-sse-representation-mode}}{{#returnType}}    {{#vendorExtensions.x-codegen-stream-element-type}}std::vector<{{{.}}}>{{/vendorExtensions.x-codegen-stream-element-type}}{{^vendorExtensions.x-codegen-stream-element-type}}std::vector<{{{returnType}}}>{{/vendorExtensions.x-codegen-stream-element-type}}{{/returnType}}{{/vendorExtensions.x-codegen-sse-representation-mode}} deserializedResponse;
@@ -520,6 +526,12 @@
         applyOperationSecurity("{{operationId}}", operationSecurity, path, headers);
     }
 {{/vendorExtensions.x-codegen-op-has-security}}
+{{#vendorExtensions.x-codegen-op-callbacks}}
+    // Wave 5.7: callback metadata preserved (no inbound listener): {{.}}
+{{/vendorExtensions.x-codegen-op-callbacks}}
+{{#vendorExtensions.x-codegen-op-links}}
+    // Wave 5.7: link metadata preserved (no automatic traversal): {{.}}
+{{/vendorExtensions.x-codegen-op-links}}
     auto statusCode = boost::beast::http::status::unknown;
     {{#vendorExtensions.x-codegen-sse-representation-mode}}std::vector<std::string>{{/vendorExtensions.x-codegen-sse-representation-mode}}{{^vendorExtensions.x-codegen-sse-representation-mode}}{{#vendorExtensions.x-codegen-dual-stream-element-type}}std::vector<{{{.}}}>{{/vendorExtensions.x-codegen-dual-stream-element-type}}{{^vendorExtensions.x-codegen-dual-stream-element-type}}std::vector<{{{vendorExtensions.x-codegen-dual-stream-return-type}}}>{{/vendorExtensions.x-codegen-dual-stream-element-type}}{{/vendorExtensions.x-codegen-sse-representation-mode}} deserializedResponse;
     try {

@@ -327,6 +327,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             "x-codegen-op-security-groups";
     private static final String X_CODEGEN_OP_HAS_SECURITY =
             "x-codegen-op-has-security";
+    // Wave 5.7 (GC3): preserved callback/link metadata (names only).
+    private static final String X_CODEGEN_OP_CALLBACKS = "x-codegen-op-callbacks";
+    private static final String X_CODEGEN_OP_LINKS = "x-codegen-op-links";
+    private static final String X_CODEGEN_WEBHOOK_METADATA =
+            "x-codegen-webhook-metadata";
     private static final String X_CODEGEN_RESPONSE_RANGE = "x-codegen-response-range";
     private static final String X_CODEGEN_RESPONSE_IS_ONE_OF = "x-codegen-response-is-oneof";
     private static final String X_CODEGEN_STREAM_IS_ONE_OF = "x-codegen-stream-is-oneof";
@@ -352,6 +357,76 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     /** OpenAPI doc captured by preprocessOpenAPI for the later operation/
      *  model phases (Wave 5.2 server resolution uses it). */
     private OpenAPI phaseOpenAPI;
+    /** Wave 5.7: preserved webhook metadata (inbound-only; stripped from
+     *  generation so the paths api is not overwritten by the upstream
+     *  webhook folding). Exposed to the templates + tests. */
+    private final List<String> webhookPreservation = new ArrayList<>();
+
+    public List<String> getWebhookPreservation() {
+        return new ArrayList<>(webhookPreservation);
+    }
+
+    private static String idOf(io.swagger.v3.oas.models.Operation op) {
+        return op.getOperationId() == null ? "(no operationId)" : op.getOperationId();
+    }
+
+    /** Wave 5.7: per-path-item callback/link names captured from the RAW
+     *  spec (the swagger-models Operation exposes callbacks but NOT links),
+     *  keyed by op.path + '\0' + HTTP method (upper-case). */
+    private final Map<String, List<String>> rawOperationCallbacks = new HashMap<>();
+    private final Map<String, List<String>> rawOperationLinks = new HashMap<>();
+
+    @SuppressWarnings("unchecked")
+    private void captureRawOperationMetadata(OpenAPI openAPI) {
+        rawOperationCallbacks.clear();
+        rawOperationLinks.clear();
+        String input = getInputSpec();
+        if (input == null || !new File(input).isFile()) {
+            return;
+        }
+        Object raw;
+        try (java.io.Reader r = new java.io.FileReader(input)) {
+            raw = new org.yaml.snakeyaml.Yaml().load(r);
+        } catch (Exception e) {
+            return;
+        }
+        if (!(raw instanceof Map)) {
+            return;
+        }
+        Map<?, ?> root = (Map<?, ?>) raw;
+        Object paths = root.get("paths");
+        if (!(paths instanceof Map)) {
+            return;
+        }
+        for (Map.Entry<?, ?> pe : ((Map<?, ?>) paths).entrySet()) {
+            String path = String.valueOf(pe.getKey());
+            if (!(pe.getValue() instanceof Map)) {
+                continue;
+            }
+            for (Map.Entry<?, ?> me : ((Map<?, ?>) pe.getValue()).entrySet()) {
+                String method = String.valueOf(me.getKey()).toUpperCase(java.util.Locale.ROOT);
+                if (!(me.getValue() instanceof Map)) {
+                    continue;
+                }
+                Map<?, ?> op = (Map<?, ?>) me.getValue();
+                Object cb = op.get("callbacks");
+                Object lk = op.get("links");
+                String key = path + '\0' + method;
+                rawOperationCallbacks.put(key, rawKeys(cb));
+                rawOperationLinks.put(key, rawKeys(lk));
+            }
+        }
+    }
+
+    private static List<String> rawKeys(Object node) {
+        List<String> names = new ArrayList<>();
+        if (node instanceof Map) {
+            names.addAll(((Map<?, ?>) node).keySet().stream()
+                    .map(String::valueOf)
+                    .collect(Collectors.toList()));
+        }
+        return names;
+    }
 
     // Wave-4: $dynamicAnchor registration records. Keyed by resourceId + '\0'
     // + anchor name; LATER puts override earlier ones (a hoisted anchor
@@ -421,6 +496,34 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     public void preprocessOpenAPI(OpenAPI openAPI) {
         super.preprocessOpenAPI(openAPI);
         this.phaseOpenAPI = openAPI;
+        // Wave 5.7 (GC3): webhooks are INBOUND-only metadata for a client
+        // generator. Upstream folds them into the api map under the same
+        // fallback classname as the paths operations, silently REPLACING the
+        // paths api (no webhooks -> /refs op vanished). Preserve the
+        // metadata + strip them so the paths generate; the preserved list is
+        // emitted into the generated api source as a visible diagnostic
+        // (no inbound listener is generated).
+        webhookPreservation.clear();
+        if (openAPI.getWebhooks() != null && !openAPI.getWebhooks().isEmpty()) {
+            for (Map.Entry<String, PathItem> e : openAPI.getWebhooks().entrySet()) {
+                PathItem item = e.getValue();
+                List<String> methods = new ArrayList<>();
+                if (item.getGet() != null) methods.add("GET " + idOf(item.getGet()));
+                if (item.getPut() != null) methods.add("PUT " + idOf(item.getPut()));
+                if (item.getPost() != null) methods.add("POST " + idOf(item.getPost()));
+                if (item.getDelete() != null) methods.add("DELETE " + idOf(item.getDelete()));
+                if (item.getPatch() != null) methods.add("PATCH " + idOf(item.getPatch()));
+                if (item.getHead() != null) methods.add("HEAD " + idOf(item.getHead()));
+                if (item.getOptions() != null) methods.add("OPTIONS " + idOf(item.getOptions()));
+                if (item.getTrace() != null) methods.add("TRACE " + idOf(item.getTrace()));
+                webhookPreservation.add(e.getKey()
+                        + "[" + String.join(", ", methods) + "]");
+            }
+            openAPI.setWebhooks(null);
+        }
+        // Wave 5.7: callback/link names from the raw spec (links have no
+        // model accessor).
+        captureRawOperationMetadata(openAPI);
         // Wave-2 §10.2: recover prefixItems that the shared OAS-3.1 normalizer
         // drops (NORMALIZE_31SPEC converts types:[array] JsonSchema to
         // ArraySchema and does not copy prefixItems). Must run BEFORE the
@@ -6055,6 +6158,7 @@ if (schema.get$comment() != null) {
         // compile). The upstream `hasModels` flag is not populated for this
         // generator's API context; compute it here.
         objs.put("x-codegen-has-models", !allModels.isEmpty());
+        objs.put(X_CODEGEN_WEBHOOK_METADATA, String.join("; ", webhookPreservation));
         Map<String, Object> operations = (Map<String, Object>) objs.get("operations");
         List<CodegenOperation> operationList = (List<CodegenOperation>) operations.get("operation");
         List<CodegenOperation> newOpList = new ArrayList<>();
@@ -6073,6 +6177,16 @@ if (schema.get$comment() != null) {
             op.vendorExtensions.put(X_CODEGEN_OP_SECURITY_GROUPS, securityGroups);
             op.vendorExtensions.put(X_CODEGEN_OP_HAS_SECURITY,
                     !securityGroups.isEmpty());
+            // Wave 5.7 (GC3): callback/link metadata preserved (names only;
+            // no inbound listener, no automatic Link traversal) — from the
+            // raw spec capture (model exposes callbacks but not links).
+            String opKey = op.path + '\0' + op.httpMethod;
+            op.vendorExtensions.put(X_CODEGEN_OP_CALLBACKS,
+                    rawOperationCallbacks.getOrDefault(opKey,
+                            new ArrayList<String>()));
+            op.vendorExtensions.put(X_CODEGEN_OP_LINKS,
+                    rawOperationLinks.getOrDefault(opKey,
+                            new ArrayList<String>()));
             String path = op.path;
 
             String[] items = path.split("/", -1);
