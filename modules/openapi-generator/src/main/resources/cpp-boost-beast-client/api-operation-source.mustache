@@ -61,70 +61,29 @@
     }
 {{/hasFormParams}}
 {{#hasPathParams}}
-    // path params
+    // path params (Wave 5.1: simple/label/matrix via the codegen stamp)
 {{#pathParams}}
-    replacePathParameter(path, "{{{baseName}}}", {{{paramName}}});
+    replacePathParameter(path, "{{{baseName}}}", {{{paramName}}}, "{{{vendorExtensions.x-codegen-param-style}}}", {{vendorExtensions.x-codegen-param-explode}});
 {{/pathParams}}
 {{/hasPathParams}}
 {{#hasQueryParams}}
-    // query params
+    // query params (Wave 5.1: style/explode/allowReserved/allowEmptyValue
+    // stamped per parameter by the codegen)
     std::stringstream queryParameterStream;
     const char* queryParameterSeparator = "?";
 {{#queryParams}}
 {{#vendorExtensions.x-codegen-is-optional-query-parameter}}
     if ({{{paramName}}}) {
 {{/vendorExtensions.x-codegen-is-optional-query-parameter}}
-{{#isMap}}
-{{#vendorExtensions.x-codegen-query-map-exploded}}
-        appendExplodedQueryParameters(
-            queryParameterStream,
-            queryParameterSeparator,
-            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}});
-{{/vendorExtensions.x-codegen-query-map-exploded}}
-{{#vendorExtensions.x-codegen-query-map-deep-object}}
-        appendDeepObjectQueryParameters(
+        appendParamQueryParameter(
             queryParameterStream,
             queryParameterSeparator,
             "{{{baseName}}}",
-            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}});
-{{/vendorExtensions.x-codegen-query-map-deep-object}}
-{{^vendorExtensions.x-codegen-query-map-exploded}}{{^vendorExtensions.x-codegen-query-map-deep-object}}
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            serializeQueryParameterValue(
-                {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}},
-                "{{{vendorExtensions.x-codegen-query-collection-delimiter}}}"));
-{{/vendorExtensions.x-codegen-query-map-deep-object}}{{/vendorExtensions.x-codegen-query-map-exploded}}
-{{/isMap}}
-{{^isMap}}
-{{#isArray}}
-{{#vendorExtensions.x-codegen-query-collection-multi}}
-        appendMultiQueryParameters(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}});
-{{/vendorExtensions.x-codegen-query-collection-multi}}
-{{^vendorExtensions.x-codegen-query-collection-multi}}
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            serializeQueryParameterValue(
-                {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}},
-                "{{{vendorExtensions.x-codegen-query-collection-delimiter}}}"));
-{{/vendorExtensions.x-codegen-query-collection-multi}}
-{{/isArray}}
-{{^isArray}}
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            serializeQueryParameterValue({{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}}));
-{{/isArray}}
-{{/isMap}}
+            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}},
+            "{{{vendorExtensions.x-codegen-param-style}}}",
+            {{vendorExtensions.x-codegen-param-explode}},
+            {{vendorExtensions.x-codegen-param-allow-reserved}},
+            {{vendorExtensions.x-codegen-param-allow-empty-value}});
 {{#vendorExtensions.x-codegen-is-optional-query-parameter}}
     }
 {{/vendorExtensions.x-codegen-is-optional-query-parameter}}
@@ -134,9 +93,19 @@
 {{#hasHeaderParams}}
     // headers
 {{#headerParams}}
-    headers.emplace("{{{baseName}}}", serializeHeaderParameterValue({{{paramName}}}));
+    headers.emplace("{{{baseName}}}", serializeHeaderParameterValue({{{paramName}}}, {{vendorExtensions.x-codegen-param-explode}}));
 {{/headerParams}}
 {{/hasHeaderParams}}
+{{#hasCookieParams}}
+    // cookie params (Wave 5.1): form style, joined into the Cookie header
+    std::string cookieHeader;
+{{#cookieParams}}
+    appendCookieParameter(cookieHeader, "{{{baseName}}}", {{{paramName}}}, {{vendorExtensions.x-codegen-param-explode}});
+{{/cookieParams}}
+    if (!cookieHeader.empty()) {
+        headers.emplace("Cookie", cookieHeader);
+    }
+{{/hasCookieParams}}
 
 {{#vendorExtensions.x-codegen-response-union}}
     std::string responseContentType = "application/json";
@@ -463,70 +432,29 @@
     }
 {{/hasFormParams}}
 {{#hasPathParams}}
-    // path params
+    // path params (Wave 5.1: simple/label/matrix via the codegen stamp)
 {{#pathParams}}
-    replacePathParameter(path, "{{{baseName}}}", {{{paramName}}});
+    replacePathParameter(path, "{{{baseName}}}", {{{paramName}}}, "{{{vendorExtensions.x-codegen-param-style}}}", {{vendorExtensions.x-codegen-param-explode}});
 {{/pathParams}}
 {{/hasPathParams}}
 {{#hasQueryParams}}
-    // query params
+    // query params (Wave 5.1: style/explode/allowReserved/allowEmptyValue
+    // stamped per parameter by the codegen)
     std::stringstream queryParameterStream;
     const char* queryParameterSeparator = "?";
 {{#queryParams}}
 {{#vendorExtensions.x-codegen-is-optional-query-parameter}}
     if ({{{paramName}}}) {
 {{/vendorExtensions.x-codegen-is-optional-query-parameter}}
-{{#isMap}}
-{{#vendorExtensions.x-codegen-query-map-exploded}}
-        appendExplodedQueryParameters(
-            queryParameterStream,
-            queryParameterSeparator,
-            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}});
-{{/vendorExtensions.x-codegen-query-map-exploded}}
-{{#vendorExtensions.x-codegen-query-map-deep-object}}
-        appendDeepObjectQueryParameters(
+        appendParamQueryParameter(
             queryParameterStream,
             queryParameterSeparator,
             "{{{baseName}}}",
-            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}});
-{{/vendorExtensions.x-codegen-query-map-deep-object}}
-{{^vendorExtensions.x-codegen-query-map-exploded}}{{^vendorExtensions.x-codegen-query-map-deep-object}}
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            serializeQueryParameterValue(
-                {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}},
-                "{{{vendorExtensions.x-codegen-query-collection-delimiter}}}"));
-{{/vendorExtensions.x-codegen-query-map-deep-object}}{{/vendorExtensions.x-codegen-query-map-exploded}}
-{{/isMap}}
-{{^isMap}}
-{{#isArray}}
-{{#vendorExtensions.x-codegen-query-collection-multi}}
-        appendMultiQueryParameters(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}});
-{{/vendorExtensions.x-codegen-query-collection-multi}}
-{{^vendorExtensions.x-codegen-query-collection-multi}}
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            serializeQueryParameterValue(
-                {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}},
-                "{{{vendorExtensions.x-codegen-query-collection-delimiter}}}"));
-{{/vendorExtensions.x-codegen-query-collection-multi}}
-{{/isArray}}
-{{^isArray}}
-        appendQueryParameter(
-            queryParameterStream,
-            queryParameterSeparator,
-            "{{{baseName}}}",
-            serializeQueryParameterValue({{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}}));
-{{/isArray}}
-{{/isMap}}
+            {{#vendorExtensions.x-codegen-is-optional-query-parameter}}*{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{paramName}}},
+            "{{{vendorExtensions.x-codegen-param-style}}}",
+            {{vendorExtensions.x-codegen-param-explode}},
+            {{vendorExtensions.x-codegen-param-allow-reserved}},
+            {{vendorExtensions.x-codegen-param-allow-empty-value}});
 {{#vendorExtensions.x-codegen-is-optional-query-parameter}}
     }
 {{/vendorExtensions.x-codegen-is-optional-query-parameter}}
@@ -536,9 +464,19 @@
 {{#hasHeaderParams}}
     // headers
 {{#headerParams}}
-    headers.emplace("{{{baseName}}}", serializeHeaderParameterValue({{{paramName}}}));
+    headers.emplace("{{{baseName}}}", serializeHeaderParameterValue({{{paramName}}}, {{vendorExtensions.x-codegen-param-explode}}));
 {{/headerParams}}
 {{/hasHeaderParams}}
+{{#hasCookieParams}}
+    // cookie params (Wave 5.1): form style, joined into the Cookie header
+    std::string cookieHeader;
+{{#cookieParams}}
+    appendCookieParameter(cookieHeader, "{{{baseName}}}", {{{paramName}}}, {{vendorExtensions.x-codegen-param-explode}});
+{{/cookieParams}}
+    if (!cookieHeader.empty()) {
+        headers.emplace("Cookie", cookieHeader);
+    }
+{{/hasCookieParams}}
 
     // For streaming, force Accept to text/event-stream (ignoring JSON produces)
     headers["Accept"] = "text/event-stream";

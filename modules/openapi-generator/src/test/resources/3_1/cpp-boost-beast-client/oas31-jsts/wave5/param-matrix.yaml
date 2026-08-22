@@ -1,0 +1,335 @@
+openapi: 3.1.0
+info:
+  title: param-matrix
+  version: 1.0.0
+paths:
+  /queryFormExploded:
+    get:
+      operationId: queryFormExploded
+      parameters:
+        - name: color
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+          description: form/explode=true array (default cell)
+      responses:
+        "200":
+          description: ok
+  /queryFormUnexploded:
+    get:
+      operationId: queryFormUnexploded
+      parameters:
+        - name: color
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /queryFormObjectExpl:
+    get:
+      operationId: queryFormObjectExpl
+      parameters:
+        - name: role
+          in: query
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: object
+            properties:
+              role: { type: string }
+              firstName: { type: string }
+      responses:
+        "200":
+          description: ok
+  /queryFormObjectUnexpl:
+    get:
+      operationId: queryFormObjectUnexpl
+      parameters:
+        - name: role
+          in: query
+          required: true
+          style: form
+          explode: false
+          schema:
+            type: object
+            properties:
+              role: { type: string }
+              firstName: { type: string }
+      responses:
+        "200":
+          description: ok
+  /querySpace:
+    get:
+      operationId: querySpace
+      parameters:
+        - name: color
+          in: query
+          required: true
+          style: spaceDelimited
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /queryPipe:
+    get:
+      operationId: queryPipe
+      parameters:
+        - name: color
+          in: query
+          required: true
+          style: pipeDelimited
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /queryDeep:
+    get:
+      operationId: queryDeep
+      parameters:
+        - name: color
+          in: query
+          required: true
+          style: deepObject
+          explode: true
+          schema:
+            type: object
+            properties:
+              R: { type: integer }
+              G: { type: integer }
+              B: { type: integer }
+      responses:
+        "200":
+          description: ok
+  /queryReserved:
+    get:
+      operationId: queryReserved
+      parameters:
+        - name: qres
+          in: query
+          required: true
+          allowReserved: true
+          schema:
+            type: string
+        - name: qenc
+          in: query
+          required: true
+          allowReserved: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /queryEmpty:
+    get:
+      operationId: queryEmpty
+      parameters:
+        - name: qempty
+          in: query
+          allowEmptyValue: true
+          schema:
+            type: string
+        - name: qdrop
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /queryEsc:
+    get:
+      operationId: queryEsc
+      parameters:
+        - name: qstr
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /users/{color}:
+    get:
+      operationId: pathSimple
+      parameters:
+        - name: color
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /attrs/{attrs}:
+    get:
+      operationId: pathSimpleExpl
+      parameters:
+        - name: attrs
+          in: path
+          required: true
+          style: simple
+          explode: true
+          schema:
+            type: object
+            properties:
+              blue: { type: string }
+              black: { type: string }
+      responses:
+        "200":
+          description: ok
+  /lab/{color}:
+    get:
+      operationId: pathLabel
+      parameters:
+        - name: color
+          in: path
+          required: true
+          style: label
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /mat/{color}:
+    get:
+      operationId: pathMatrix
+      parameters:
+        - name: color
+          in: path
+          required: true
+          style: matrix
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /matx/{color}:
+    get:
+      operationId: pathMatrixExpl
+      parameters:
+        - name: color
+          in: path
+          required: true
+          style: matrix
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /pathEsc/{seg}:
+    get:
+      operationId: pathEscaped
+      parameters:
+        - name: seg
+          in: path
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: ok
+  /hdr:
+    get:
+      operationId: headerSimple
+      parameters:
+        - name: X-Color
+          in: header
+          required: true
+          style: simple
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /hdrx:
+    get:
+      operationId: headerExpl
+      parameters:
+        - name: X-Attrs
+          in: header
+          required: true
+          style: simple
+          explode: true
+          schema:
+            type: object
+            properties:
+              R: { type: integer }
+              G: { type: integer }
+              B: { type: integer }
+      responses:
+        "200":
+          description: ok
+  /ck:
+    get:
+      operationId: cookieForm
+      parameters:
+        - name: id
+          in: cookie
+          required: true
+          style: form
+          explode: true
+          schema:
+            type: integer
+        - name: color
+          in: cookie
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok
+  /ckx:
+    get:
+      operationId: cookieFormExpl
+      parameters:
+        - name: color
+          in: cookie
+          style: form
+          explode: true
+          schema:
+            type: array
+            items:
+              type: string
+      responses:
+        "200":
+          description: ok

@@ -31,9 +31,13 @@ public class CppBoostBeastClientApiCodegenTest {
                 generatedClientDirectory.resolve(Path.of("api", "CollectionFormatApi.cpp")));
         String getItemsMethod = extractMethod(
                 generatedApiSource, "CollectionFormatApi::getItems(");
-        assertTrue(getItemsMethod.contains("appendMultiQueryParameters("));
-        assertTrue(getItemsMethod.contains("\"ids\",\n            ids);"));
-        assertTrue(getItemsMethod.contains("csvIds,\n                \",\""));
+        // Wave 5.1: the OAS2 multi collection (form style, explode=true) is
+        // emitted through the unified style-aware appender.
+        assertTrue(getItemsMethod.contains("appendParamQueryParameter("));
+        assertTrue(getItemsMethod.contains("\"ids\","));
+        assertTrue(getItemsMethod.contains("ids,"));
+        assertTrue(getItemsMethod.contains("\"form\","));
+        assertTrue(getItemsMethod.contains("true,"));
     }
 
     @Test
@@ -164,42 +168,64 @@ public class CppBoostBeastClientApiCodegenTest {
         String queryEncodingMethod = extractMethod(generatedApiSource, "RegressionApi::getQueryEncoding(");
         assertTrue(generatedApiHeader.contains(
                 "const boost::optional<std::string>& optionalValue"));
-        assertTrue(queryEncodingMethod.contains("appendQueryParameter("));
+        // Wave 5.1: every query param rides the unified style-aware appender
+        // (name, value, style, explode, allowReserved, allowEmptyValue).
+        assertTrue(queryEncodingMethod.contains("appendParamQueryParameter("));
         assertTrue(queryEncodingMethod.contains("\"wire-name\","));
-        assertTrue(queryEncodingMethod.contains("serializeQueryParameterValue(wireName)"));
-        assertTrue(queryEncodingMethod.contains("appendMultiQueryParameters("));
-        assertTrue(queryEncodingMethod.contains("\"values\",\n            values);"));
-        assertTrue(queryEncodingMethod.contains("csvValues,\n                \",\""));
+        assertTrue(queryEncodingMethod.contains("\"form\","));
+        // form/explode=true (multi) array cell
         assertTrue(queryEncodingMethod.contains(
-                "\"explicit-form-default-values\",\n            explicitFormDefaultValues);"));
-        assertTrue(queryEncodingMethod.contains("noStyleCsvValues,\n                \",\""));
+                "\"values\",\n            values,"));
         assertTrue(queryEncodingMethod.contains(
-                "\"no-style-exploded-values\",\n            noStyleExplodedValues);"));
-        assertTrue(queryEncodingMethod.contains("spaceValues,\n                \"%20\""));
-        assertTrue(queryEncodingMethod.contains("pipeValues,\n                \"%7C\""));
+                "values,\n            \"form\",\n            true,"));
+        // form/explode=false (csv) cells
+        assertTrue(queryEncodingMethod.contains(
+                "csvValues,\n            \"form\",\n            false,"));
+        assertTrue(queryEncodingMethod.contains(
+                "explicitFormDefaultValues,\n            \"form\",\n            true,"));
+        assertTrue(queryEncodingMethod.contains(
+                "noStyleCsvValues,\n            \"form\",\n            false,"));
+        // form/explode=true (multi) cell without explicit style keys
+        assertTrue(queryEncodingMethod.contains(
+                "noStyleExplodedValues,\n            \"form\",\n            true,"));
+        // spaceDelimited / pipeDelimited cells (explode=false)
+        assertTrue(queryEncodingMethod.contains(
+                "spaceValues,\n            \"spaceDelimited\",\n            false,"));
+        assertTrue(queryEncodingMethod.contains(
+                "pipeValues,\n            \"pipeDelimited\",\n            false,"));
+        // optional gate + deref
         assertTrue(queryEncodingMethod.contains("if (optionalValue)"));
-        assertTrue(queryEncodingMethod.contains("serializeQueryParameterValue(*optionalValue)"));
-        assertTrue(queryEncodingMethod.contains("appendExplodedQueryParameters("));
-        assertTrue(queryEncodingMethod.contains("queryParameterSeparator,\n            *metadata);"));
-        assertTrue(queryEncodingMethod.contains("compactMetadata,\n                \",\""));
-        assertTrue(queryEncodingMethod.contains("appendDeepObjectQueryParameters("));
-        assertTrue(queryEncodingMethod.contains("\"scoped-metadata\",\n            scopedMetadata);"));
         assertTrue(queryEncodingMethod.contains(
-                "serializeHeaderParameterValue(wireHeader)"));
+                "*optionalValue,"));
+        // exploded-map cell (form/explode=true map)
         assertTrue(queryEncodingMethod.contains(
-                "serializeHeaderParameterValue(arrayHeader)"));
+                "metadata,\n            \"form\",\n            true,"));
+        // csv-map cell (form/explode=false map)
         assertTrue(queryEncodingMethod.contains(
-                "serializeHeaderParameterValue(objectHeader)"));
+                "compactMetadata,\n            \"form\",\n            false,"));
+        // deepObject cell
+        assertTrue(queryEncodingMethod.contains(
+                "\"scoped-metadata\",\n            scopedMetadata,"));
+        assertTrue(queryEncodingMethod.contains(
+                "scopedMetadata,\n            \"deepObject\",\n            true,"));
+        // header cells (simple style, explode=false default)
+        assertTrue(queryEncodingMethod.contains(
+                "serializeHeaderParameterValue(wireHeader, false)"));
+        assertTrue(queryEncodingMethod.contains(
+                "serializeHeaderParameterValue(arrayHeader, false)"));
+        assertTrue(queryEncodingMethod.contains(
+                "serializeHeaderParameterValue(objectHeader, false)"));
         assertFalse(queryEncodingMethod.contains("\"wireName=\""));
-        assertFalse(queryEncodingMethod.contains("serializeQueryParameterValue(values);"));
-        assertTrue(generatedApiSource.contains(
+        // The old fail-closed header guard is gone: object headers now
+        // serialize as k=v pairs instead of throwing at runtime.
+        assertFalse(generatedApiSource.contains(
                 "Header parameter serialization supports only primitive values and arrays of primitive values"));
 
         String pathEncodingMethod = extractMethod(generatedApiSource, "RegressionApi::getPathEncoding(");
         assertTrue(pathEncodingMethod.contains(
-                "replacePathParameter(path, \"atomicValue\", atomicValue);"));
+                "replacePathParameter(path, \"atomicValue\", atomicValue, \"simple\", false);"));
         assertTrue(pathEncodingMethod.contains(
-                "replacePathParameter(path, \"pathValues\", pathValues);"));
+                "replacePathParameter(path, \"pathValues\", pathValues, \"simple\", false);"));
         assertFalse(pathEncodingMethod.contains("boost::format"));
         assertTrue(pathEncodingMethod.contains(
                 "std::string path = m_context + \"/path-encoding/%20/{pathValues}/{atomicValue}\";"));

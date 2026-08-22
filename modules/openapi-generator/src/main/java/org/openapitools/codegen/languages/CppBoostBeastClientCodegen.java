@@ -306,14 +306,14 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     private static final String X_CODEGEN_IS_RAW_BODY = "x-codegen-is-raw-body";
     private static final String X_CODEGEN_IS_OPTIONAL_QUERY_PARAMETER =
             "x-codegen-is-optional-query-parameter";
-    private static final String X_CODEGEN_QUERY_COLLECTION_DELIMITER =
-            "x-codegen-query-collection-delimiter";
-    private static final String X_CODEGEN_QUERY_COLLECTION_MULTI =
-            "x-codegen-query-collection-multi";
-    private static final String X_CODEGEN_QUERY_MAP_EXPLODED =
-            "x-codegen-query-map-exploded";
-    private static final String X_CODEGEN_QUERY_MAP_DEEP_OBJECT =
-            "x-codegen-query-map-deep-object";
+    // Wave 5.1 (GC1): authoritative parameter serialization facts, stamped on
+    // every parameter via codegenParameterStyled().
+    private static final String X_CODEGEN_PARAM_STYLE = "x-codegen-param-style";
+    private static final String X_CODEGEN_PARAM_EXPLODE = "x-codegen-param-explode";
+    private static final String X_CODEGEN_PARAM_ALLOW_RESERVED =
+            "x-codegen-param-allow-reserved";
+    private static final String X_CODEGEN_PARAM_ALLOW_EMPTY_VALUE =
+            "x-codegen-param-allow-empty-value";
     private static final String X_CODEGEN_RESPONSE_RANGE = "x-codegen-response-range";
     private static final String X_CODEGEN_RESPONSE_IS_ONE_OF = "x-codegen-response-is-oneof";
     private static final String X_CODEGEN_STREAM_IS_ONE_OF = "x-codegen-stream-is-oneof";
@@ -5814,6 +5814,9 @@ if (schema.get$comment() != null) {
     @Override
     public CodegenParameter fromParameter(Parameter parameter, Set<String> imports) {
         CodegenParameter codegenParameter = super.fromParameter(parameter, imports);
+        // Wave 5.1 (GC1): authoritative serialization facts for every
+        // location (query/path/header/cookie).
+        codegenParameterStyled(parameter, codegenParameter);
         if (!codegenParameter.isQueryParam) {
             return codegenParameter;
         }
@@ -5821,56 +5824,39 @@ if (schema.get$comment() != null) {
         if (!codegenParameter.required) {
             codegenParameter.vendorExtensions.put(X_CODEGEN_IS_OPTIONAL_QUERY_PARAMETER, true);
         }
-        if (!codegenParameter.isArray && !codegenParameter.isMap) {
-            return codegenParameter;
-        }
-
-        // OAS 3 query parameters default to form/explode=true. DefaultCodegen
-        // currently represents an omitted style as CSV, so normalize it here.
-        boolean usesExplodedFormStyle = !Boolean.FALSE.equals(parameter.getExplode())
-                && (parameter.getStyle() == null || parameter.getStyle() == Parameter.StyleEnum.FORM);
-        if (codegenParameter.isMap) {
-            if (parameter.getStyle() == Parameter.StyleEnum.DEEPOBJECT) {
-                codegenParameter.vendorExtensions.put(X_CODEGEN_QUERY_MAP_DEEP_OBJECT, true);
-            } else if (usesExplodedFormStyle) {
-                codegenParameter.vendorExtensions.put(X_CODEGEN_QUERY_MAP_EXPLODED, true);
-            } else {
-                codegenParameter.vendorExtensions.put(
-                        X_CODEGEN_QUERY_COLLECTION_DELIMITER,
-                        queryCollectionDelimiter(parameter.getStyle()));
-            }
-            return codegenParameter;
-        }
-
-        boolean isMulti = codegenParameter.isCollectionFormatMulti || usesExplodedFormStyle;
-        if (isMulti) {
-            codegenParameter.isCollectionFormatMulti = true;
-            codegenParameter.collectionFormat = "multi";
-            codegenParameter.vendorExtensions.put(X_CODEGEN_QUERY_COLLECTION_MULTI, true);
-            return codegenParameter;
-        }
-
-        String collectionDelimiter;
-        switch (codegenParameter.collectionFormat) {
-            case "csv":
-                collectionDelimiter = ",";
-                break;
-            case "ssv":
-                collectionDelimiter = "%20";
-                break;
-            case "tsv":
-                collectionDelimiter = "%09";
-                break;
-            case "pipes":
-                collectionDelimiter = "%7C";
-                break;
-            default:
-                throw new IllegalArgumentException(
-                        "Unsupported query collection format: " + codegenParameter.collectionFormat);
-        }
-        codegenParameter.vendorExtensions.put(
-                X_CODEGEN_QUERY_COLLECTION_DELIMITER, collectionDelimiter);
         return codegenParameter;
+    }
+
+    /**
+     * Wave 5.1 (GC1): stamp every parameter with the OAS 3.1 serialization
+     * facts the C++ wire layer consumes. Style defaults per location (3.1
+     * §Parameter Serialization): query/cookie → form, path/header → simple.
+     * explode defaults to true for form / false everywhere else (headers and
+     * path follow the style's default; cookie inherits form). allowReserved
+     * is only meaningful for query/header but is surfaced for every location
+     * so the ledger stays honest; allowEmptyValue is query/form-only.
+     */
+    private void codegenParameterStyled(Parameter parameter,
+                                        CodegenParameter codegenParameter) {
+        String style = parameter.getStyle() == null
+                ? null : parameter.getStyle().toString();
+        if (style == null) {
+            if (codegenParameter.isQueryParam || codegenParameter.isCookieParam) {
+                style = "form";
+            } else {
+                style = "simple";   // path, header
+            }
+        }
+        Boolean explode = Boolean.TRUE.equals(parameter.getExplode());
+        if (parameter.getExplode() == null) {
+            explode = "form".equals(style);     // spec default
+        }
+        codegenParameter.vendorExtensions.put(X_CODEGEN_PARAM_STYLE, style);
+        codegenParameter.vendorExtensions.put(X_CODEGEN_PARAM_EXPLODE, explode);
+        codegenParameter.vendorExtensions.put(X_CODEGEN_PARAM_ALLOW_RESERVED,
+                Boolean.TRUE.equals(parameter.getAllowReserved()));
+        codegenParameter.vendorExtensions.put(X_CODEGEN_PARAM_ALLOW_EMPTY_VALUE,
+                Boolean.TRUE.equals(parameter.getAllowEmptyValue()));
     }
 
     private String queryCollectionDelimiter(Parameter.StyleEnum style) {
