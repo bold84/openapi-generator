@@ -29,6 +29,9 @@ import org.openapitools.codegen.DefaultGenerator;
 import org.openapitools.codegen.TestUtils;
 import org.openapitools.codegen.config.CodegenConfigurator;
 import org.openapitools.codegen.languages.CppBoostBeastClientCodegen;
+import org.openapitools.codegen.meta.FeatureSet;
+import org.openapitools.codegen.meta.features.GlobalFeature;
+import org.openapitools.codegen.meta.features.ParameterFeature;
 import org.testng.Assert;
 import org.testng.annotations.Test;
 
@@ -4778,6 +4781,38 @@ public class CppBoostBeastClientCodegenTest {
         Assert.assertNotNull(desc, "AllOfWithUnsupported must have a descriptor");
         Assert.assertEquals(desc.getKeyword(), "allOf",
                 "Keyword must be allOf");
+    }
+
+    @Test
+    public void featureSetReflectsWave5Deliverables() {
+        // Wave 5.10: exclusions removed as gates pass — parameter styling
+        // (5.1), multi-server (5.2) and cookie params (5.1) are delivered
+        // and assertable; callbacks/links are preserved metadata (5.7).
+        io.swagger.v3.oas.models.OpenAPI openAPI =
+                new io.swagger.v3.oas.models.OpenAPI();
+        openAPI.setOpenapi("3.1.0");
+        openAPI.setServers(new java.util.ArrayList<>());
+        openAPI.setComponents(new io.swagger.v3.oas.models.Components());
+        openAPI.setPaths(new io.swagger.v3.oas.models.Paths());
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        codegen.processOpts();
+        codegen.preprocessOpenAPI(openAPI);
+
+        FeatureSet features = codegen.getFeatureSet();
+        java.util.Set<GlobalFeature> globals = features.getGlobalFeatures();
+        Assert.assertTrue(globals.contains(GlobalFeature.ParameterStyling),
+                "ParameterStyling delivered by Wave 5.1");
+        Assert.assertTrue(globals.contains(GlobalFeature.MultiServer),
+                "MultiServer delivered by Wave 5.2");
+        Assert.assertTrue(globals.contains(GlobalFeature.Callbacks),
+                "Callbacks preserved as metadata by Wave 5.7");
+        Assert.assertTrue(globals.contains(GlobalFeature.LinkObjects),
+                "LinkObjects preserved as metadata by Wave 5.7");
+        Assert.assertTrue(features.getParameterFeatures()
+                .contains(ParameterFeature.Cookie),
+                "Cookie params delivered by Wave 5.1");
+        Assert.assertFalse(globals.contains(GlobalFeature.XMLStructureDefinitions),
+                "XMLStructureDefinitions stays excluded");
     }
 
     @Test

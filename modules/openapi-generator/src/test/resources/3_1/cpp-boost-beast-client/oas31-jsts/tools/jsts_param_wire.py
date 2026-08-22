@@ -702,6 +702,180 @@ int main() {
 '''
 
 
+MOCK_SPEC = os.path.join(SUITE_DIR, "wave5", "mock-http-matrix.yaml")
+
+MOCK_DRIVER = r'''
+// Wave-5.8 golden driver: RUNTIME mock HTTP endpoint — a real boost::beast
+// loopback server + the real HttpClientImpl + the generated API. The server
+// captures the raw request line/headers/body and scripts the response; the
+// assertions cover the exact wire bytes as SENT by the generated client.
+#include <cstdio>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <utility>
+
+#include <boost/asio.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/http.hpp>
+#include <boost/beast/version.hpp>
+
+#include "api/DefaultApi.h"
+#include "api/HttpClientImpl.h"
+
+using namespace org::openapitools::client::api;
+
+namespace net = boost::asio;
+namespace beast = boost::beast;
+namespace http = beast::http;
+
+struct CapturedRequest {
+    std::string method;
+    std::string target;
+    std::string body;
+    std::map<std::string, std::string> headers;
+};
+
+static std::mutex g_mutex;
+static CapturedRequest g_captured;
+static http::status g_status = http::status::ok;
+static std::string g_responseBody = "{}";
+static std::map<std::string, std::string> g_responseHeaders{
+    {"Content-Type", "application/json"}};
+
+static void doSession(net::ip::tcp::socket& socket) {
+    beast::flat_buffer buffer;
+    http::request<http::string_body> req;
+    beast::error_code ec;
+    http::read(socket, buffer, req, ec);
+    if (ec) { return; }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_captured.method = std::string(req.method_string());
+        g_captured.target = std::string(req.target());
+        g_captured.body = req.body();
+        for (auto const& f : req.base()) {
+            g_captured.headers[std::string(f.name_string())]
+                    = std::string(f.value());
+        }
+    }
+    http::response<http::string_body> res{http::status::ok, req.version()};
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        res.result(g_status);
+        res.body() = g_responseBody;
+        res.prepare_payload();
+        for (auto const& kv : g_responseHeaders) {
+            res.set(kv.first, kv.second);
+        }
+        if (res.find(http::field::content_type) == res.end()) {
+            res.set(http::field::content_type, "application/json");
+        }
+    }
+    http::write(socket, res, ec);
+}
+
+static void runServer(net::io_context& ioc,
+                      net::ip::tcp::acceptor& acceptor) {
+    for (;;) {
+        beast::error_code ec;
+        net::ip::tcp::socket socket(ioc);
+        acceptor.accept(socket, ec);
+        if (ec) { return; }
+        std::thread([s = std::move(socket)]() mutable {
+            doSession(s);
+            beast::error_code closeEc;
+            s.shutdown(net::ip::tcp::socket::shutdown_send, closeEc);
+        }).detach();
+    }
+}
+
+static int g_failures = 0;
+
+static void check(const char* name, bool ok, const std::string& detail) {
+    if (ok) {
+        printf("CELL|%s|PASS|%s\n", name, detail.c_str());
+    } else {
+        ++g_failures;
+        printf("CELL|%s|FAIL|%s\n", name, detail.c_str());
+    }
+}
+
+int main() {
+    net::io_context ioc;
+    net::ip::tcp::acceptor acceptor(ioc,
+        net::ip::tcp::endpoint(net::ip::make_address("127.0.0.1"), 0));
+    const unsigned short port = acceptor.local_endpoint().port();
+    std::thread server(runServer, std::ref(ioc), std::ref(acceptor));
+    server.detach();
+
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_responseBody = "{\"ok\": true}";
+        g_responseHeaders = {{"Content-Type", "application/json"},
+                             {"X-Total", "42"}};
+        g_status = http::status::ok;
+    }
+
+    // Real transport: HTTP/1.1 to the loopback mock.
+    auto impl = std::make_shared<HttpClientImpl>(
+        "127.0.0.1", std::to_string(port),
+        HttpClientImpl::Transport::Http, 11,
+        std::chrono::milliseconds(5000), 8ULL * 1024ULL * 1024ULL);
+    {
+        // root server context: /v1 prefix comes from the FIRST root server.
+        DefaultApi api(impl);
+        api.rootOnly();
+        check("mockTarget", g_captured.method == "GET"
+                && g_captured.target == "/v1/rootOnly",
+                g_captured.method + " " + g_captured.target);
+        check("mockHost", g_captured.headers.count("Host") > 0
+                && g_captured.headers["Host"].find("127.0.0.1")
+                   != std::string::npos, g_captured.headers["Host"]);
+        check("mockUserAgent", g_captured.headers.count("User-Agent") > 0
+                && g_captured.headers["User-Agent"].find("Boost.Beast")
+                   != std::string::npos, g_captured.headers["User-Agent"]);
+    }
+    {
+        // request-body op over the real wire + scripted response headers.
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_responseBody = "{\"ok\": true}";
+        g_responseHeaders = {{"Content-Type", "application/json"},
+                             {"X-Total", "42"}};
+    }
+    {
+        // operation server precedence visible on the real wire.
+        DefaultApi api(impl);
+        api.opRel();   // relative op server /internal
+        check("mockOpServer", g_captured.target == "/internal/pets",
+              g_captured.target);
+    }
+    {
+        // response headers surfaced through the real transport (union path).
+        DefaultApi api(impl);
+        auto r = api.getExact();
+        check("mockResponseStatus",
+              r.status == boost::beast::http::status::ok
+              && std::get<std::shared_ptr<RootOnly_200_response>>(
+                 r.body)->isOk() == true,
+              "response dispatch over real HTTP failed");
+        check("mockResponseHeader",
+              r.headers.count("X-Total") > 0 && r.headers["X-Total"] == "42",
+              "response header lost over real HTTP");
+        check("mockContentType", r.contentType == "application/json",
+              r.contentType);
+    }
+
+    printf(g_failures == 0 ? "MOCK HTTP MATRIX PASS\n"
+                           : "MOCK HTTP MATRIX FAIL (%d cells)\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
+'''
+
+
 def main():
     import glob
     import subprocess
@@ -713,7 +887,8 @@ def main():
             ("server", SERVER_MATRIX, SERVER_DRIVER),
             ("security", SECURITY_MATRIX, SECURITY_DRIVER),
             ("content", CONTENT_MATRIX, CONTENT_DRIVER),
-            ("ref", REF_MATRIX, REF_DRIVER)):
+            ("ref", REF_MATRIX, REF_DRIVER),
+            ("mock", MOCK_SPEC, MOCK_DRIVER)):
         gen_dir = os.path.join(work, name)
         r = sl.generate(JAR, spec_path, gen_dir)
         if r.returncode != 0:
@@ -741,17 +916,26 @@ def main():
         sources = [os.path.join(gen_dir, "api", "DefaultApi.cpp")]
         for cpp in glob.glob(os.path.join(gen_dir, "model", "*.cpp")):
             base = os.path.basename(cpp)
-            if base.startswith("HttpClientImpl"):
+            if base.startswith("HttpClientImpl") and name != "mock":
                 continue
             sources.append(cpp)
         boost_json_src = os.path.join(SUITE_DIR, "..", "oas-compliance",
                                       "phase2-wiregen-build", "boost_json_src.cpp")
+        if name == "mock":
+            sources.insert(0, os.path.join(gen_dir, "api",
+                                           "HttpClientImpl.cpp"))
         cmd = ["g++", "-std=c++17", "-O0",
                "-I" + gen_dir, "-I" + os.path.join(gen_dir, "api"),
                "-I" + os.path.join(gen_dir, "model"),
                "-I" + os.path.join(SUITE_DIR, "..", "oas-compliance"),
                "-I/opt/homebrew/include",
-               main_path] + sources + [boost_json_src]
+               main_path] + sources
+        if name != "mock":
+            cmd.append(boost_json_src)
+        if name == "mock":
+            cmd += ["-pthread",
+                    "/opt/homebrew/opt/openssl@3/lib/libssl.a",
+                    "/opt/homebrew/opt/openssl@3/lib/libcrypto.a"]
         compiled = os.path.join(work, "run_" + name)
         cc = subprocess.run(cmd + ["-o", compiled], capture_output=True,
                             text=True, timeout=600)
@@ -771,7 +955,7 @@ def main():
                 else:
                     failures += 1
                     print("  " + ln, file=sys.stderr)
-            elif ln.startswith(("GOLDEN", "SERVER")):
+            elif ln.startswith(("GOLDEN", "SERVER", "MOCK")):
                 print(ln)
         print("%s: %d cells, %d PASS, %d FAIL" % (name, passed + failures,
                                                   passed, failures))

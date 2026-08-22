@@ -2670,12 +2670,17 @@ if (schema.get$comment() != null) {
         modifyFeatureSet(features -> features
                 .includeDocumentationFeatures(DocumentationFeature.Readme)
                 .securityFeatures(EnumSet.noneOf(SecurityFeature.class))
-                .excludeGlobalFeatures(
-                        GlobalFeature.XMLStructureDefinitions,
+                .includeGlobalFeatures(
+                        GlobalFeature.ParameterStyling,   // Wave 5.1 (19/19)
+                        GlobalFeature.MultiServer,        // Wave 5.2 (6/6)
+                        // Wave 5.7: callbacks/webhooks/links PRESERVED with
+                        // visible diagnostics (GC3) — the outbound client
+                        // keeps the metadata; no inbound listener.
                         GlobalFeature.Callbacks,
-                        GlobalFeature.LinkObjects,
-                        GlobalFeature.ParameterStyling,
-                        GlobalFeature.MultiServer
+                        GlobalFeature.LinkObjects
+                )
+                .excludeGlobalFeatures(
+                        GlobalFeature.XMLStructureDefinitions
                 )
                 .includeSchemaSupportFeatures(
                         SchemaSupportFeature.Polymorphism,
@@ -2689,8 +2694,10 @@ if (schema.get$comment() != null) {
                         DataTypeFeature.AnyType,
                         DataTypeFeature.Null
                 )
-                .excludeParameterFeatures(
-                        ParameterFeature.Cookie
+                .includeParameterFeatures(
+                        ParameterFeature.Cookie   // Wave 5.1: form-style cookie
+                                                  // params into the Cookie
+                                                  // header (golden cells)
                 )
         );
 

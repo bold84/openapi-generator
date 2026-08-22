@@ -1,0 +1,55 @@
+openapi: 3.1.0
+info:
+  title: Mock HTTP matrix
+  version: 1.0.0
+servers:
+  - url: https://real.example/v1
+  - url: https://fallback.example
+paths:
+  /rootOnly:
+    get:
+      operationId: rootOnly
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+  /pets:
+    post:
+      operationId: opRel
+      servers:
+        - url: /internal
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+  /exact200:
+    get:
+      operationId: getExact
+      responses:
+        "200":
+          description: ok
+          headers:
+            X-Total:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+        default:
+          description: missing
+          content:
+            text/plain:
+              schema:
+                type: string
