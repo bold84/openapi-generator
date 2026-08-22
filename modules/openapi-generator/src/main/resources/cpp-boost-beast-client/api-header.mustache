@@ -29,7 +29,8 @@
 namespace {{this}} {
 {{/apiNamespaceDeclarations}}
 
-using namespace {{modelNamespace}};
+{{#x-codegen-has-models}}using namespace {{modelNamespace}};
+{{/x-codegen-has-models}}
 
 {{#operation}}
 {{#vendorExtensions.x-codegen-response-union}}

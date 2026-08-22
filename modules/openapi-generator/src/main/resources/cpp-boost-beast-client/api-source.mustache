@@ -32,8 +32,8 @@
 namespace {{this}} {
 {{/apiNamespaceDeclarations}}
 
-using namespace {{modelNamespace}};
-
+{{#x-codegen-has-models}}using namespace {{modelNamespace}};
+{{/x-codegen-has-models}}
 
 namespace {
 std::string selectPreferredContentType(const std::vector<std::string>& contentTypes) {
@@ -318,6 +318,31 @@ boost::json::value toJsonValue(const T& v) {
 inline std::string jsonScalarText(const boost::json::value& v) {
     if (v.is_string()) { return std::string(v.as_string()); }
     return boost::json::serialize(v);   // numbers, booleans, null
+}
+
+// ---- Wave 5.2: operation server precedence (server URL → path prefix) -----
+inline std::string serverPathPrefix(const std::string& serverUrl) {
+    // The HttpClientImpl owns the connection (scheme, host, port); the API
+    // layer always passes origin-form targets. An absolute server URL
+    // contributes only its PATH prefix; a server host different from the
+    // caller's HttpClient configuration must be pointed at by the caller
+    // (documented seam). Relative server URLs pass through unchanged.
+    std::string s = serverUrl;
+    const std::string authoritySeparator = "://";
+    const std::size_t authority = s.find(authoritySeparator);
+    if (authority != std::string::npos) {
+        const std::size_t slash = s.find('/', authority + authoritySeparator.size());
+        s = slash == std::string::npos ? std::string() : s.substr(slash);
+    }
+    // drop trailing slashes (the request path always begins with '/'),
+    // including the lone root slash ('' is the correct empty prefix)
+    while (!s.empty() && s.back() == '/') { s.pop_back(); }
+    return s;
+}
+
+inline std::string operationServerPrefix(const std::string& context,
+                                         const std::string& resolvedServer) {
+    return resolvedServer.empty() ? context : serverPathPrefix(resolvedServer);
 }
 
 // ---- query: form / spaceDelimited / pipeDelimited / deepObject -----------

@@ -228,7 +228,7 @@ public class CppBoostBeastClientApiCodegenTest {
                 "replacePathParameter(path, \"pathValues\", pathValues, \"simple\", false);"));
         assertFalse(pathEncodingMethod.contains("boost::format"));
         assertTrue(pathEncodingMethod.contains(
-                "std::string path = m_context + \"/path-encoding/%20/{pathValues}/{atomicValue}\";"));
+                "operationServerPrefix(m_context, \"\") + \"/path-encoding/%20/{pathValues}/{atomicValue}\""));
         assertTrue(generatedApiSource.contains("path.find(placeholder, position)"));
         assertTrue(generatedApiSource.contains("percentEncodePathValue"));
 

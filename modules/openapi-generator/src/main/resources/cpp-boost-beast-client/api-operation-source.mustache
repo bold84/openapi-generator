@@ -2,7 +2,7 @@
 {{classname}}::{{#operationId}}{{{.}}}{{/operationId}}{{^operationId}}{{httpMethod}}_{{vendorExtensions.x-codegen-resource-name}}{{/operationId}}(
     {{#allParams}}const {{#vendorExtensions.x-codegen-is-optional-query-parameter}}boost::optional<{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{dataType}}}{{#vendorExtensions.x-codegen-is-optional-query-parameter}}>{{/vendorExtensions.x-codegen-is-optional-query-parameter}}& {{{paramName}}}{{^-last}}, {{/-last}}{{/allParams}}) {
     std::string serializedRequestBody;
-    std::string path = m_context + "{{{path}}}";
+    std::string path = operationServerPrefix(m_context, "{{vendorExtensions.x-codegen-op-server}}") + "{{{path}}}";
     std::map<std::string, std::string> headers;
 {{#hasConsumes}}
     static const std::vector<std::string> contentTypes{ {{#consumes}}"{{{mediaType}}}",{{/consumes}} };
@@ -373,7 +373,7 @@
 {{classname}}::{{#operationId}}{{{.}}}{{/operationId}}Stream(
     {{#allParams}}const {{#vendorExtensions.x-codegen-is-optional-query-parameter}}boost::optional<{{/vendorExtensions.x-codegen-is-optional-query-parameter}}{{{dataType}}}{{#vendorExtensions.x-codegen-is-optional-query-parameter}}>{{/vendorExtensions.x-codegen-is-optional-query-parameter}}& {{{paramName}}}{{^-last}}, {{/-last}}{{/allParams}}) {
     std::string serializedRequestBody;
-    std::string path = m_context + "{{{path}}}";
+    std::string path = operationServerPrefix(m_context, "{{vendorExtensions.x-codegen-op-server}}") + "{{{path}}}";
     std::map<std::string, std::string> headers;
 {{#hasConsumes}}
     static const std::vector<std::string> contentTypes{ {{#consumes}}"{{{mediaType}}}",{{/consumes}} };

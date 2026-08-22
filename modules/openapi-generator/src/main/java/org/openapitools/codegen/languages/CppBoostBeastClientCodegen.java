@@ -2,9 +2,12 @@ package org.openapitools.codegen.languages;
 
 
 import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.PathItem;
 import io.swagger.v3.oas.models.media.MediaType;
 import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
+import io.swagger.v3.oas.models.servers.Server;
+import io.swagger.v3.oas.models.servers.ServerVariable;
 import org.apache.commons.lang3.StringUtils;
 import org.openapitools.codegen.*;
 
@@ -314,6 +317,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
             "x-codegen-param-allow-reserved";
     private static final String X_CODEGEN_PARAM_ALLOW_EMPTY_VALUE =
             "x-codegen-param-allow-empty-value";
+    // Wave 5.2: the operation's EFFECTIVE server URL (operation > path item
+    // > root precedence), variables substituted with their defaults.
+    private static final String X_CODEGEN_OP_SERVER = "x-codegen-op-server";
     private static final String X_CODEGEN_RESPONSE_RANGE = "x-codegen-response-range";
     private static final String X_CODEGEN_RESPONSE_IS_ONE_OF = "x-codegen-response-is-oneof";
     private static final String X_CODEGEN_STREAM_IS_ONE_OF = "x-codegen-stream-is-oneof";
@@ -336,6 +342,9 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
      *  in preprocessOpenAPI after inline model flattening. Replaces raw schema
      *  inspection as the semantic source for branch lowering. */
     final Map<String, CompositionDescriptor> compositionDescriptors = new LinkedHashMap<>();
+    /** OpenAPI doc captured by preprocessOpenAPI for the later operation/
+     *  model phases (Wave 5.2 server resolution uses it). */
+    private OpenAPI phaseOpenAPI;
 
     // Wave-4: $dynamicAnchor registration records. Keyed by resourceId + '\0'
     // + anchor name; LATER puts override earlier ones (a hoisted anchor
@@ -404,6 +413,7 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     @Override
     public void preprocessOpenAPI(OpenAPI openAPI) {
         super.preprocessOpenAPI(openAPI);
+        this.phaseOpenAPI = openAPI;
         // Wave-2 §10.2: recover prefixItems that the shared OAS-3.1 normalizer
         // drops (NORMALIZE_31SPEC converts types:[array] JsonSchema to
         // ArraySchema and does not copy prefixItems). Must run BEFORE the
@@ -5889,9 +5899,100 @@ if (schema.get$comment() != null) {
         return toApiName(name);
     }
 
+    /** True when the list is exactly the swagger-parser's implicit default
+     *  (a single Server with url "/") — i.e. the spec declared no servers
+     *  at that level. */
+    private static boolean isParserDefaultServerList(List<Server> servers) {
+        return servers != null && servers.size() == 1
+                && "/".equals(servers.get(0).getUrl());
+    }
+
+    /** The raw Operation behind a CodegenOperation (PathItem-method lookup). */
+    private io.swagger.v3.oas.models.Operation operationFor(CodegenOperation op) {
+        if (phaseOpenAPI == null || phaseOpenAPI.getPaths() == null) {
+            return null;
+        }
+        PathItem item = phaseOpenAPI.getPaths().get(op.path);
+        if (item == null) {
+            return null;
+        }
+        if ("GET".equals(op.httpMethod)) return item.getGet();
+        if ("PUT".equals(op.httpMethod)) return item.getPut();
+        if ("POST".equals(op.httpMethod)) return item.getPost();
+        if ("DELETE".equals(op.httpMethod)) return item.getDelete();
+        if ("OPTIONS".equals(op.httpMethod)) return item.getOptions();
+        if ("HEAD".equals(op.httpMethod)) return item.getHead();
+        if ("PATCH".equals(op.httpMethod)) return item.getPatch();
+        if ("TRACE".equals(op.httpMethod)) return item.getTrace();
+        return null;
+    }
+
+    /** Wave 5.2 (5.2): the operation's effective server URL string with the
+     *  first-level variables substituted by their declared defaults.
+     *  Precedence: operation servers > path-item servers > root servers.
+     *  Empty result = no servers anywhere (the caller's context applies). */
+    private String resolveEffectiveServerUrl(CodegenOperation op) {
+        List<Server> servers = null;
+        io.swagger.v3.oas.models.Operation raw = operationFor(op);
+        if (raw != null && raw.getServers() != null
+                && !raw.getServers().isEmpty()) {
+            servers = raw.getServers();
+        }
+        // swagger-parser injects a DEFAULT Server("/") on operations and
+        // path items that declare no servers; per OAS that means "no server
+        // override" (the enclosing level applies). Treat it as absent so the
+        // precedence falls through.
+        if (isParserDefaultServerList(servers)) {
+            servers = null;
+        }
+        if (servers == null || servers.isEmpty()) {
+            if (phaseOpenAPI != null && phaseOpenAPI.getPaths() != null
+                    && phaseOpenAPI.getPaths().get(op.path) != null) {
+                PathItem item = phaseOpenAPI.getPaths().get(op.path);
+                if (item.getServers() != null && !item.getServers().isEmpty()) {
+                    servers = item.getServers();
+                    if (isParserDefaultServerList(servers)) {
+                        servers = null;
+                    }
+                }
+                if ((servers == null || servers.isEmpty())
+                        && phaseOpenAPI.getServers() != null
+                        && !phaseOpenAPI.getServers().isEmpty()) {
+                    servers = phaseOpenAPI.getServers();
+                    if (isParserDefaultServerList(servers)) {
+                        servers = null;
+                    }
+                }
+            }
+        }
+        if (servers == null || servers.isEmpty()) {
+            return "";
+        }
+        // The FIRST entry of the effective list is the default (user
+        // selection among multiple entries is the caller's context
+        // override at construction time).
+        Server target = servers.get(0);
+        String url = target.getUrl() == null ? "" : target.getUrl();
+        if (target.getVariables() != null) {
+            for (Map.Entry<String, ServerVariable> e
+                    : target.getVariables().entrySet()) {
+                String value = e.getValue() != null && e.getValue().getDefault() != null
+                        ? e.getValue().getDefault() : "";
+                url = url.replace("{" + e.getKey() + "}", value);
+            }
+        }
+        return url;
+    }
+
     @SuppressWarnings("unchecked")
     @Override
     public OperationsMap postProcessOperationsWithModels(OperationsMap objs, List<ModelMap> allModels) {
+        // Wave 5.2: the API templates need to know whether the model
+        // namespace exists (specs without component schemas emit no model
+        // headers, so the unconditional `using namespace model;` would not
+        // compile). The upstream `hasModels` flag is not populated for this
+        // generator's API context; compute it here.
+        objs.put("x-codegen-has-models", !allModels.isEmpty());
         Map<String, Object> operations = (Map<String, Object>) objs.get("operations");
         List<CodegenOperation> operationList = (List<CodegenOperation>) operations.get("operation");
         List<CodegenOperation> newOpList = new ArrayList<>();
@@ -5899,6 +6000,10 @@ if (schema.get$comment() != null) {
         for (CodegenOperation op : operationList) {
             addApiResponseMetadata(op);
             addResponseUnionMetadata(op);
+            // Wave 5.2: effective server URL (op > path item > root), with
+            // variables substituted by their defaults.
+            op.vendorExtensions.put(X_CODEGEN_OP_SERVER,
+                    resolveEffectiveServerUrl(op));
             String path = op.path;
 
             String[] items = path.split("/", -1);

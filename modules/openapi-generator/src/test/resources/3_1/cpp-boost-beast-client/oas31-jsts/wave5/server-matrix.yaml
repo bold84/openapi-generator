@@ -1,0 +1,67 @@
+openapi: 3.1.0
+info:
+  title: server-matrix
+  version: 1.0.0
+servers:
+  - url: https://api.example.com/v1
+    description: first root server (context default)
+  - url: https://{region}.api.example.com/{ver}
+    description: second root server with variables (user-selectable)
+    variables:
+      region:
+        default: eu
+        enum: [eu, us, ap]
+      ver:
+        default: v2
+paths:
+  /rootOnly:
+    get:
+      operationId: rootOnly
+      responses:
+        "200":
+          description: ok
+  /varSel:
+    get:
+      operationId: varSelect
+      servers:
+        - url: https://{region}.api.example.com/{ver}
+          variables:
+            region:
+              default: ap
+              enum: [eu, us, ap]
+            ver:
+              default: v3
+      responses:
+        "200":
+          description: ok
+  /items:
+    servers:
+      - url: https://pi.example.com/v9/
+    get:
+      operationId: piServ
+      responses:
+        "200":
+          description: ok
+    delete:
+      operationId: piOverride
+      servers:
+        - url: https://op.example.com/
+      responses:
+        "200":
+          description: ok
+  /pets:
+    post:
+      operationId: opRel
+      servers:
+        - url: /internal
+      responses:
+        "200":
+          description: ok
+  /origin:
+    get:
+      operationId: originOnly
+      servers:
+        - url: https://origin.example.com
+      responses:
+        "200":
+          description: ok

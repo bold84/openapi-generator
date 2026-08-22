@@ -13,7 +13,9 @@ The probe driver prints `CELL|<name>|PASS|...` or `CELL|<name>|FAIL|<expected>|<
 import importlib.util
 import json
 import os
+import shutil
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUITE_DIR = os.path.join(HERE, "..")
@@ -28,6 +30,7 @@ sl = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(sl)
 
 MATRIX = os.path.join(SUITE_DIR, "wave5", "param-matrix.yaml")
+SERVER_MATRIX = os.path.join(SUITE_DIR, "wave5", "server-matrix.yaml")
 LEXEME_SRC = getattr(sl, "LEXEME_SRC", None)
 
 DRIVER = r'''
@@ -180,63 +183,138 @@ int main() {
 }
 '''
 
+SERVER_DRIVER = r'''
+// Wave-5.2 golden driver: operation server precedence + variable defaults.
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "api/DefaultApi.h"
+
+using namespace org::openapitools::client::api;
+
+class RecordingClient : public HttpClient {
+public:
+    std::string lastTarget;
+    std::pair<boost::beast::http::status, std::string>
+    execute(const std::string&, const std::string& target,
+            const std::string&,
+            const std::map<std::string, std::string>&) override {
+        lastTarget = target;
+        return {boost::beast::http::status::ok, "{}"};
+    }
+};
+
+static int g_failures = 0;
+
+static void check(const char* name, const std::string& actual,
+                  const std::string& expected) {
+    if (actual == expected) {
+        printf("CELL|%s|PASS|%s\n", name, actual.c_str());
+    } else {
+        ++g_failures;
+        printf("CELL|%s|FAIL|expected=%s|actual=%s\n",
+               name, expected.c_str(), actual.c_str());
+    }
+}
+
+int main() {
+    auto client = std::make_shared<RecordingClient>();
+    // Default context: the FIRST root server's path (upstream basePath).
+    DefaultApi api(client);
+
+    // No per-op servers: the root server /v1 applies (context default).
+    api.rootOnly();
+    check("rootOnly", client->lastTarget, "/v1/rootOnly");
+
+    // Operation-level server with variables: defaults substituted (ap/v3).
+    api.varSelect();
+    check("varSelect", client->lastTarget, "/v3/varSel");
+
+    // Path-item server (trailing slash normalized): /v9/items.
+    api.piServ();
+    check("piServ", client->lastTarget, "/v9/items");
+
+    // Path-item server, overridden by the operation server (origin-only URL
+    // → empty path prefix): /items.
+    api.piOverride();
+    check("piOverride", client->lastTarget, "/items");
+
+    // Relative operation server: /internal + /pets.
+    api.opRel();
+    check("opRel", client->lastTarget, "/internal/pets");
+
+    // Origin-only operation server: empty path prefix.
+    api.originOnly();
+    check("originOnly", client->lastTarget, "/origin");
+
+    printf(g_failures == 0 ? "SERVER MATRIX PASS\n"
+                           : "SERVER MATRIX FAIL (%d cells)\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
+'''
+
 
 def main():
-    import shutil
-    import tempfile
+    import glob
+    import subprocess
 
     work = tempfile.mkdtemp(prefix="jsts-param-wire-")
-    gen_dir = os.path.join(work, "gen")
-    r = sl.generate(JAR, MATRIX, gen_dir)
-    if r.returncode != 0:
-        print("GENERATION FAILED", file=sys.stderr)
-        print(r.stderr[-1200:], file=sys.stderr)
-        return 2
-    if LEXEME_SRC and os.path.exists(LEXEME_SRC) and not os.path.exists(
-            os.path.join(work, "oas31_lexeme.hpp")):
-        shutil.copy(LEXEME_SRC, os.path.join(work, "oas31_lexeme.hpp"))
-    main_path = os.path.join(work, "main.cpp")
-    with open(main_path, "w") as f:
-        f.write(DRIVER)
-    sources = [
-        os.path.join(gen_dir, "api", "DefaultApi.cpp"),
-        os.path.join(gen_dir, "model", "PathSimpleExpl_attrs_parameter.cpp"),
-        os.path.join(gen_dir, "model", "QueryDeep_color_parameter.cpp"),
-        os.path.join(gen_dir, "model", "QueryFormObjectExpl_role_parameter.cpp"),
-        os.path.join(gen_dir, "model", "schema_ir.generated.cpp"),
-        os.path.join(gen_dir, "model", "schema_validate.generated.cpp"),
-    ]
-    boost_json_src = os.path.join(SUITE_DIR, "..", "oas-compliance",
-                                  "phase2-wiregen-build", "boost_json_src.cpp")
-    cmd = ["g++", "-std=c++17", "-O0",
-           "-I" + gen_dir, "-I" + os.path.join(gen_dir, "api"),
-           "-I" + os.path.join(gen_dir, "model"),
-           "-I" + os.path.join(SUITE_DIR, "..", "oas-compliance"),
-           "-I/opt/homebrew/include",
-           main_path] + sources + [boost_json_src]
-    import subprocess
-    compiled = os.path.join(work, "run")
-    cc = subprocess.run(cmd + ["-o", compiled], capture_output=True,
-                        text=True, timeout=600)
-    if cc.returncode != 0:
-        print("COMPILE FAILED", file=sys.stderr)
-        print(cc.stderr[-1500:], file=sys.stderr)
-        return 2
-    run = subprocess.run([compiled], capture_output=True, text=True, timeout=300)
-    failures = 0
-    passed = 0
-    for ln in run.stdout.splitlines():
-        if ln.startswith("CELL|"):
-            parts = ln.split("|")
-            if parts[2] == "PASS":
-                passed += 1
-            else:
-                failures += 1
-                print("  " + ln, file=sys.stderr)
-        elif ln.startswith("GOLDEN"):
-            print(ln)
-    print("%d cells, %d PASS, %d FAIL" % (passed + failures, passed, failures))
-    return 1 if failures else (2 if run.returncode != 0 else 0)
+    ok = True
+    for name, spec_path, driver in (
+            ("param", MATRIX, DRIVER),
+            ("server", SERVER_MATRIX, SERVER_DRIVER)):
+        gen_dir = os.path.join(work, name)
+        r = sl.generate(JAR, spec_path, gen_dir)
+        if r.returncode != 0:
+            print("GENERATION FAILED (%s)" % name, file=sys.stderr)
+            print(r.stderr[-1200:], file=sys.stderr)
+            return 2
+        main_path = os.path.join(work, name + "_main.cpp")
+        with open(main_path, "w") as f:
+            f.write(driver)
+        sources = [os.path.join(gen_dir, "api", "DefaultApi.cpp")]
+        for cpp in glob.glob(os.path.join(gen_dir, "model", "*.cpp")):
+            base = os.path.basename(cpp)
+            if base.startswith("HttpClientImpl"):
+                continue
+            sources.append(cpp)
+        boost_json_src = os.path.join(SUITE_DIR, "..", "oas-compliance",
+                                      "phase2-wiregen-build", "boost_json_src.cpp")
+        cmd = ["g++", "-std=c++17", "-O0",
+               "-I" + gen_dir, "-I" + os.path.join(gen_dir, "api"),
+               "-I" + os.path.join(gen_dir, "model"),
+               "-I" + os.path.join(SUITE_DIR, "..", "oas-compliance"),
+               "-I/opt/homebrew/include",
+               main_path] + sources + [boost_json_src]
+        compiled = os.path.join(work, "run_" + name)
+        cc = subprocess.run(cmd + ["-o", compiled], capture_output=True,
+                            text=True, timeout=600)
+        if cc.returncode != 0:
+            print("COMPILE FAILED (%s)" % name, file=sys.stderr)
+            print(cc.stderr[-1500:], file=sys.stderr)
+            return 2
+        run = subprocess.run([compiled], capture_output=True, text=True,
+                             timeout=300)
+        failures = 0
+        passed = 0
+        for ln in run.stdout.splitlines():
+            if ln.startswith("CELL|"):
+                parts = ln.split("|")
+                if parts[2] == "PASS":
+                    passed += 1
+                else:
+                    failures += 1
+                    print("  " + ln, file=sys.stderr)
+            elif ln.startswith(("GOLDEN", "SERVER")):
+                print(ln)
+        print("%s: %d cells, %d PASS, %d FAIL" % (name, passed + failures,
+                                                  passed, failures))
+        if failures:
+            ok = False
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
