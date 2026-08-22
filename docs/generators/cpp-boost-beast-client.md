@@ -174,14 +174,14 @@ These options may be applied as additional-properties (cli) or configOptions (pl
 |Int64|✓|OAS2,OAS3
 |Float|✓|OAS2,OAS3
 |Double|✓|OAS2,OAS3
-|Decimal|✓|ToolingExtension
+|Decimal|✗|ToolingExtension
 |String|✓|OAS2,OAS3
-|Byte|✓|OAS2,OAS3
-|Binary|✓|OAS2,OAS3
+|Byte|✗|OAS2,OAS3
+|Binary|✗|OAS2,OAS3
 |Boolean|✓|OAS2,OAS3
-|Date|✓|OAS2,OAS3
-|DateTime|✓|OAS2,OAS3
-|Password|✓|OAS2,OAS3
+|Date|✗|OAS2,OAS3
+|DateTime|✗|OAS2,OAS3
+|Password|✗|OAS2,OAS3
 |File|✓|OAS2
 |Uuid|✗|
 |Array|✓|OAS2,OAS3
@@ -223,11 +223,11 @@ These options may be applied as additional-properties (cli) or configOptions (pl
 |ExternalDocumentation|✓|OAS2,OAS3
 |Examples|✓|OAS2,OAS3
 |XMLStructureDefinitions|✗|OAS2,OAS3
-|MultiServer|✗|OAS3
+|MultiServer|✓|OAS3
 |ParameterizedServer|✗|OAS3
-|ParameterStyling|✗|OAS3
-|Callbacks|✗|OAS3
-|LinkObjects|✗|OAS3
+|ParameterStyling|✓|OAS3
+|Callbacks|✓|OAS3
+|LinkObjects|✓|OAS3
 
 ### Parameter Feature
 | Name | Supported | Defined By |
@@ -238,7 +238,7 @@ These options may be applied as additional-properties (cli) or configOptions (pl
 |Body|✓|OAS2
 |FormUnencoded|✓|OAS2
 |FormMultipart|✓|OAS2
-|Cookie|✗|OAS3
+|Cookie|✓|OAS3
 
 ### Schema Support Feature
 | Name | Supported | Defined By |
@@ -273,33 +273,3 @@ These options may be applied as additional-properties (cli) or configOptions (pl
 |XML|✓|OAS2,OAS3
 |PROTOBUF|✗|ToolingExtension
 |Custom|✗|OAS2,OAS3
-
-## OAS 3.1 / JSON Schema 2020-12 COMPLIANCE STATUS
-
-The generator targets OpenAPI **3.0.x** and **3.1.x** (normative 3.1.2 patch;
-see `CPP_BOOST_BEAST_OPENAPI_31_FULL_COMPLIANCE_PLAN.md`).
-
-**Current claim: G-honest / Wave-0 foundation — NOT G-full-schema.** Every
-recognized validity-affecting keyword is either `supported` or `fail-closed`
-(never silently ignored), but full JSON Schema 2020-12 schema-validity (S-V)
-and annotation (S-A) compliance is a multi-wave program.
-
-- Machine-readable keyword ledger: `modules/openapi-generator/src/test/resources/3_1/cpp-boost-beast-client/compliance-matrix.yaml`
-- Parser capability appendix: `docs/cpp-boost-beast-client-parser-blockers.md`
-- Wave-0 conformance status: `docs/cpp-boost-beast-client-oas31-conformance.md`
-
-Notable caveats until later waves land (each blocks a `G-full-schema` claim):
-- **Exact JSON Number domain** (K-30): `enum`/`const`/`uniqueItems` equality and
-  numeric assertions use Boost.JSON `double`, not arbitrary-precision base-10.
-- **`pattern`** (K-13): currently an anchored subset (`regex_match`); the
-  ECMA-262 unanchored Unicode engine is required for full support.
-- **String length** (K-13): counts UTF-8 bytes, not Unicode code points.
-- **Gate A Phase-2 raw-instance runner** (K-18) **is wired and runs locally**
-  (Boost/Beast installed); it resolved 19 of 38 DEFERRED semantic rows to real
-  accept/reject (`oas-compliance/semantic-results.tsv`). GS4 'zero DEFERRED' is
-  **not yet met** (19 rows remain DEFERRED), and the JSTS baseline (GS2) is
-  recorded but not green (PASS 40 / FAIL 32 / BLOCKED 316 of 388 run, Wave-0).
-
-See `docs/cpp-boost-beast-client-oas31-conformance.md` and the refreshed
-`compliance-matrix.yaml` + `docs/cpp-boost-beast-client-parser-blockers.md` for
-the honest Wave-0 record.
