@@ -31,6 +31,7 @@ spec.loader.exec_module(sl)
 
 MATRIX = os.path.join(SUITE_DIR, "wave5", "param-matrix.yaml")
 SERVER_MATRIX = os.path.join(SUITE_DIR, "wave5", "server-matrix.yaml")
+SECURITY_MATRIX = os.path.join(SUITE_DIR, "wave5", "security-matrix.yaml")
 LEXEME_SRC = getattr(sl, "LEXEME_SRC", None)
 
 DRIVER = r'''
@@ -257,6 +258,157 @@ int main() {
 '''
 
 
+SECURITY_DRIVER = r'''
+// Wave-5.3 golden driver (GC2): security metadata + pluggable credential hook.
+#include <cstdio>
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "api/DefaultApi.h"
+
+using namespace org::openapitools::client::api;
+
+class RecordingClient : public HttpClient {
+public:
+    std::map<std::string, std::string> lastHeaders;
+    std::string lastTarget;
+    std::pair<boost::beast::http::status, std::string>
+    execute(const std::string&, const std::string& target,
+            const std::string&,
+            const std::map<std::string, std::string>& headers) override {
+        lastTarget = target;
+        lastHeaders = headers;
+        return {boost::beast::http::status::ok, "{}"};
+    }
+};
+
+static std::string groupText(const SecurityRequirementGroup& g) {
+    std::string out = "(";
+    for (const auto& u : g.ands) {
+        out += u.type + ":" + u.schemeName + ":" + u.in + ":" + u.paramName
+             + ":" + u.httpScheme + ":{";
+        for (const auto& s : u.scopes) { out += s + ","; }
+        out += "};";
+    }
+    out += ")";
+    return out;
+}
+
+class HookedApi : public DefaultApi {
+public:
+    using DefaultApi::DefaultApi;
+    std::vector<std::pair<std::string, std::string>> calls;
+    bool injected = false;
+
+    void applyOperationSecurity(
+        const std::string& operationId,
+        const std::vector<SecurityRequirementGroup>& requirements,
+        std::string& target,
+        std::map<std::string, std::string>& headers) override {
+        std::string all;
+        for (const auto& g : requirements) { all += groupText(g); }
+        calls.emplace_back(operationId, all);
+        // Demonstrate pluggability: attach the apiKey credentials.
+        for (const auto& g : requirements) {
+            for (const auto& u : g.ands) {
+                if (u.type == "apiKey" && u.in == "header") {
+                    headers.emplace(u.paramName, "k-" + u.schemeName);
+                    injected = true;
+                } else if (u.type == "apiKey" && u.in == "query") {
+                    target += (target.find('?') == std::string::npos ? "?" : "&")
+                            + u.paramName + "=k-" + u.schemeName;
+                }
+            }
+        }
+    }
+};
+
+static int g_failures = 0;
+
+static void check(const char* name, bool ok, const std::string& detail) {
+    if (ok) {
+        printf("CELL|%s|PASS|%s\n", name, detail.c_str());
+    } else {
+        ++g_failures;
+        printf("CELL|%s|FAIL|%s\n", name, detail.c_str());
+    }
+}
+
+int main() {
+    auto client = std::make_shared<RecordingClient>();
+    HookedApi api(client);
+
+    api.inheritedSecurity();
+    check("inheritedSecurity", api.calls.size() == 1
+            && api.calls[0].second == "(apiKey:apiKeyHeader:header:X-API-Key::{};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    check("inheritedCredential", client->lastHeaders.count("X-API-Key") > 0
+            && client->lastHeaders["X-API-Key"] == "k-apiKeyHeader",
+            "missing injected header");
+    api.calls.clear();
+
+    api.clearedSecurity();
+    check("clearedSecurity", api.calls.empty(), "hook must not fire for security: []");
+    api.calls.clear();
+
+    api.anonymousAllowed();
+    check("anonymousAllowed", api.calls.size() == 1
+            && api.calls[0].second == "()(apiKey:apiKeyHeader:header:X-API-Key::{};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    api.calls.clear();
+
+    api.andCombined();
+    check("andCombined", api.calls.size() == 1
+            && api.calls[0].second
+               == "(http:basicAuth:::basic:{};apiKey:apiKeyHeader:header:X-API-Key::{};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    api.calls.clear();
+
+    api.orAlternatives();
+    check("orAlternatives", api.calls.size() == 1
+            && api.calls[0].second
+               == "(apiKey:apiKeyHeader:header:X-API-Key::{};)(apiKey:apiKeyQuery:query:api_key::{};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    check("orQueryCredential",
+          client->lastTarget.find("api_key=k-apiKeyQuery") != std::string::npos,
+          client->lastTarget);
+    api.calls.clear();
+
+    api.oauthScoped();
+    check("oauthScoped", api.calls.size() == 1
+            && api.calls[0].second == "(oauth2:oauth::::{read,write,};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    api.calls.clear();
+
+    api.bearerOnly();
+    check("bearerOnly", api.calls.size() == 1
+            && api.calls[0].second == "(http:bearerAuth:::bearer:{};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    api.calls.clear();
+
+    api.cookieKey();
+    check("cookieKey", api.calls.size() == 1
+            && api.calls[0].second == "(apiKey:apiKeyCookie:cookie:session::{};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    api.calls.clear();
+
+    api.mutualTlsOnly();
+    check("mutualTls", api.calls.size() == 1
+            && api.calls[0].second
+               == "(mutualTLS:mtls::::{};openIdConnect:oidc::::{};)",
+            api.calls.empty() ? "no hook call" : api.calls[0].second);
+    api.calls.clear();
+
+    printf(g_failures == 0 ? "SECURITY MATRIX PASS\n"
+                           : "SECURITY MATRIX FAIL (%d cells)\n", g_failures);
+    return g_failures == 0 ? 0 : 1;
+}
+'''
+
+
 def main():
     import glob
     import subprocess
@@ -265,7 +417,8 @@ def main():
     ok = True
     for name, spec_path, driver in (
             ("param", MATRIX, DRIVER),
-            ("server", SERVER_MATRIX, SERVER_DRIVER)):
+            ("server", SERVER_MATRIX, SERVER_DRIVER),
+            ("security", SECURITY_MATRIX, SECURITY_DRIVER)):
         gen_dir = os.path.join(work, name)
         r = sl.generate(JAR, spec_path, gen_dir)
         if r.returncode != 0:

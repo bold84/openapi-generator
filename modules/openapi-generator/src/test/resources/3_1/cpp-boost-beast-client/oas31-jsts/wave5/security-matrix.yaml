@@ -1,0 +1,116 @@
+openapi: 3.1.0
+info:
+  title: security-matrix
+  version: 1.0.0
+security:
+  - apiKeyHeader: []
+components:
+  securitySchemes:
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    apiKeyQuery:
+      type: apiKey
+      in: query
+      name: api_key
+    apiKeyCookie:
+      type: apiKey
+      in: cookie
+      name: session
+    basicAuth:
+      type: http
+      scheme: basic
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    oauth:
+      type: oauth2
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.example.com/token
+          scopes:
+            read: Read access
+            write: Write access
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://auth.example.com/.well-known/openid-configuration
+    mtls:
+      type: mutualTLS
+paths:
+  /inherited:
+    get:
+      operationId: inheritedSecurity
+      responses:
+        "200":
+          description: ok
+  /cleared:
+    get:
+      operationId: clearedSecurity
+      security: []
+      responses:
+        "200":
+          description: ok
+  /anonymous:
+    get:
+      operationId: anonymousAllowed
+      security:
+        - {}
+        - apiKeyHeader: []
+      responses:
+        "200":
+          description: ok
+  /andCombined:
+    get:
+      operationId: andCombined
+      security:
+        - basicAuth: []
+          apiKeyHeader: []
+      responses:
+        "200":
+          description: ok
+  /orAlternatives:
+    get:
+      operationId: orAlternatives
+      security:
+        - apiKeyHeader: []
+        - apiKeyQuery: []
+      responses:
+        "200":
+          description: ok
+  /oauthScoped:
+    get:
+      operationId: oauthScoped
+      security:
+        - oauth:
+            - read
+            - write
+      responses:
+        "200":
+          description: ok
+  /bearerOnly:
+    get:
+      operationId: bearerOnly
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: ok
+  /cookieKey:
+    get:
+      operationId: cookieKey
+      security:
+        - apiKeyCookie: []
+      responses:
+        "200":
+          description: ok
+  /mutualTls:
+    get:
+      operationId: mutualTlsOnly
+      security:
+        - mtls: []
+          oidc: []
+      responses:
+        "200":
+          description: ok

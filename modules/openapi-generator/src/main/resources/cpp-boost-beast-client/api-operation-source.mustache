@@ -132,6 +132,23 @@
 {{/vendorExtensions.x-codegen-response-union}}
 {{/hasProduces}}
 
+    {{#vendorExtensions.x-codegen-op-has-security}}
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            {{#vendorExtensions.x-codegen-op-security-groups}}
+            SecurityRequirementGroup{ {
+            {{#.}}
+                SecuritySchemeUse{"{{name}}", "{{type}}", "{{in}}", "{{paramName}}", "{{httpScheme}}", {
+                    {{#scopes}}"{{.}}"{{^-last}}, {{/-last}}{{/scopes}}
+                } },
+            {{/.}}
+            } },
+            {{/vendorExtensions.x-codegen-op-security-groups}}
+        };
+        applyOperationSecurity("{{operationId}}", operationSecurity, path, headers);
+    }
+{{/vendorExtensions.x-codegen-op-has-security}}
     auto statusCode = boost::beast::http::status::unknown;
 {{#vendorExtensions.x-codegen-streaming-response}}
 {{#vendorExtensions.x-codegen-sse-representation-mode}}std::vector<std::string>{{/vendorExtensions.x-codegen-sse-representation-mode}}{{^vendorExtensions.x-codegen-sse-representation-mode}}{{#returnType}}    {{#vendorExtensions.x-codegen-stream-element-type}}std::vector<{{{.}}}>{{/vendorExtensions.x-codegen-stream-element-type}}{{^vendorExtensions.x-codegen-stream-element-type}}std::vector<{{{returnType}}}>{{/vendorExtensions.x-codegen-stream-element-type}}{{/returnType}}{{/vendorExtensions.x-codegen-sse-representation-mode}} deserializedResponse;
@@ -481,6 +498,23 @@
     // For streaming, force Accept to text/event-stream (ignoring JSON produces)
     headers["Accept"] = "text/event-stream";
 
+    {{#vendorExtensions.x-codegen-op-has-security}}
+    // Wave 5.3 (GC2): credential hook — OR alternatives; empty group = {} anonymous
+    {
+        static const std::vector<SecurityRequirementGroup> operationSecurity = {
+            {{#vendorExtensions.x-codegen-op-security-groups}}
+            SecurityRequirementGroup{ {
+            {{#.}}
+                SecuritySchemeUse{"{{name}}", "{{type}}", "{{in}}", "{{paramName}}", "{{httpScheme}}", {
+                    {{#scopes}}"{{.}}"{{^-last}}, {{/-last}}{{/scopes}}
+                } },
+            {{/.}}
+            } },
+            {{/vendorExtensions.x-codegen-op-security-groups}}
+        };
+        applyOperationSecurity("{{operationId}}", operationSecurity, path, headers);
+    }
+{{/vendorExtensions.x-codegen-op-has-security}}
     auto statusCode = boost::beast::http::status::unknown;
     {{#vendorExtensions.x-codegen-sse-representation-mode}}std::vector<std::string>{{/vendorExtensions.x-codegen-sse-representation-mode}}{{^vendorExtensions.x-codegen-sse-representation-mode}}{{#vendorExtensions.x-codegen-dual-stream-element-type}}std::vector<{{{.}}}>{{/vendorExtensions.x-codegen-dual-stream-element-type}}{{^vendorExtensions.x-codegen-dual-stream-element-type}}std::vector<{{{vendorExtensions.x-codegen-dual-stream-return-type}}}>{{/vendorExtensions.x-codegen-dual-stream-element-type}}{{/vendorExtensions.x-codegen-sse-representation-mode}} deserializedResponse;
     try {

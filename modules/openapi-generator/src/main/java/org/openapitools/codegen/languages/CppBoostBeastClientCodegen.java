@@ -8,6 +8,8 @@ import io.swagger.v3.oas.models.media.Schema;
 import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.servers.Server;
 import io.swagger.v3.oas.models.servers.ServerVariable;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
+import io.swagger.v3.oas.models.security.SecurityScheme;
 import org.apache.commons.lang3.StringUtils;
 import org.openapitools.codegen.*;
 
@@ -320,6 +322,11 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     // Wave 5.2: the operation's EFFECTIVE server URL (operation > path item
     // > root precedence), variables substituted with their defaults.
     private static final String X_CODEGEN_OP_SERVER = "x-codegen-op-server";
+    // Wave 5.3 (GC2): per-operation effective security requirements.
+    private static final String X_CODEGEN_OP_SECURITY_GROUPS =
+            "x-codegen-op-security-groups";
+    private static final String X_CODEGEN_OP_HAS_SECURITY =
+            "x-codegen-op-has-security";
     private static final String X_CODEGEN_RESPONSE_RANGE = "x-codegen-response-range";
     private static final String X_CODEGEN_RESPONSE_IS_ONE_OF = "x-codegen-response-is-oneof";
     private static final String X_CODEGEN_STREAM_IS_ONE_OF = "x-codegen-stream-is-oneof";
@@ -5907,6 +5914,61 @@ if (schema.get$comment() != null) {
                 && "/".equals(servers.get(0).getUrl());
     }
 
+    /** Wave 5.3 (GC2): the operation's effective security requirements as
+     *  template-ready groups. Each group (= OR alternative) is a list of
+     *  AND-required scheme maps: {name, type, in, paramName, httpScheme,
+     *  scopes:[...]}. An empty group = the anonymous `{}` alternative.
+     *  `security: []` at the operation clears all inheritance. */
+    private List<List<Map<String, Object>>> effectiveSecurityGroups(CodegenOperation op) {
+        List<List<Map<String, Object>>> groups = new ArrayList<>();
+        List<SecurityRequirement> requirements = null;
+        io.swagger.v3.oas.models.Operation raw = operationFor(op);
+        if (raw != null && raw.getSecurity() != null) {
+            requirements = raw.getSecurity();        // includes `[]` clears
+        } else if (phaseOpenAPI != null
+                && phaseOpenAPI.getSecurity() != null) {
+            requirements = phaseOpenAPI.getSecurity();
+        }
+        if (requirements == null) {
+            return groups;                            // no security declared
+        }
+        Map<String, SecurityScheme> schemes = phaseOpenAPI != null
+                && phaseOpenAPI.getComponents() != null
+                ? phaseOpenAPI.getComponents().getSecuritySchemes()
+                : null;
+        for (SecurityRequirement req : requirements) {
+            List<Map<String, Object>> ands = new ArrayList<>();
+            if (req != null) {
+                for (Map.Entry<String, List<String>> e : req.entrySet()) {
+                    SecurityScheme scheme = schemes == null
+                            ? null : schemes.get(e.getKey());
+                    Map<String, Object> use = new LinkedHashMap<>();
+                    use.put("name", e.getKey());
+                    use.put("type", scheme == null || scheme.getType() == null
+                            ? "unknown" : scheme.getType().toString());
+                    if (scheme != null && scheme.getType() == SecurityScheme.Type.APIKEY) {
+                        use.put("in", scheme.getIn() == null ? "header"
+                                : scheme.getIn().toString());
+                        use.put("paramName", scheme.getName() == null
+                                ? "" : scheme.getName());
+                    } else {
+                        use.put("in", "");
+                        use.put("paramName", "");
+                    }
+                    use.put("httpScheme", scheme != null
+                            && scheme.getType() == SecurityScheme.Type.HTTP
+                            && scheme.getScheme() != null
+                            ? scheme.getScheme() : "");
+                    use.put("scopes", e.getValue() == null
+                            ? new ArrayList<String>() : e.getValue());
+                    ands.add(use);
+                }
+            }
+            groups.add(ands);                          // empty ands = {}
+        }
+        return groups;
+    }
+
     /** The raw Operation behind a CodegenOperation (PathItem-method lookup). */
     private io.swagger.v3.oas.models.Operation operationFor(CodegenOperation op) {
         if (phaseOpenAPI == null || phaseOpenAPI.getPaths() == null) {
@@ -6004,6 +6066,13 @@ if (schema.get$comment() != null) {
             // variables substituted by their defaults.
             op.vendorExtensions.put(X_CODEGEN_OP_SERVER,
                     resolveEffectiveServerUrl(op));
+            // Wave 5.3 (GC2): effective security requirements (operation >
+            // root; `security: []` clears). OR alternatives; AND lists;
+            // empty AND list = anonymous {} alternative.
+            List<List<Map<String, Object>>> securityGroups = effectiveSecurityGroups(op);
+            op.vendorExtensions.put(X_CODEGEN_OP_SECURITY_GROUPS, securityGroups);
+            op.vendorExtensions.put(X_CODEGEN_OP_HAS_SECURITY,
+                    !securityGroups.isEmpty());
             String path = op.path;
 
             String[] items = path.split("/", -1);
