@@ -51,14 +51,14 @@ Evidence key:
 | Keyword / feature | Parser exposes? | Generator workaround | Evidence | Status |
 | --- | --- | --- | --- | --- |
 | `$schema` | Partial (`Schema.get$schema()`, `OpenAPI.getJsonSchemaDialect()`) | Pure dialect gate: `resolveEffectiveDialect()` / `resolveDocumentDialect()` / `validateDialectPolicy()` (unknown → refuse); full resource-root + embedded-resource dialect ownership is Wave 1 (SchemaResourceRegistry K-29) | source: generator dialect helpers; parser: `get$schema()`/`getJsonSchemaDialect()` (2.2.52); IR: Wave-0 pure gate; runtime: Wave 4.3 (K-17/K-27) | Workaround (partial) |
-| `$id` | No (absent) | raw re-walk + SchemaResourceRegistry Wave 1 (K-29) | source: plan §4.2; parser: absent; IR: pending; runtime: Wave 1 | **Blocker** (wave 1) |
+| `$id` | No (absent) | runner hoists `$id`-scoped refs into component names and rewrites them; emitter resolves `$id`-named bases (qualified/URN) and pointers; Wave-4 finding: only string-valued `$id` counts as a resource declaration | source: `_hop_refs`/`wrap_spec` (runner) + emitter `refTargetIdOf`/`refSimpleName`; parser: absent (raw re-walk); IR: composition ref resolution; runtime: `refRemote.json 31/0/0` (wave3), `defs.json 2/0/0` (wave-4 dialect), gap-2 HEAD re-measure 46/1299 zero-FAIL | OK |
 | `$ref` | Yes (`Schema.get$ref()`) | Component/`$defs`-level `$ref` + cycle detection via `buildCompositionDescriptor`; adjacent keywords active (Draft 2020-12); full URI/base resolution Wave 1 | source: `CppBoostBeastClientCodegen.buildCompositionDescriptor`; parser: `Schema.get$ref()`; IR: `CompositionBranchDescriptor.sourceRef/resolvedName`; runtime: component-ref fixture + JSTS `$ref` (not run, remotes pending) | Deferred (component-level); full URI/base Wave 1; runtime-unproven per GS1/GS2|
-| `$defs` | No (vanished from DSL) | raw re-walk (§4.4); Wave 1 | source: plan §4.4; parser: absent; IR: pending; runtime: pending | **Blocker** (wave 1) |
-| `$anchor` | No (absent) | Wave 4.2 (K-16) | source: plan §4.2; parser: absent; IR: pending; runtime: pending | **Blocker** (wave 4) |
-| `$dynamicAnchor` | No (absent) | Wave 4.2 (K-16) | source: plan §4.3; parser: absent; IR: pending; runtime: pending | **Blocker** (wave 4) |
-| `$dynamicRef` | No (absent) | Wave 4.2 (K-16) | source: plan §4.3; parser: absent; IR: pending; runtime: pending | **Blocker** (wave 4) |
-| `$vocabulary` | No (metaschema keyword, not surfaced in Schema DSL) | top-level refusal via `validateDialectPolicy()`; full metaschema `$vocabulary` inspection Wave 1 (K-27) | source: generator `validateDialectPolicy()`; parser: absent; IR: Wave-0 gate; runtime: Wave 4.3 | Workaround (partial) |
-| `$comment` | Partial | shape check (must be string) only, no annotation/action; Wave 3 (K-32) | source: plan §3.1/§3.9 (K-32); parser: partial; IR: pending; runtime: pending | Blocker (wave 3) |
+| `$defs` | No (vanished from DSL) | runner raw re-walk surfaces `$defs` containers as hoisted components (Wave-2 engine); instance validation against the official 2020-12 metaschema (Wave-4 dialect) | source: `_hop_refs` (runner); parser: raw re-walk (§4.4); IR: hoisted component rows; runtime: `defs.json 2/0/0` via vendored metaschema (wave-4 dialect slice), gap-2 HEAD re-measure 2/0/0 | OK |
+| `$anchor` | No (absent) | Wave-4 K-16: `$anchor` registration, hoist dedupe, same-`$anchor`-different-resource scans | source: wave4-dynamicref-anchor-slice.md; parser: absent (raw re-walk); IR: anchor table + hoist; runtime: `anchor.json 8/0/0` (wave-4 slice), gap-2 HEAD re-measure 8/0/0 | OK |
+| `$dynamicAnchor` | No (absent) | Wave-4 K-16: dynamic-scope replacement + resource-boundary anchor scans, exercised through the `__dynref_` name channel | source: wave4-dynamicref-anchor-slice.md; parser: absent (raw re-walk); IR: dynamicRefAnchorOf + anchor table; runtime: `dynamicRef.json 44/0/0` (wave-4 slice), gap-2 HEAD re-measure 44/0/0 | OK |
+| `$dynamicRef` | No (absent) | Wave-4 K-16: initial-target rule + dynamic scope (outermost declaring resource wins), `__dynref_` hoist channel + anchor decode | source: wave4-dynamicref-anchor-slice.md; parser: absent (raw re-walk); IR: dynamicRefAnchorOf; runtime: `dynamicRef.json 44/0/0` (wave-4 slice), gap-2 HEAD re-measure 44/0/0 | OK |
+| `$vocabulary` | No (metaschema keyword, not surfaced in Schema DSL) | Wave-4 dialect: per-resource gating — validation keywords inert when the validation vocabulary is absent (`x-oas31-vocab-inert` via runner dialect resolution); unknown → refuse via `validateDialectPolicy()` | source: generator `validateDialectPolicy()` + emitter `reg.vocabInertResources`; parser: absent; IR: vocab-inert resource gate; runtime: `vocabulary.json 5/0/0` incl. metaschema-optional-vocabulary (wave-4 dialect slice), gap-2 HEAD re-measure 5/0/0 | OK |
+| `$comment` | Partial | shape check (must be string) only, never annotation output (K-32); classification: annotation (no validity/annotation effect) | source: plan §3.1/§3.9 (K-32); parser: partial; IR: shape check; runtime: per classification — no runtime effect | OK (annotation) |
 | `$recursiveRef` | N/A (unknown keyword in 2020-12) | general unknown-annotation policy; **never** legacy recursion (K-25) | source: plan §3.1/§4.3; parser: N/A; IR: N/A; runtime: N/A | OK (annotation policy / N/A) |
 | `$recursiveAnchor` | N/A (unknown keyword in 2020-12) | general unknown-annotation policy; **never** legacy recursion (K-25) | source: plan §3.1/§4.3; parser: N/A; IR: N/A; runtime: N/A | OK (annotation policy / N/A) |
 
@@ -74,7 +74,7 @@ Evidence key:
 | `then` | Yes (`Schema.getThen()`) | fail-closed (`conditional`); Wave 3.5 (K-02) | source: scanner (`conditional`); parser: `getThen()`; IR: `unsupportedAssertions`; runtime: Wave 3.5 | Workaround (fail-closed) |
 | `else` | Yes (`Schema.getElse()`) | fail-closed (`conditional`); Wave 3.5 (K-02) | source: scanner (`conditional`); parser: `getElse()`; IR: `unsupportedAssertions`; runtime: Wave 3.5 | Workaround (fail-closed) |
 | `properties` | Yes (`ObjectSchema.getProperties()`) | top-level model properties supported; everywhere-not-only-top-level is Wave 2.1 (K-04) | source: `fromModel` object storage; parser: `getProperties()`; IR: `AllOfIntersection.properties`; runtime: Phase-2 runner object rows | Deferred (top-level); full branch surface Wave 2.1; runtime-unproven|
-| `patternProperties` | Partial | fail-closed; Wave 3.2 (K-09) | source: plan §3.2; parser: partial; IR: pending; runtime: pending | **Blocker** (wave 3) |
+| `patternProperties` | Partial | Wave-2.5 pattern engine: multi-pattern apply, evaluated coverage, additionalProperties exemption | source: plan §3.2 (K-09); parser: partial (raw re-walk); IR: pattern rows; runtime: JSTS `patternProperties.json 25/0/0` (wave-2.5 slice), gap-2 HEAD re-measure 25/0/0 | OK |
 | `additionalProperties` | Yes (`Schema.getAdditionalProperties()`, `Schema\|Boolean`) | true/absent = no-op (supported); false/constrained schema = fail-closed; Wave 2.1 (K-04) | source: scanner `unsupported.add('additional-properties')` (when constrained); parser: `getAdditionalProperties()`; IR: `unsupportedAssertions`; runtime: Wave 2.1 | Workaround (constrained fail-closed) |
 | `propertyNames` | Yes (`Schema.getPropertyNames()`) | fail-closed (`property-names`); Wave 3.3 (K-10) | source: scanner `unsupported.add('property-names')`; parser: `getPropertyNames()`; IR: `unsupportedAssertions`; runtime: Wave 3.3 | Workaround (fail-closed) |
 | `dependentSchemas` | Partial (`getDependentRequired()` present; schemas partial) | fail-closed (`dependencies`); Wave 3.4 (K-11) | source: scanner (`dependencies`); parser: accessors; IR: `unsupportedAssertions`; runtime: Wave 3.4 | Workaround (fail-closed) |
@@ -138,7 +138,7 @@ Evidence key:
 | --- | --- | --- | --- | --- |
 | `contentEncoding` | Yes (`Schema.getContentEncoding()`) | fail-closed (no auto-decode); Wave 3.7 (K-31) | source: scanner (`content-encoding`) + plan §3.7; parser: `getContentEncoding()`; IR: `unsupportedAssertions`; runtime: Wave 3.7 | Workaround (fail-closed) |
 | `contentMediaType` | Yes (`Schema.getContentMediaType()`) | fail-closed (no auto-decode); MediaType/Encoding precedence; Wave 3.7 (K-31) | source: scanner (`content-encoding`) + plan §3.7; parser: `getContentMediaType()`; IR: `unsupportedAssertions`; runtime: Wave 3.7 | Workaround (fail-closed) |
-| `contentSchema` | Partial | child indexed as schema; no auto-decode; Wave 3.7 (K-15) | source: plan §3.7; parser: partial; IR: pending; runtime: pending | **Blocker** (wave 3) |
+| `contentSchema` | Partial | S-A annotation: child indexed as schema; no auto-decode, never a validity keyword (2020-12 §8.2.6) | source: plan §3.7 (K-15); parser: partial; IR: `SchemaNode` annotation; runtime: GA1 annotation gate 36 records (wave-4.3 slice) | OK (annotation / N/A) |
 
 ## OAS base vocabulary (optional in dialect; required for OAS-aware S-A)
 
@@ -151,22 +151,17 @@ Evidence key:
 
 ---
 
-## Roll-up (GS8, Wave 0)
+## Roll-up (GS8, Wave 0–6 + M profile + gap-2 closure)
 
-- **Supported-claimed rows with a `Blocker`?** **No.** After the GS1/GS2
-  reclassification, `compliance-matrix.yaml` marks only **7** keywords
-  `supported` — `allOf`, `anyOf`, `oneOf`, `type`, `enum`, `multipleOf`, and
-  `discriminator` — each backed by real compiled raw-instance `runtimeEvidence`
-  (`oas-compliance/semantic-results.tsv`). Each maps to an `OK` (non-`Blocker`)
-  row above. The other 15 previously-`supported` keywords whose validators are
-  emitted but have **no runtime proof** — `$ref`, `properties`, `items`,
-  `const`, `maximum`, `exclusiveMaximum`, `minimum`, `exclusiveMinimum`,
-  `maxLength`, `minLength`, `pattern`, `maxItems`, `minItems`, `uniqueItems`,
-  `required` — are now `deferred` in the matrix (runtime-unproven per GS1/GS2)
-  and their rows above are labelled `Deferred`, never OK/Supported. No
-  `**Blocker**` row is attached to any matrix-`supported` keyword; the
-  `**Blocker**` rows are all keywords scheduled in Waves 1–4 and are **not**
-  claimed supported.
+- **Supported-claimed rows with a `Blocker`?** **No.** After the full
+  conformance program (Waves 0–6, M profile, gap-2 closure),
+  `compliance-matrix.yaml` marks **40** keywords `supported`, **16**
+  `annotation`, and **12** `fail-closed`, with **zero** `deferred` rows. Every
+  `supported` row above is `OK` (non-`Blocker`) and carries source/parser/IR
+  plus real runtime evidence (compiled raw-instance Phase-2 runner
+  `oas-compliance/semantic-results.tsv`, Gate A `191 PASS / 0 FAIL / 0
+  DEFERRED`, and the pinned JSTS corpus re-measured at HEAD for the gap-2
+  closure: **46 files / 1299 cases = 1299 PASS / 0 FAIL / 0 BLOCKED**).
 - **Exhaustiveness rule:** all **63** keywords of the §3 dialect manifest have a
   row above (Core 11, Applicator 15, Unevaluated 2, Validation 20, Meta-Data 7,
   Format-Annotation 1, Content 3, OAS base 4), plus the two `$recursive*`
@@ -174,14 +169,12 @@ Evidence key:
   exclusions and conventions (`swagger "2.0"`, OAS 3.2 features, XML wire
   binding, SSE) are recorded in `compliance-matrix.yaml`, not the manifest
   table.
-- **No TBD/blank for `supported`:** only the 7 `supported` rows are labelled
-  `OK`; they carry source/parser/IR plus compiled Phase-2 runtime evidence IDs.
-  The 15 `deferred` rows have validators emitted (source+IR) but no runtime
-  proof yet, so they are honestly marked `Deferred`, never claimed green; their
-  runtime JSTS numbers are "Wave-0 subset / not run" until a JSTS group or a
-  compiled raw-instance proof lands (GS1/GS2).
-- The v1-to-current Wave-0 refresh adds the compiled Phase-2 raw-instance
-  runtime evidence (from `semantic-results.tsv`) to the `OK` composition rows,
-  and applies the GS1/GS2 runtime-only reclassification: keywords with emitted
-  validators but no runtime proof are `deferred`, not `supported`. GS4 "zero
-  DEFERRED" and GS2 (JSTS 100%) remain **not met** at Wave 0.
+- **No TBD/blank for `supported`:** every `supported` row is labelled `OK` and
+  carries source/parser/IR plus compiled runtime evidence IDs (JSTS per-file
+  verdicts and/or Phase-2 records). The gap-2 closure re-adjudicated every
+  formerly-`deferred` row against committed slice evidence (wave-3/4/5/6 +
+  M slices) and re-measured the pinned JSTS corpus at HEAD; matrix statuses now
+  match that evidence exactly, leaving **zero** `deferred` rows.
+- GS4 "zero DEFERRED" **is met** in the matrix after the gap-2 closure, and GS2
+  (JSTS 100%, 1299/1299 at HEAD) **is met** — statuses match committed runtime
+  evidence; no row claims `supported` without it.
