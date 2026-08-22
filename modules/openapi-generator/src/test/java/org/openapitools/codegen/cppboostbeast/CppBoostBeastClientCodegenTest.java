@@ -4581,6 +4581,44 @@ public class CppBoostBeastClientCodegenTest {
     }
 
     @Test
+    public void compileWithValidationDefaultsToTrue() throws IOException {
+        // Default: kValidateOnDecode = true in generated ValidationTypes.h.
+        File output = Files.createTempDirectory("cpp-boost-beast-knob-default").toFile();
+        output.deleteOnExit();
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/composed-schema-lowering.yaml")
+                .setOutputDir(output.getAbsolutePath());
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        Assert.assertFalse(files.isEmpty(), "generation must produce files");
+        Path validationTypes = output.toPath().resolve("model/ValidationTypes.h");
+        Assert.assertTrue(Files.exists(validationTypes),
+                "model/ValidationTypes.h must be emitted");
+        String content = new String(Files.readAllBytes(validationTypes), java.nio.charset.StandardCharsets.UTF_8);
+        Assert.assertTrue(content.contains("constexpr bool kValidateOnDecode = true;"),
+                "compileWithValidation default must emit kValidateOnDecode = true");
+    }
+
+    @Test
+    public void compileWithValidationFalseEmitsKnobOff() throws IOException {
+        File output = Files.createTempDirectory("cpp-boost-beast-knob-off").toFile();
+        output.deleteOnExit();
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/composed-schema-lowering.yaml")
+                .addAdditionalProperty("compileWithValidation", "false")
+                .setOutputDir(output.getAbsolutePath());
+        List<File> files = new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+        Assert.assertFalse(files.isEmpty(), "generation must produce files");
+        Path validationTypes = output.toPath().resolve("model/ValidationTypes.h");
+        Assert.assertTrue(Files.exists(validationTypes),
+                "model/ValidationTypes.h must be emitted");
+        String content = new String(Files.readAllBytes(validationTypes), java.nio.charset.StandardCharsets.UTF_8);
+        Assert.assertTrue(content.contains("constexpr bool kValidateOnDecode = false;"),
+                "compileWithValidation=false must emit kValidateOnDecode = false");
+    }
+
+    @Test
     public void branchDescriptorsHaveValidatorId() {
         CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
         codegen.processOpts();

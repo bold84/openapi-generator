@@ -25,6 +25,27 @@
 #include <boost/json.hpp>
 
 // ============================================================================
+// Decode-time validation knob (Gap-4 closure).
+//
+// kValidateOnDecode gates ONLY the composition-branch schema validation
+// (oneOf exactly-one / anyOf at-least-one / discriminator branch checks in
+// model-source.mustache). It is a compile-time constant so the skipped
+// branches are eliminated by the optimizer for high-throughput clients that
+// do not want composition validation on every decode.
+//
+// INVARIANT (M-contract, F3): representation diagnostics survive the knob.
+// Non-finite destination checks, integer range checks ("not exact"), and all
+// transport/representation failures still throw on BOTH paths. The knob
+// never disables representation diagnostics — it only skips schema-validity
+// membership counting. See docs/cpp-boost-beast-client-typed-mapping.md §1a.
+//
+// The emitted value is controlled by the codegen option
+// `compileWithValidation` (default true); setting it to false emits
+// `kValidateOnDecode = false` here. See CppBoostBeastClientCodegen.
+// ============================================================================
+constexpr bool kValidateOnDecode = {{validateOnDecode}};
+
+// ============================================================================
 // ValidationPath — accumulates JSON path segments during validation recursion.
 // Passed by reference; mutated to reflect current location in the instance.
 // ============================================================================

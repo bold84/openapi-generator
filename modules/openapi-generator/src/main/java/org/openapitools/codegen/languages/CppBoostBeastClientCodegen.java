@@ -303,6 +303,8 @@ public class CppBoostBeastClientCodegen extends AbstractCppCodegen {
     private static final String SSE_SCHEMA_MODE_JSON_EVENT_DATA = "jsonEventData";
     /** Per-operation vendor extension to opt-in to typed event-data decoding. */
     private static final String X_SSE_EVENT_DATA_SCHEMA = "x-sse-event-data-schema";
+    /** Gap-4 knob: false compiles out composition-branch validation. */
+    private boolean validateOnDecode = true;
 
     private static final String X_CODEGEN_DEFAULT_RESPONSE_IS_RETURN_COMPATIBLE =
             "x-codegen-default-response-is-return-compatible";
@@ -2778,6 +2780,16 @@ if (schema.get$comment() != null) {
         sseSchemaModeOption.addEnum(SSE_SCHEMA_MODE_JSON_EVENT_DATA,
                 "Schema describes each JSON event data payload");
         cliOptions.add(sseSchemaModeOption);
+
+        CliOption compileWithValidationOption = new CliOption("compileWithValidation",
+                "Emit kValidateOnDecode=true in generated ValidationTypes.h (default)."
+                + " Set to false to compile out oneOf/anyOf/discriminator"
+                + " COMPOSITION-BRANCH validation on decode for high-throughput"
+                + " clients. Representation diagnostics (F3: non-finite"
+                + " destinations, integer range, required properties) remain"
+                + " active on all paths — this knob never disables them.");
+        compileWithValidationOption.defaultValue(Boolean.TRUE.toString());
+        cliOptions.add(compileWithValidationOption);
 
         supportingFiles.add(new SupportingFile("validation-types.mustache", "model", "ValidationTypes.h"));
         supportingFiles.add(new SupportingFile("NullableField.h.mustache", "model", "NullableField.h"));
@@ -5728,6 +5740,22 @@ if (schema.get$comment() != null) {
             }
         }
         additionalProperties.put("sseSchemaMode", sseSchemaMode);
+
+        // Gap-4: compileWithValidation — compile-time opt-out of
+        // composition-branch validation (oneOf/anyOf/discriminator) on
+        // decode. Emitted as kValidateOnDecode in model/ValidationTypes.h.
+        // Representation diagnostics (F3: non-finite destinations, integer
+        // range, required-property checks) are NEVER disabled by this knob.
+        if (additionalProperties.containsKey("compileWithValidation")) {
+            Object raw = additionalProperties.get("compileWithValidation");
+            if (raw instanceof Boolean) {
+                validateOnDecode = (Boolean) raw;
+            } else {
+                validateOnDecode = Boolean.parseBoolean(raw.toString().trim());
+            }
+        }
+        additionalProperties.put("validateOnDecode", validateOnDecode);
+        additionalProperties.put("compileWithValidation", validateOnDecode);
     }
 
     /**

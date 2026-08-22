@@ -716,6 +716,7 @@ ValidationResult validate_{{validator-id}}(
     bool foundMatch = false;
     (void)foundMatch;
     ValidationPath vp;
+    {{#validateOnDecode}}
     {{#vendorExtensions.x-has-discriminator-branch-index}}
     // Validate discriminator-preferred branch first (reorder for diagnostics)
     if (discPreferredBranch != static_cast<std::size_t>(-1)) {
@@ -759,6 +760,21 @@ ValidationResult validate_{{validator-id}}(
     {{/validator-id}}
     {{/branches}}
     {{/vendorExtensions.x-cpp-composition-branches}}
+    {{/validateOnDecode}}
+    {{^validateOnDecode}}
+    // Compile-time validation disabled (kValidateOnDecode == false): the
+    // oneOf/anyOf/discriminator COMPOSITION-BRANCH assertions are skipped
+    // (high-throughput opt-out). The first parseable branch is converted;
+    // structural conversion and representation diagnostics (F3: "not exact",
+    // "non-finite destination") below still run on every path.
+    {{#discriminator}}
+    (void)discPreferredBranch;
+    {{/discriminator}}
+    (void)vp;
+    matchedBranchIndex = 0;
+    foundMatch = true;
+    validMatchCount = 1;
+    {{/validateOnDecode}}
 
     // Helper: convert the matched branch by index into a variant value.
     // For tagged duplicates (CompositionBranchValue), directly construct
