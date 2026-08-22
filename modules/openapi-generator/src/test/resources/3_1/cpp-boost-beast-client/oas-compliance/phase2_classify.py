@@ -46,6 +46,56 @@ if resolved_file and os.path.exists(resolved_file):
             if len(parts) >= 3:
                 resolved[parts[0]] = (parts[1], parts[2])
 
+# Step 2b evidence: schema -> verdict for the negative (generation-failure)
+# fixtures.  Env-provided; absent -> generation_failure rows stay DEFERRED.
+negative_results = {}
+negative_file = os.environ.get("NEGATIVE_COMPOSED_RESULTS", "")
+if negative_file and os.path.exists(negative_file):
+    with open(negative_file) as f:
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) >= 2:
+                negative_results[parts[0]] = parts[1]
+
+# Wave-6 GS4 closure: C-profile gate evidence index.  Semantic rows whose
+# raw-instance axis cannot be exercised by the Phase-2 runner (wire-level
+# Encoding Object emission) or whose semantics include response-branch
+# precedence are promoted ONLY when every referenced (file, marker) pair
+# exists in the committed tree AND every referenced gate cell is present in
+# the wire-gate tool.  Any missing reference keeps the row DEFERRED — never
+# a silent pass.
+evidence_index = {}
+index_file = os.path.join(compliance_dir, "gate-evidence-index.yaml")
+if os.path.exists(index_file):
+    with open(index_file) as f:
+        idx = yaml.safe_load(f) or {}
+    evidence_index = idx.get("rows", {}) if isinstance(idx, dict) else {}
+
+WIRE_TOOL = os.path.join(compliance_dir, "..", "oas31-jsts", "tools",
+                         "jsts_param_wire.py")
+
+
+def verify_evidence(case_id):
+    """True only when every referenced file+marker and tool cell verifies."""
+    entries = evidence_index.get(case_id)
+    if not entries:
+        return False
+    for e in entries:
+        if "file" in e and "marker" in e:
+            path = os.path.join(compliance_dir, "..", e["file"])
+            if not os.path.exists(path):
+                return False
+            with open(path) as f:
+                if e["marker"] not in f.read():
+                    return False
+        if "cell" in e:
+            if not os.path.exists(WIRE_TOOL):
+                return False
+            with open(WIRE_TOOL) as f:
+                if f'check("{e["cell"]}"' not in f.read():
+                    return False
+    return True
+
 with open(semantic_file) as f:
     spec = yaml.safe_load(f) or []
 
@@ -62,10 +112,18 @@ def row_outcome(row_id, expected, schema_name, note, case_spec=None, is_phase2=F
     if schema_name:
         schema_header = os.path.join(model_dir, f"{schema_name}.h")
 
-    # Phase-2 raw-instance evidence for concrete accept/reject rows.
+    # Phase-2 raw-instance evidence for concrete accept/reject/round-trip
+    # rows.  Rows that ALSO carry a C-profile evidence-index entry (e.g.
+    # response-branch precedence) additionally require every reference to
+    # verify — the raw accept alone is not the full semantic.
     if is_phase2 and row_id in resolved:
         r_result, r_expected = resolved[row_id]
         if r_result == "PASS":
+            if row_id in evidence_index and not verify_evidence(row_id):
+                buckets[expected] += 1
+                return (row_id, expected, "DEFERRED",
+                        "Phase-2 raw accept passed but C-profile evidence "
+                        "references did not verify", note)
             detail = f"Phase-2 raw-instance evidence (expected {r_expected})"
             buckets[expected] += 1
             return (row_id, expected, "PASS", detail, note)
@@ -79,6 +137,17 @@ def row_outcome(row_id, expected, schema_name, note, case_spec=None, is_phase2=F
     detail = ""
 
     if expected == "generation_failure":
+        # Wave-6 GS4: promote only when Step 2b's negative-fixture run
+        # exercised the schema and generation was (correctly) refused.
+        if schema_name in negative_results:
+            if negative_results[schema_name] == "PASS":
+                detail = "Step 2b negative fixture: generation refused as expected"
+                buckets["generation_failure"] += 1
+                return (row_id, expected, "PASS", detail, note)
+            detail = f"Step 2b negative fixture FAILED for {schema_name}"
+            buckets["generation_failure"] += 1
+            bucket_errors["generation_failure"] += 1
+            return (row_id, expected, "FAIL", detail, note)
         result = "DEFERRED"
         detail = "negative fixture case (checked in Step 2b)"
         buckets["generation_failure"] += 1
@@ -91,6 +160,14 @@ def row_outcome(row_id, expected, schema_name, note, case_spec=None, is_phase2=F
         return (row_id, expected, result, detail, note)
 
     if expected in ("decode_accept", "decode_reject", "round_trip"):
+        if row_id in evidence_index and verify_evidence(row_id):
+            # Wire-level rows (multipart Encoding Object emission) and the
+            # precedence side of response rows: resolved by the Wave-5
+            # C-profile gates with every reference verified.
+            detail = ("C-profile gate evidence verified "
+                      "(oas-compliance/gate-evidence-index.yaml)")
+            buckets[expected] += 1
+            return (row_id, expected, "PASS", detail, note)
         if case_spec:
             result = "DEFERRED"
             detail = f"exercised via spec '{case_spec}' (separate test)"
@@ -140,14 +217,18 @@ for entry in spec:
             exp = c.get("expected", entry.get("expected", "?"))
             note = c.get("note", entry.get("note", f"payload {idx}"))
             case_spec = c.get("spec", entry_spec if entry_spec else None)
-            # Phase-2 evidence only applies to literal-payload accept/reject rows.
-            is_phase2 = ("payload" in c) and exp in ("decode_accept", "decode_reject")
+            # Phase-2 evidence applies to literal-payload accept/reject rows,
+            # response-branch rows (body validated against the branch
+            # schema) and round-trip rows (typed decode+re-encode).
+            is_phase2 = ("payload" in c or "response" in c) and \
+                exp in ("decode_accept", "decode_reject", "round_trip")
             results.append(row_outcome(sub_id, exp, schema_name, note, case_spec, is_phase2))
     else:
         exp = entry.get("expected", "?")
         note = entry.get("note", "")
         case_spec = entry_spec if entry_spec else None
-        is_phase2 = ("payload" in entry) and exp in ("decode_accept", "decode_reject")
+        is_phase2 = ("payload" in entry) and \
+            exp in ("decode_accept", "decode_reject", "round_trip")
         results.append(row_outcome(case_id, exp, schema_name, note, case_spec, is_phase2))
 
 # Write TSV

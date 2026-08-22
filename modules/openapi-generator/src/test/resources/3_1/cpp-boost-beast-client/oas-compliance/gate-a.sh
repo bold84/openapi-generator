@@ -127,14 +127,40 @@ generate_client() {
     # Remove previous output to avoid stale artifacts
     rm -rf "${OUTPUT_DIR}"
 
-    java -jar "${JAR}" generate \
-        --generator-name cpp-boost-beast-client \
-        --input-spec "${FIXTURES}" \
-        --output "${OUTPUT_DIR}" \
-        --additional-properties packageName=CppBoostBeastOasFixtures \
-        --additional-properties apiPackage=api \
-        --additional-properties modelPackage=model \
-        2>&1
+    # Wave-6 GS4 closure: generate from EVERY in-repo fixture spec the
+    # semantic rows bind to (flat output; each spec contributes its own
+    # model files).  The runner + classifier then cover nullable/tri-state,
+    # response-union, SSE and the fixtures themselves.
+    # In oas-compliance/ itself: fixtures.yaml.  Siblings of oas-compliance/:
+    # the regression specs the semantic rows bind to.
+    local fixture_specs=(
+        "${SCRIPT_DIR}/fixtures.yaml"
+        "$(dirname "${SCRIPT_DIR}")/nullable-object-regression.yaml"
+        "$(dirname "${SCRIPT_DIR}")/optional-nullable-regression.yaml"
+        "$(dirname "${SCRIPT_DIR}")/response-union-regression.yaml"
+        "$(dirname "${SCRIPT_DIR}")/multipart-encoding-regression.yaml"
+        "$(dirname "${SCRIPT_DIR}")/pure-sse-object.yaml"
+        "$(dirname "${SCRIPT_DIR}")/composed-schema-lowering.yaml"
+    )
+    local fs
+    for fs in "${fixture_specs[@]}"; do
+        local spec_path="${fs}"
+        if [[ ! -f "${spec_path}" ]]; then
+            echo -e "  ${RED}ERROR${NC}  Fixture spec not found: ${spec_path}"
+            exit 2
+        fi
+        java -jar "${JAR}" generate \
+            --generator-name cpp-boost-beast-client \
+            --input-spec "${spec_path}" \
+            --output "${OUTPUT_DIR}" \
+            --additional-properties packageName=CppBoostBeastOasFixtures \
+            --additional-properties apiPackage=api \
+            --additional-properties modelPackage=model \
+            2>&1 || {
+                echo -e "  ${RED}ERROR${NC}  Generation failed for ${spec_path}"
+                exit 2
+            }
+    done
 
     info_msg "Generation complete: $(find "${OUTPUT_DIR}/model" -name '*.h' 2>/dev/null | wc -l) model headers"
 }
@@ -187,6 +213,12 @@ import os, re, sys, yaml
 negative_fixtures = os.environ.get("NEGATIVE_FIXTURES_PATH", "")
 negative_output_dir = os.environ.get("NEGATIVE_OUTPUT_DIR", "")
 gen_exit = int(os.environ.get("GEN_EXIT", "0"))
+results_path = os.environ.get("NEGATIVE_RESULTS_PATH", "")
+results_fh = open(results_path, "w") if results_path else None
+def record(name, verdict, detail):
+    if results_fh:
+        results_fh.write(f"{name}\t{verdict}\t{detail}\n")
+        results_fh.flush()
 
 if not negative_fixtures or not os.path.exists(negative_fixtures):
     sys.exit(0)
@@ -212,6 +244,7 @@ for name, schema in schemas.items():
 
     if gen_exit != 0 or not header_exists:
         print(f"  PASS  {name}: codegen {'exited with ' + str(gen_exit) if gen_exit != 0 else 'did not produce header'}")
+        record(name, "PASS", "generation refused as expected")
     else:
         cpp_type = "?"
         try:
@@ -228,6 +261,7 @@ for name, schema in schemas.items():
         except Exception:
             pass
         print(f"  FAIL  {name}: codegen should have errored but produced type {cpp_type}")
+        record(name, "FAIL", f"codegen produced type {cpp_type}")
         found_failures += 1
 
 if found_failures > 0:
@@ -238,6 +272,8 @@ NEGEOF
     export NEGATIVE_FIXTURES_PATH="${NEGATIVE_FIXTURES}"
     export NEGATIVE_OUTPUT_DIR="${negative_output_dir}"
     export GEN_EXIT="${gen_exit}"
+    export NEGATIVE_RESULTS_PATH="${SCRIPT_DIR}/negative-composed-results.tsv"
+    rm -f "${SCRIPT_DIR}/negative-composed-results.tsv"
 
     local neg_exit=0
     python3 "${parse_py}" || neg_exit=$?
@@ -541,6 +577,8 @@ run_semantic_cases() {
 
     export SCRIPT_DIR="${SCRIPT_DIR}"
     export OUTPUT_DIR="${OUTPUT_DIR}"
+    # Step 2b evidence for generation_failure rows (Wave-6 GS4).
+    export NEGATIVE_COMPOSED_RESULTS="${SCRIPT_DIR}/negative-composed-results.tsv"
     # Optional Phase-2 raw-instance evidence (case_id -> PASS/FAIL). When
     # populated, concrete decode_accept/decode_reject rows with evidence are
     # classified PASS/FAIL instead of DEFERRED (real accept/reject proof).
@@ -625,6 +663,9 @@ run_phase2_runner() {
         DuplicateNullOneOf OverlappingAnimal DiscriminatorOneOf
         AllOfEnumIntersection OptionalImpossibleAllOf OneOfStringStringEnum
         Mammal Bird OverlappingReptile
+        # Wave-6 GS4 closure: nullable/tri-state + response-union + SSE.
+        TriStateContainer NullableObjectRoot FullResource SummaryResource
+        Evt ResponseStreamEvent ResponseCreatedEvent ResponseCompletedEvent
     )
     local unit_args=()
     local m

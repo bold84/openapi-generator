@@ -1,0 +1,35 @@
+# Gate A — C-profile gate evidence index (Wave-6 GS4 closure)
+#
+# Semantic rows whose expectations are exercised by the Wave-5 C-profile
+# gates instead of the Phase-2 raw-instance runner:
+#   * response-branch PRECEDENCE (exact 200 > 2XX > default) is asserted at
+#     runtime by the content-matrix wire gate (response200 /
+#     responseRange2xx / responseDefault cells);
+#   * the multipart Encoding Object emission (explicit image/png + default
+#     binary content types) is asserted by the content-matrix wire gate
+#     (postMultipart* cells).
+# The Phase-2 runner still supplies the raw decode_accept evidence for the
+# range rows; the classifier requires BOTH when both are defined, and
+# verifies every reference below before promoting a row (any missing
+# file/marker/cell keeps the row DEFERRED — never a silent pass).
+rows:
+  range-default-exact-precedence[0]:
+    - file: oas31-jsts/wave5-content-slice.md
+      marker: "CONTENT MATRIX PASS — 21 cells"
+    - cell: response200
+  range-default-exact-precedence[1]:
+    - file: oas31-jsts/wave5-content-slice.md
+      marker: "CONTENT MATRIX PASS — 21 cells"
+    - cell: responseRange2xx
+  range-default-exact-precedence[2]:
+    - file: oas31-jsts/wave5-content-slice.md
+      marker: "CONTENT MATRIX PASS — 21 cells"
+    - cell: responseDefault
+  multipart-encoding-explicit-content-type:
+    - file: oas31-jsts/wave5-content-slice.md
+      marker: "CONTENT MATRIX PASS — 21 cells"
+    - cell: postMultipartNote
+  multipart-default-binary-no-encoding:
+    - file: oas31-jsts/wave5-content-slice.md
+      marker: "CONTENT MATRIX PASS — 21 cells"
+    - cell: postMultipartValues

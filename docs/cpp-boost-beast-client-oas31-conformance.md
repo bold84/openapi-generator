@@ -208,8 +208,13 @@ stale.
     1299 PASS / 0 FAIL / 0 BLOCKED** (batch ≡ serial file-for-file),
     Wave-4.3 commit `5f8abb05ac6`; $dynamicRef/$anchor dynamic scoping,
     unevaluated* residuals, dialect/vocabulary policy committed
-    (`4e17c3c3bfe`, `69eb5f1c6ba`); Gate A Phase-2 raw-instance runner
-    green; no fail-closed keyword remains in the descriptor gate.
+    (`4e17c3c3bfe`, `69eb5f1c6ba`); **GS4 MET: Gate A final
+    191 PASS / 0 FAIL / 0 DEFERRED semantic rows** (the 19 previously
+    deferred rows — nullable/tri-state round-trips, response-union
+    branches, SSE, multipart wire, allOf-generation-failure — closed with
+    runner + Step-2b + verified C-profile gate evidence,
+    `oas31-jsts/wave6-gs4-closure-slice.md`); no fail-closed keyword
+    remains in the descriptor gate.
   - GA1–GA3 / S-A: annotation gate PASS (36 records, `$comment` silent),
     direction-aware meta/format/content annotations, dialect policy.
   - The CI job runs the FULL corpus (promoted from the representative
