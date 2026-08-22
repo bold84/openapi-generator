@@ -2691,8 +2691,29 @@ if (schema.get$comment() != null) {
                         SchemaSupportFeature.Union
                 )
                 .includeDataTypeFeatures(
-                        DataTypeFeature.AnyType,
-                        DataTypeFeature.Null
+                        // Wave-M (GM1/GM2): exactly the destination domains
+                        // with five-class corpus evidence (m-corpus.yaml +
+                        // the M driver, 50/50).  Floats narrow idempotently
+                        // (documented); non-finite destinations throw
+                        // representation diagnostics.
+                        DataTypeFeature.Int32,
+                        DataTypeFeature.Int64,
+                        DataTypeFeature.Float,
+                        DataTypeFeature.Double,
+                        DataTypeFeature.String,
+                        DataTypeFeature.Boolean,
+                        DataTypeFeature.Enum,
+                        DataTypeFeature.Array,
+                        DataTypeFeature.Maps,
+                        DataTypeFeature.Object,
+                        DataTypeFeature.Null,
+                        DataTypeFeature.AnyType
+                )
+                .excludeDataTypeFeatures(
+                        // No decimal destination domain exists (format:
+                        // decimal maps to double; exact decimals are not
+                        // a declared C++ type) — the base set lists it.
+                        DataTypeFeature.Decimal
                 )
                 .includeParameterFeatures(
                         ParameterFeature.Cookie   // Wave 5.1: form-style cookie

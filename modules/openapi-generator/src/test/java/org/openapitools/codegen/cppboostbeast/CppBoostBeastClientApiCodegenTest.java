@@ -1,4 +1,7 @@
 package org.openapitools.codegen.cppboostbeast;
+import org.openapitools.codegen.meta.features.DataTypeFeature;
+import org.openapitools.codegen.meta.FeatureSet;
+import org.openapitools.codegen.languages.CppBoostBeastClientCodegen;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -280,5 +283,70 @@ public class CppBoostBeastClientApiCodegenTest {
             searchPosition += expectedText.length();
         }
         return occurrenceCount;
+    }
+
+    @Test
+    public void mProfileDestinationDomainsAndFeatureSet() throws IOException {
+        // Wave-M (GM3 contract surface + M-audit): the generated destination
+        // domains and the FeatureSet DataTypeFeature declaration must match
+        // the M-corpus evidence.  Also asserts the F3 finite-check emission
+        // (non-finite float/double destinations become representation
+        // diagnostics, never silent).
+        Path testOutputRoot = Files.createDirectories(Path.of("target"));
+        Path generatedClientDirectory = Files.createTempDirectory(
+                testOutputRoot, "cpp-boost-beast-m-profile");
+
+        CodegenConfigurator configurator = new CodegenConfigurator()
+                .setGeneratorName("cpp-boost-beast-client")
+                .setInputSpec("src/test/resources/3_1/cpp-boost-beast-client/oas31-jsts/mprofile/m-probe-schemas.yaml")
+                .setOutputDir(generatedClientDirectory.toString())
+                .addAdditionalProperty("apiPackage", "api")
+                .addAdditionalProperty("modelPackage", "model");
+
+        new DefaultGenerator().opts(configurator.toClientOptInput()).generate();
+
+        String int32 = Files.readString(generatedClientDirectory.resolve(Path.of("model", "Int32Box.h")));
+        String int64 = Files.readString(generatedClientDirectory.resolve(Path.of("model", "Int64Box.h")));
+        String floatH = Files.readString(generatedClientDirectory.resolve(Path.of("model", "FloatBox.h")));
+        String doubleH = Files.readString(generatedClientDirectory.resolve(Path.of("model", "DoubleBox.h")));
+        String enumH = Files.readString(generatedClientDirectory.resolve(Path.of("model", "EnumBox.h")));
+        String nullableH = Files.readString(generatedClientDirectory.resolve(Path.of("model", "NullableBox.h")));
+        String anyH = Files.readString(generatedClientDirectory.resolve(Path.of("model", "AnyType.h")));
+        String polyH = Files.readString(generatedClientDirectory.resolve(Path.of("model", "PolyBox.h")));
+
+        assertTrue(int32.contains("std::int32_t"), "int32 destination domain");
+        assertTrue(int64.contains("std::int64_t"), "int64 destination domain");
+        assertTrue(floatH.contains("float"), "float destination domain");
+        assertTrue(doubleH.contains("double"), "double destination domain");
+        assertTrue(enumH.contains("std::string"),
+                "enum destination domain (open member type, closed validation)");
+        assertTrue(nullableH.contains("NullableField"),
+                "3.1 type-array null destination -> tri-state NullableField");
+        assertTrue(anyH.contains("using AnyType = boost::json::value"),
+                "AnyType raw fallback destination");
+        assertTrue(polyH.contains("std::variant"), "oneOf union destination");
+
+        // F3: non-finite destinations must throw a representation
+        // diagnostic — the emitted converter carries the finite check.
+        String floatCpp = Files.readString(generatedClientDirectory.resolve(Path.of("model", "FloatBox.cpp")));
+        String doubleCpp = Files.readString(generatedClientDirectory.resolve(Path.of("model", "DoubleBox.cpp")));
+        assertTrue(floatCpp.contains("non-finite destination"), "float finite-check emitted");
+        assertTrue(doubleCpp.contains("non-finite destination"), "double finite-check emitted");
+
+        // M-audit: FeatureSet declares exactly the corpus-proven domains.
+        CppBoostBeastClientCodegen codegen = new CppBoostBeastClientCodegen();
+        java.util.Set<DataTypeFeature> types = codegen.getFeatureSet().getDataTypeFeatures();
+        for (DataTypeFeature expected : java.util.Arrays.asList(
+                DataTypeFeature.Int32, DataTypeFeature.Int64, DataTypeFeature.Float,
+                DataTypeFeature.Double, DataTypeFeature.String, DataTypeFeature.Boolean,
+                DataTypeFeature.Enum, DataTypeFeature.Array, DataTypeFeature.Maps,
+                DataTypeFeature.Object, DataTypeFeature.Null, DataTypeFeature.AnyType)) {
+            assertTrue(types.contains(expected),
+                    "DataTypeFeature " + expected + " must be declared (corpus-proven)");
+        }
+        assertFalse(types.contains(DataTypeFeature.Decimal),
+                "Decimal must NOT be declared (no decimal destination domain)");
+        assertFalse(types.contains(DataTypeFeature.Uuid),
+                "Uuid must NOT be declared (uuid maps to the string destination)");
     }
 }

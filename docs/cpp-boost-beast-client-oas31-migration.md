@@ -119,7 +119,18 @@ The old `collectionFormat`/implicit conventions are replaced by the OAS
 - The base64/credential helpers and the `-Wall -Wextra -Werror`-clean
   emitted surface.
 
-## 8. Regeneration checklist
+## 8. Typed-mapping contract (M profile)
+
+The exact behavior of every C++ destination domain — including the
+five-class error taxonomy (transport / schema-invalid / unrepresentable /
+representable / narrowed), the float precision policy, the non-finite
+diagnostics, the enum/open-value policy, and the tri-state
+missing/null/value semantics — is a stated contract:
+`docs/cpp-boost-beast-client-typed-mapping.md`. Every claim in it is a
+row in the M corpus executed by the M driver, so the documentation cannot
+drift from the generated behavior.
+
+## 9. Regeneration checklist
 
 1. Regenerate (the generator emits the validator + JSON serialization
    layer for 3.0 and 3.1 specs alike).
