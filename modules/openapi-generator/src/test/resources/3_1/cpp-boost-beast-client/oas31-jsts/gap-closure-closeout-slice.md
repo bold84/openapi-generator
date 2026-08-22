@@ -1,0 +1,86 @@
+# Gap-closure closeout slice report (Gaps 1–5 + final battery)
+
+Commit: `_see git log for gap-closure closeout commit (after 9bc8840e6c1)` ·
+Branch: `plan/cpp-boost-beast-oas31-full`
+
+## 1. Slices delivered (all committed with their own reports)
+
+| Slice | Deliverables | Commit | Report |
+|---|---|---|---|
+| Gap 2 — Matrix truthfulness | JSTS re-measure at HEAD (**1299/1299/0/0**), matrix 40 supported / 16 annotation / 12 fail-closed / 0 deferred, blockers cleared, invariant OK | `f5b7ca0a1fe` | `oas31-jsts/gap2-matrix-truthfulness-slice.md` |
+| Gap 5 — Format destinations | fixture + JVM test `formatDestinationsMapToStringOrDoubleAndFeatureSetStaysClean` + FeatureSet exclusions (Decimal/Date/DateTime/Uuid/Byte/Binary/Password) + GM3 §1a table | `bdc04425437` | (in commit) |
+| Gap 3 — Docs regeneration | CLI jar rebuilt at HEAD; `docs/generators/cpp-boost-beast-client.md` regenerated; drift reviewed; stale COMPLIANCE STATUS section removed | `8374f83ed22` | (in commit) |
+| Gap 1 — Multi-doc OAD refs | fixture pair `oas-compliance/multidoc/{main,shared}.yaml`; wire-gate multidoc matrix 5/5; `RecordingClient.execute` overload fix; C-profile wording updated | `8781a1a8cb1` | `oas31-jsts/gap1-multidoc-slice.md` |
+| Gap 4 — Validation knob | `kValidateOnDecode` constexpr in `model/ValidationTypes.h` (compileWithValidation option), composition-only skip, F3 invariant, JVM round-trip tests, benchmark | `80a9ac6a719` | `oas31-jsts/gap4-validation-knob-slice.md` |
+| Sample sync | petstore sample regenerated at HEAD; single-file drift (knob emission) committed | `9bc8840e6c1` | — |
+
+All six plan §5 slices are committed. The plan's §6 Definition-of-Done items 1–5
+are each satisfied by the slice reports above; item 6 (conformance doc + final
+battery + clean tree) is this report.
+
+## 2. Final battery at HEAD (commit `9bc8840e6c1`, codegen HEAD `80a9ac6a719`)
+
+All runs executed locally against the current working tree (fresh CLI jar
+built from HEAD codegen; Boost 1.90 Homebrew toolchain):
+
+| Gate | Command / artifact | Result |
+|---|---|---|
+| JVM suite | `mvnw -pl modules/openapi-generator test -Dtest=CppBoostBeastClientCodegenTest,CppBoostBeastClientApiCodegenTest` | **116/116 PASS** (CodegenTest 112 + ApiCodegenTest 4) |
+| JSTS full corpus | `tools/jsts_genpath_slice.py --suite vendor --workers 6` (46 files) | **46 files / 1299 cases = 1299 PASS / 0 FAIL / 0 BLOCKED** |
+| Gate A | `oas-compliance/gate-a.sh` (jar + generate + inventory + negative + Phase-2 + semantic) | **semantic-results.tsv 191 rows = 191 PASS / 0 non-PASS**; Phase-2 resolved 188/188 PASS |
+| Wire gate | `tools/jsts_param_wire.py` | **74 cells all PASS**: param 19/19, server 6/6, security 11/11, content 21/21, ref 5/5, multidoc 5/5, mock HTTP 7/7 |
+| Matrix invariants | inline workflow checker | **OK: 68 rows + JSTS ledger; 40 supported rows all-with-evidence** |
+| M gate | `phase2_m_gen.py` + `m_driver` (`-Werror`) | **`__M_TOTAL__=50 __M_PASS__=50 __M_FAIL__=0`** (3 transport-parse-error / 10 schema-invalid / 10 unrepresentable / 25 representable / 2 narrowed) |
+| GA1 annotation gate | `tools/jsts_annotation_gate.py` | **GA1 GATE PASS (36 annotation records, $comment silent)** |
+| Sample hardening | `g++ -Wall -Wextra -Werror -c …/PetApi.cpp` (Homebrew include) | **PASS** (0 warnings) |
+| Sample drift | `bin/generate-samples.sh …cpp-boost-beast-client-petstore.yaml` | regenerated tree == committed tree (single knob line was the only diff; committed) |
+
+## 3. Important cross-checks
+
+- **Knob did not regress S-V:** the JSTS corpus (1299) and Gate A (191)
+  re-run at gap-4 HEAD remain 0 FAIL / 0 BLOCKED — the `{{#validateOnDecode}}`
+  guard preserves the validated path byte-for-byte.
+- **F3 invariant enforced by M gate too:** M rows `float-overflow`,
+  `float-1e39`, `double-1e309`, `double-1e400` classify `unrepresentable`
+  (diagnostic, never schema-invalid) on the default (knob ON) tree; the
+  knob-off tree throws the identical representation exceptions (benchmark
+  Part A rows `F3 float overflow throws (knob OFF)` etc.).
+- **Benchmark numbers (Gap 4 report):** PolyBox oneOf+discriminator decode
+  87.3 ns/op → 40.0 ns/op (2.18×, 11.5M → 25.0M ops/s); FloatBox control
+  knob-invariant (~9–10 ns/op).
+- **JVM count reconciliation:** earlier slices cited "116/116"; the current
+  suite is exactly **CodegenTest 112 + ApiCodegenTest 4 = 116** (the two new
+  knob tests added to the CodegenTest class, which previously measured 110).
+
+## 4. Repo hygiene / tree state
+
+- Tracked tree: **clean** (only the closeout doc+report commit remains on the
+  branch at the time of writing; verified `git status` shows no tracked
+  modifications after it).
+- Untracked: documented scratch only — `oas31-jsts/w4*`, `w5*`, `w5probe`,
+  `w5g1..6`, `tmp/*`, and this batch's `tmp/knob-bench`, `tmp/m-gate`,
+  `w6battery`; plan doc `CPP_BOOST_BEAST_OAS31_GAP_CLOSURE_PLAN.md`.
+  `negative-composed-results.tsv` is a Gate A output regenerated by the
+  battery run and left untracked per discipline (it was previously removed
+  from the tree in the plan's audit).
+- `stash@{0}` (wip-snapshot) **preserved, never dropped**.
+- Conformance doc `docs/cpp-boost-beast-client-oas31-conformance.md` gained
+  §8 "Post-claim gap closure (Gaps 1–5)" with per-gap evidence and the final
+  battery table, committed with this report.
+
+## 5. Definition-of-Done verification (plan §6)
+
+- [x] All 10 deferred matrix rows re-adjudicated; statuses match runtime
+      evidence; matrix invariant step green (Gap 2).
+- [x] Multi-doc non-schema refs proven: wire-gate multidoc 5/5; C-profile
+      wording updated (Gap 1).
+- [x] Generator docs regenerated from HEAD; diff reviewed (Gap 3).
+- [x] Validation knob shipped, skip-scope documented, F3 diagnostics intact,
+      benchmark numbers committed (Gap 4).
+- [x] Format destinations: JVM test + GM3 section committed; FeatureSet
+      asserted (Gap 5).
+- [x] Conformance doc updated; full final battery green at HEAD; every slice
+      committed with report; tracked tree clean; scratch/stash per discipline.
+
+ALL GAPS CLOSED. No claim inflation: S-V 1299/1299, S-A GA1 36, M 50/50,
+C 74 cells, JVM 116/116, hardening clean — all re-verified at the final HEAD.

@@ -244,3 +244,76 @@ stale.
   (workflow now runs the full corpus, Gate A, the wire gates, the sample
   hardening build, and the M gate with `__M_PASS__==50`).
   `docs/cpp-boost-beast-client-oas31-migration.md`.
+
+---
+
+## 8. Post-claim gap closure (Gaps 1–5)
+
+A post-claim audit (`CPP_BOOST_BEAST_OAS31_GAP_CLOSURE_PLAN.md`) surfaced five
+residual items not covered by the Wave-6 claims. All five are closed and
+committed on `plan/cpp-boost-beast-oas31-full`:
+
+- **Gap 1 — Multi-document OAD references (C-profile tail):** external `$ref`
+  across files for non-schema objects exercised and proven. Fixture pair
+  `oas-compliance/multidoc/main.yaml` + `shared.yaml` (external query
+  parameter, requestBody, response with `X-External-Rate-Limit` header);
+  wire-gate **multidoc matrix 5/5 PASS** (param serialization, requestBody
+  form/JSON, response union dispatch, response header). Full wire gate after
+  the fix: **74 cells, all matrices PASS** (param 19/19, server 6/6,
+  security 11/11, content 21/21, ref 5/5, multidoc 5/5, mock HTTP 7/7).
+  Driver root cause fixed during the slice: the plain
+  `execute(verb,target,body,headers)` overload of `RecordingClient` now
+  records `lastVerb/lastTarget/lastBody/lastHeaders` like
+  `executeWithMetadata` does. C-profile claim wording updated (§1 row C:
+  "seven golden matrices … gap-1 multi-document OAD matrix 5/5").
+  Commit `8781a1a8cb1`; report `oas31-jsts/gap1-multidoc-slice.md`.
+- **Gap 2 — Matrix truthfulness:** full JSTS corpus re-measured at HEAD —
+  **46 files / 1299 cases = 1299 PASS / 0 FAIL / 0 BLOCKED** (batch ≡
+  serial, workers 6). `compliance-matrix.yaml` re-adjudicated: **40
+  supported / 16 annotation / 12 fail-closed / 0 deferred**; rows promoted
+  (`$schema`, `$id`, `$defs`, `$anchor`, `$dynamicAnchor`, `$dynamicRef`,
+  `$vocabulary`, `unevaluatedProperties`, `unevaluatedItems`) with
+  committed evidence per row; `$comment` → annotation; `contentSchema` →
+  annotation. Parser-blockers appendix: all 7 `**Blocker**` rows cleared.
+  Matrix-invariant workflow step: **OK (68 rows, 40 supported all
+  with-evidence)**. Commit `f5b7ca0a1fe`;
+  report `oas31-jsts/gap2-matrix-truthfulness-slice.md`.
+- **Gap 3 — Generated generator docs:** `docs/generators/cpp-boost-beast-client.md`
+  regenerated from HEAD codegen via `bin/utils/export_generator.sh` after an
+  incremental CLI jar rebuild. Diff verified: FeatureSet tables now match the
+  codegen (MultiServer/ParameterStyling/Callbacks/LinkObjects/Cookie present,
+  Decimal/Byte/Binary/Date/DateTime/Password correctly absent), and the stale
+  hand-added "COMPLIANCE STATUS" section removed (canonical status lives in
+  this document). Commit `8374f83ed22`.
+- **Gap 4 — Validation runtime opt-out + benchmark:** generated
+  `model/ValidationTypes.h` now emits `constexpr bool kValidateOnDecode`
+  (compile-time), controlled by the codegen option `compileWithValidation`
+  (default `true`; `false` skips **only** composition-branch validation —
+  oneOf/anyOf/discriminator `validate_{{validator-id}}` dispatch). The
+  M-contract invariant is preserved: representation diagnostics (F3
+  non-finite destinations, integer range "not exact", required-property
+  checks) throw on ALL paths, proven by the knob test (F3 overflow rows
+  FAIL on both knob states). JVM round-trip tests assert the emitted knob
+  value for default and `compileWithValidation=false`. Benchmark driver
+  (`tmp/knob-bench/`, compiled `-Werror`, Release): PolyBox oneOf+
+  discriminator decode **87.3 ns/op (11.5M ops/s) with validation →
+  40.0 ns/op (25.0M ops/s) without (2.18×)**; FloatBox control
+  knob-invariant (~9–10 ns/op). Ambiguous 2-branch oneOf instance:
+  rejected with knob on, accepted (first-parseable) with knob off —
+  precisely the documented skip scope. Commit `80a9ac6a719`;
+  report `oas31-jsts/gap4-validation-knob-slice.md`.
+- **Gap 5 — Format destinations documented + asserted:** new fixture
+  `oas-compliance/format-destinations.yaml` (date-time/date/uuid/byte/
+  binary/password → `std::string`; `decimal` → `double`) and JVM test
+  `formatDestinationsMapToStringOrDoubleAndFeatureSetStaysClean`; FeatureSet
+  excludes the format-specific features (Decimal/Date/DateTime/Uuid/Byte/
+  Binary/Password) exactly as shipped; GM3 doc
+  (`docs/cpp-boost-beast-client-typed-mapping.md`) gained the §1a "Format
+  destinations" table. Commit `bdc04425437`.
+
+Final battery at gap-closure HEAD (commit `80a9ac6a719`): M profile 50/50,
+JSTS 1299/1299, Gate A 191/0/0, wire gates 74 cells all PASS, GA1 36
+records, JVM **116/116** (CodegenTest 112 + ApiCodegenTest 4), sample
+regen zero drift, workflow 13 steps, matrix-invariant OK. Every slice
+committed with its own report; scratch dirs stay untracked per evidence
+discipline; `stash@{0}` preserved.
